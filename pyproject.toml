@@ -1,0 +1,20 @@
+[project]
+name = "data-master"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dearpygui>=2.0.0",
+    "fastparquet>=2024.11.0",
+    "pandas>=2.2.3",
+    "pyarrow>=20.0.0",
+    "scikit-learn>=1.6.1",
+    "setuptools>=80.9.0",
+    "ydata-profiling>=4.16.1",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+]
