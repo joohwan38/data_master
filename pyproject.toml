@@ -7,7 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
     "dearpygui>=2.0.0",
     "fastparquet>=2024.11.0",
+    "nbformat>=5.10.4",
     "pandas>=2.2.3",
+    "plotly>=6.1.2",
     "pyarrow>=20.0.0",
     "scikit-learn>=1.6.1",
     "scipy>=1.15.3",
