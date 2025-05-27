@@ -42,6 +42,8 @@ TAG_MVA_TARGET_FEATURE_COMBO = "step2_mva_target_feature_combo"
 TAG_MVA_TARGET_RUN_BUTTON = "step2_mva_target_run_button"
 TAG_MVA_TARGET_RESULTS_GROUP = "step2_mva_target_results_group"
 TAG_MVA_TARGET_PLOT_AREA_PREFIX = "mva_target_plot_area_"
+TAG_SVA_GROUPED_PLOT_TYPE_RADIO = "step2_sva_grouped_plot_type_radio"
+
 
 
 def _show_alert_modal(title: str, message: str):
@@ -261,7 +263,7 @@ def _get_filtered_variables(df: pd.DataFrame, filter_strength_selected: str,
 
 
 def _create_sva_basic_stats_table(parent_tag: str, series: pd.Series, util_funcs: dict, analysis_type_override: str = None):
-    """표1: 5 Number Summary, 평균, 표준편차, 왜도, 첨도 등 기본 통계량"""
+    dpg.add_text("Basic Statistics", parent=parent_tag) # 제목 추가
     stats_data = []
     is_effectively_categorical = (analysis_type_override == "ForceCategoricalForBinaryNumeric" or
                                   pd.api.types.is_categorical_dtype(series.dtype) or
@@ -302,12 +304,13 @@ def _create_sva_basic_stats_table(parent_tag: str, series: pd.Series, util_funcs
     if stats_data:
         stats_df = pd.DataFrame(stats_data)
         table_tag = dpg.generate_uuid()
-        # 표 높이 동적 조절 (최대 230)
-        table_height = min(230, len(stats_df) * 22 + 30) # 행 높이 대략 22, 헤더 30
+        # 표 높이 동적 조절 (기본 230에서 280으로 증가 시도, 또는 내용에 맞춰 최대값 설정)
+        table_height = min(230 + 50, len(stats_df) * 22 + 40) # 행 높이 대략 22, 헤더 및 제목 공간 40
         with dpg.table(header_row=True, tag=table_tag, parent=parent_tag,
                        borders_innerH=True, borders_outerH=True, borders_innerV=True, borders_outerV=True,
                        resizable=True, policy=dpg.mvTable_SizingStretchProp, height=int(table_height), scrollY=True):
             util_funcs['create_table_with_data'](table_tag, stats_df, parent_df_for_widths=stats_df)
+
 
 def _create_sva_advanced_relations_table(parent_tag: str, series: pd.Series, full_df: pd.DataFrame, util_funcs: dict, col_width: int):
     """표2: 정규성 검정 결과 및 상위 연관 변수 목록"""
@@ -347,7 +350,6 @@ def _create_sva_advanced_relations_table(parent_tag: str, series: pd.Series, ful
     top_related_vars_data = _get_top_correlated_vars(full_df, series.name, top_n=5)
     dpg.add_text("Top Related Variables:", parent=parent_tag)
     if top_related_vars_data:
-        # 첫 번째 항목에 'Info' 키가 있고, 이것이 유일한 항목인지 확인하여 메시지 표시
         if len(top_related_vars_data) == 1 and 'Info' in top_related_vars_data[0]:
              dpg.add_text(top_related_vars_data[0]['Info'], parent=parent_tag, wrap=col_width-10 if col_width > 20 else 200)
         else: # 실제 데이터가 있는 경우
@@ -355,11 +357,11 @@ def _create_sva_advanced_relations_table(parent_tag: str, series: pd.Series, ful
             if actual_data_for_table:
                 related_vars_df = pd.DataFrame(actual_data_for_table)
                 rel_table_tag = dpg.generate_uuid()
-                # 표 높이: 최대 5줄 + 헤더. 대략 (5 * 22) + 30 = 140
-                rel_table_height = min(140, len(related_vars_df) * 22 + 30)
+                # 표 높이: 최대 5줄 + 헤더 + 약간의 여유. (5 * 22) + 30 + 10 = 150
+                rel_table_height = min(150, len(related_vars_df) * 22 + 40) # 조금 더 여유
                 with dpg.table(header_row=True, tag=rel_table_tag, parent=parent_tag,
                                borders_innerH=True, borders_outerH=True, borders_innerV=True, borders_outerV=True,
-                               resizable=True, policy=dpg.mvTable_SizingStretchProp, height=int(rel_table_height), scrollY=True):
+                               resizable=True, policy=dpg.mvTable_SizingStretchProp, height=int(rel_table_height), scrollY=True): # scrollY는 유지 (혹시 5줄 넘을까봐)
                     util_funcs['create_table_with_data'](rel_table_tag, related_vars_df, parent_df_for_widths=related_vars_df)
             else:
                 dpg.add_text("No specific related variables found to display.", parent=parent_tag)
@@ -367,10 +369,14 @@ def _create_sva_advanced_relations_table(parent_tag: str, series: pd.Series, ful
         dpg.add_text("No correlation/association data determined.", parent=parent_tag)
 
 
-def _create_single_var_plot(parent_group_tag: str, series: pd.Series, group_by_target_series: pd.Series = None, analysis_type_override:str=None):
-    plot_height = 230
-    plot_label = f"Distribution: {series.name}"
+def _create_single_var_plot(parent_group_tag: str, series: pd.Series, group_by_target_series: pd.Series = None, analysis_type_override:str=None,
+                            grouped_plot_preference:str="KDE_AND_HIST"):
+    plot_height = 230 + 60 # 높이 증가
+    plot_label = f"Distribution: {series.name}" # DPG 플롯 자체의 레이블 사용
     
+    # 만약 별도의 제목 텍스트를 플롯 위에 추가하고 싶다면:
+    # dpg.add_text("Distribution Chart", parent=parent_group_tag) # 이 줄을 활성화
+
     is_grouped_plotting = group_by_target_series is not None and \
                           group_by_target_series.nunique(dropna=False) >= 2 and \
                           (analysis_type_override != "ForceCategoricalForBinaryNumeric" or not pd.api.types.is_numeric_dtype(series.dtype))
@@ -380,14 +386,17 @@ def _create_single_var_plot(parent_group_tag: str, series: pd.Series, group_by_t
 
     plot_tag = dpg.generate_uuid()
     with dpg.plot(label=plot_label, height=plot_height, width=-1, parent=parent_group_tag, tag=plot_tag):
-        xaxis_tag = dpg.add_plot_axis(dpg.mvXAxis, label=series.name)
+        # 마우스 휠 줌 비활성화
+        xaxis_tag = dpg.add_plot_axis(dpg.mvXAxis, label=series.name, lock_min=False,
+    lock_max=False,
+    auto_fit=True)#, no_scroll_zoom=True)
         yaxis_tag = dpg.generate_uuid()
-        dpg.add_plot_axis(dpg.mvYAxis, label="Density / Frequency", tag=yaxis_tag)
+        dpg.add_plot_axis(dpg.mvYAxis, label="Density / Frequency", tag=yaxis_tag, lock_min=False,
+    lock_max=False,
+    auto_fit=True)
         
-        # 범례 수정: location에 정수 값 사용 (mvPlotLocation_East = 8)
-        legend_tag = dpg.add_plot_legend(parent=plot_tag, 
-                                         location=8, # dpg.mvPlotLocation_East
-                                         outside=True)
+        legend_tag = dpg.add_plot_legend(parent=plot_tag, location=8, outside=True) # 8 = mvPlotLocation_East
+
 
         series_cleaned_for_plot_initial = series.dropna()
         series_cleaned_for_plot = series_cleaned_for_plot_initial.replace([np.inf, -np.inf], np.nan).dropna()
@@ -404,30 +413,60 @@ def _create_single_var_plot(parent_group_tag: str, series: pd.Series, group_by_t
                                               series.nunique(dropna=False) < 5)
 
         if pd.api.types.is_numeric_dtype(series.dtype) and not is_effectively_categorical_for_plot:
-            if is_grouped_plotting:
+            if is_grouped_plotting: # 그룹핑 활성화 시
                 unique_target_groups_numeric = sorted(group_by_target_series.dropna().unique())
-                for group_name in unique_target_groups_numeric:
+                
+                # 그룹별 색상 및 투명도 설정 (예시)
+                base_colors = [
+                    (0, 110, 255), (255, 120, 0), (0, 170, 0), 
+                    (200, 0, 0), (150, 50, 200) # 최대 5개 그룹 색상
+                ]
+                alpha_value = 150 # 반투명도 (0-255)
+
+                for idx, group_name in enumerate(unique_target_groups_numeric):
                     group_data_initial = series_cleaned_for_plot[group_by_target_series == group_name]
                     group_data_cleaned = group_data_initial.replace([np.inf, -np.inf], np.nan).dropna()
 
                     if len(group_data_cleaned) < 2 or group_data_cleaned.nunique() < 2:
-                        print(f"INFO: Group '{group_name}' for var '{series.name}' has insufficient data or no variance for density plot. Data count: {len(group_data_cleaned)}, Unique count: {group_data_cleaned.nunique()}")
+                        print(f"INFO: Group '{group_name}' for var '{series.name}' has insufficient data or no variance. Skipping plot for this group.")
                         continue
                     
+                    current_color = base_colors[idx % len(base_colors)] # 순환 색상
+                    
                     try:
-                        kde = stats.gaussian_kde(group_data_cleaned)
-                        kde_min = group_data_cleaned.min()
-                        kde_max = group_data_cleaned.max()
-                        padding = (kde_max - kde_min) * 0.05 if (kde_max - kde_min) > 0 else 0.1
-                        x_vals = np.linspace(kde_min - padding, kde_max + padding, 100)
-                        y_vals = kde(x_vals)
-                        dpg.add_line_series(x_vals.tolist(), y_vals.tolist(), label=f"KDE (T={group_name})", parent=yaxis_tag)
-                    except Exception as e_kde:
-                        dpg.add_text(f"KDE Error (Group '{group_name}')", parent=yaxis_tag, color=(255,100,100))
-                        print(f"Error calculating/plotting KDE for group '{group_name}', var '{series.name}': {e_kde}\nData sample: {group_data_cleaned.head().tolist()}")
+                        if grouped_plot_preference == "KDE":
+                            kde = stats.gaussian_kde(group_data_cleaned)
+                            kde_min = group_data_cleaned.min(); kde_max = group_data_cleaned.max()
+                            padding = (kde_max - kde_min) * 0.05 if (kde_max - kde_min) > 0 else 0.1
+                            x_vals = np.linspace(kde_min - padding, kde_max + padding, 100)
+                            y_vals = kde(x_vals)
+                            line_series = dpg.add_line_series(x_vals.tolist(), y_vals.tolist(), label=f"KDE (T={group_name})", parent=yaxis_tag)
+                            # KDE 라인 색상 설정 (알파는 보통 라인에 직접 적용 안됨, 테마로 시도 가능하나 복잡)
+                            # dpg.bind_item_theme(line_series, create_series_theme(current_color)) # 테마 함수 필요
+
+                        elif grouped_plot_preference == "Histogram":
+                            hist_series = dpg.add_histogram_series(group_data_cleaned.tolist(), label=f"Hist (T={group_name})",
+                                                                  density=True, bins=-1, parent=yaxis_tag, bar_scale=0.9) # bar_scale로 막대 간격 약간 조정
+                            
+                            # 히스토그램 시리즈에 반투명 색상 적용 (테마 사용)
+                            series_theme_tag = dpg.generate_uuid()
+                            with dpg.theme(tag=series_theme_tag):
+                                with dpg.theme_component(dpg.mvHistogramSeries, parent=series_theme_tag): # 특정 시리즈 타입 지정
+                                    # mvPlotCol_Fill은 히스토그램 막대의 채우기 색상
+                                    dpg.add_theme_color(dpg.mvPlotCol_Fill, (current_color[0], current_color[1], current_color[2], alpha_value), 
+                                                        category=dpg.mvThemeCat_Plots)
+                                    # mvPlotCol_Line은 히스토그램 막대의 테두리 색상 (필요시)
+                                    # dpg.add_theme_color(dpg.mvPlotCol_Line, (current_color[0], current_color[1], current_color[2], 255), 
+                                    #                     category=dpg.mvThemeCat_Plots)
+                            dpg.bind_item_theme(hist_series, series_theme_tag)
+
+                    except Exception as e_plot:
+                        error_msg_group = f"Plot Error (Group '{group_name}', Type: {grouped_plot_preference})"
+                        dpg.add_text(error_msg_group, parent=yaxis_tag, color=(255,100,100))
+                        print(f"{error_msg_group} for var '{series.name}': {e_plot}\nData sample: {group_data_cleaned.head().tolist()}")
                         traceback.print_exc()
             
-            else: 
+            else: # 단일 숫자형 시리즈 (그룹핑 없음, 항상 히스토그램 + KDE)
                 if series_cleaned_for_plot.nunique() < 2 :
                     dpg.add_text("No variance in data for histogram/density plot.", parent=yaxis_tag, color=(255,200,0))
                     if dpg.does_item_exist(legend_tag): dpg.delete_item(legend_tag)
@@ -436,26 +475,23 @@ def _create_single_var_plot(parent_group_tag: str, series: pd.Series, group_by_t
                 try:
                     dpg.add_histogram_series(series_cleaned_for_plot.tolist(), label="Histogram",
                                              density=True, bins=-1, parent=yaxis_tag, bar_scale=1.0)
-                except SystemError as e_sys_hist:
-                    dpg.add_text(f"Histogram Error (SystemError)", parent=yaxis_tag, color=(255,0,0))
-                    print(f"SystemError plotting histogram for var '{series.name}': {e_sys_hist}\nData sample: {series_cleaned_for_plot.head().tolist()}")
-                    traceback.print_exc()
-                except Exception as e_gen_hist:
+                except Exception as e_hist:
+                    # ... (기존 오류 처리)
                     dpg.add_text(f"Histogram Error", parent=yaxis_tag, color=(255,0,0))
-                    print(f"General error plotting histogram for var '{series.name}': {e_gen_hist}\nData sample: {series_cleaned_for_plot.head().tolist()}")
+                    print(f"Error plotting histogram for var '{series.name}': {e_hist}\nData sample: {series_cleaned_for_plot.head().tolist()}")
                     traceback.print_exc()
                 
                 try:
                     kde = stats.gaussian_kde(series_cleaned_for_plot)
-                    kde_min = series_cleaned_for_plot.min()
-                    kde_max = series_cleaned_for_plot.max()
+                    kde_min = series_cleaned_for_plot.min(); kde_max = series_cleaned_for_plot.max()
                     padding = (kde_max - kde_min) * 0.05 if (kde_max - kde_min) > 0 else 0.1
                     x_vals = np.linspace(kde_min - padding, kde_max + padding, 150)
                     y_vals = kde(x_vals)
                     dpg.add_line_series(x_vals.tolist(), y_vals.tolist(), label="KDE", parent=yaxis_tag)
                 except Exception as e_kde:
+                    # ... (기존 오류 처리)
                     dpg.add_text(f"KDE Error", parent=yaxis_tag, color=(255,100,100))
-                    print(f"Error calculating/plotting KDE for var '{series.name}': {e_kde}\nData sample: {series_cleaned_for_plot.head().tolist()}")
+                    print(f"Error plotting KDE for var '{series.name}': {e_kde}\nData sample: {series_cleaned_for_plot.head().tolist()}")
                     traceback.print_exc()
         else:
             top_n_categories = 10
@@ -494,7 +530,7 @@ def _create_single_var_plot(parent_group_tag: str, series: pd.Series, group_by_t
                 bar_labels = [str(val) for val in value_counts_data.index.tolist()]
                 dpg.add_bar_series(x_pos, value_counts_data.values.tolist(), weight=0.7, label="Frequency", parent=yaxis_tag)
                 if bar_labels and dpg.does_item_exist(xaxis_tag): dpg.set_axis_ticks(xaxis_tag, tuple(zip(bar_labels, x_pos)))
-                
+
 def _apply_sva_filters_and_run(main_callbacks: dict):
     print("DEBUG: _apply_sva_filters_and_run CALLED.") # 함수 호출 시작 확인
 
@@ -538,7 +574,13 @@ def _apply_sva_filters_and_run(main_callbacks: dict):
     # --- 4. UI에서 현재 필터 및 그룹핑 옵션 가져오기 ---
     filter_strength_selected = dpg.get_value(TAG_SVA_FILTER_STRENGTH_RADIO) if dpg.does_item_exist(TAG_SVA_FILTER_STRENGTH_RADIO) else "Weak (Exclude obvious non-analytical)"
     group_by_target_flag = dpg.get_value(TAG_SVA_GROUP_BY_TARGET_CHECKBOX) if dpg.does_item_exist(TAG_SVA_GROUP_BY_TARGET_CHECKBOX) else False
-    target_series_for_grouping = None # 그룹핑에 사용할 실제 시리즈 (조건 만족 시 할당)
+    
+    # 그룹핑 시 플롯 타입 가져오기
+    grouped_plot_preference = "KDE" # 기본값
+    if group_by_target_flag and dpg.does_item_exist(TAG_SVA_GROUPED_PLOT_TYPE_RADIO) and dpg.is_item_shown(TAG_SVA_GROUPED_PLOT_TYPE_RADIO):
+        grouped_plot_preference = dpg.get_value(TAG_SVA_GROUPED_PLOT_TYPE_RADIO)
+    
+    target_series_for_grouping = None
 
     # --- 5. 그룹핑 옵션 유효성 검사 및 설정 ---
     # 이 부분이 그룹핑 체크 해제와 직접적으로 관련된 로직입니다.
@@ -662,22 +704,23 @@ def _apply_sva_filters_and_run(main_callbacks: dict):
             col_1_width = max(min_col_width, col_1_width)
             col_2_width = max(min_col_width, col_2_width)
 
-            with dpg.group(horizontal=True):
+            with dpg.group(horizontal=True): # 전체 가로 그룹
+                # Column 1: Basic Stats
                 with dpg.group(width=col_1_width) as col1_group_tag:
-                    print(f"  DEBUG [{col_name}]: Creating basic stats table in group {col1_group_tag}")
                     _create_sva_basic_stats_table(col1_group_tag, current_df[col_name], util_funcs, analysis_override_for_sva)
                 
+                # Column 2: Advanced Stats & Relations
                 with dpg.group(width=col_2_width) as col2_group_tag:
-                    print(f"  DEBUG [{col_name}]: Creating advanced stats table in group {col2_group_tag}")
-                    # _create_sva_advanced_relations_table 호출 시 col_width 전달 확인
-                    _create_sva_advanced_relations_table(col2_group_tag, current_df[col_name], current_df, util_funcs, col_2_width) 
+                    _create_sva_advanced_relations_table(col2_group_tag, current_df[col_name], current_df, util_funcs, col_2_width)
 
-                with dpg.group() as col3_group_tag: 
-                    print(f"  DEBUG [{col_name}]: Creating plot in group {col3_group_tag}. Grouping: {group_by_target_flag}")
-                    # target_series_for_grouping은 위에서 group_by_target_flag에 따라 None 또는 실제 시리즈로 설정됨
+                # Column 3: Plot
+                with dpg.group() as col3_group_tag:
+                    print(f"  DEBUG [{col_name}]: Creating plot in group {col3_group_tag}. Grouping: {group_by_target_flag}, Plot Pref: {grouped_plot_preference if group_by_target_flag else 'KDE_AND_HIST'}")
                     _create_single_var_plot(col3_group_tag, current_df[col_name], 
-                                            target_series_for_grouping, # group_by_target_flag 조건부 처리는 이미 반영됨
-                                            analysis_override_for_sva)
+                                            target_series_for_grouping, # group_by_target_flag에 따라 None 또는 시리즈 값 가짐
+                                            analysis_override_for_sva,
+                                            grouped_plot_preference if group_by_target_flag else "KDE_AND_HIST" # 다섯 번째 인자
+                                           )
             dpg.add_separator()
             dpg.add_spacer(height=10)
 
@@ -687,6 +730,20 @@ def _apply_sva_filters_and_run(main_callbacks: dict):
 
 
 # --- Main UI Creation & Update ---
+def _sva_group_by_target_callback(sender, app_data, user_data):
+    """'Group by Target' 체크박스 콜백 함수"""
+    main_callbacks = user_data
+    is_checked = dpg.get_value(sender)
+    plot_type_radio_tag = TAG_SVA_GROUPED_PLOT_TYPE_RADIO
+
+    if dpg.does_item_exist(plot_type_radio_tag):
+        dpg.configure_item(plot_type_radio_tag, show=is_checked)
+        if not is_checked:
+            dpg.set_value(plot_type_radio_tag, "KDE") # 체크 해제 시 기본값으로
+
+    # 옵션 변경 시 SVA 자동 재실행 (사용자 요청에 따라 이 부분은 유지 또는 버튼 클릭으로만 실행)
+    # _apply_sva_filters_and_run(main_callbacks) # 필요시 이 라인 주석 해제 또는 유지
+
 def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
     main_callbacks['register_step_group_tag'](step_name, TAG_EDA_GROUP)
     with dpg.group(tag=TAG_EDA_GROUP, parent=parent_container_tag, show=False):
@@ -694,13 +751,14 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
         with dpg.tab_bar(tag=TAG_EDA_MAIN_TAB_BAR):
             with dpg.tab(label="Single Variable Analysis", tag=TAG_SVA_TAB):
                 with dpg.group(horizontal=True): 
-                    with dpg.group(width=280): # 필터 옵션 그룹 너비 고정
+                    with dpg.group(width=280): # 필터 옵션 그룹
                         dpg.add_text("Variable Filter")
                         dpg.add_radio_button(
                             items=["Strong (Top 5-10 relevant)", "Medium (Top 11-20 relevant)", "Weak (Exclude obvious non-analytical)", "None (All variables)"],
                             tag=TAG_SVA_FILTER_STRENGTH_RADIO, default_value="Weak (Exclude obvious non-analytical)"
-                            # callback 제거 (버튼으로 실행)
+                            # callback은 Run 버튼으로 통합
                         )
+                        # ... (기존 필터 설명 텍스트)
                         dpg.add_spacer(height=5) 
                         dpg.add_text("Filter Algorithm (Simplified):", wrap=250)
                         dpg.add_text("- Strong/Medium: Relevance to Target (if set) or other heuristics.", wrap=250)
@@ -708,18 +766,26 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
                     
                     dpg.add_spacer(width=10) 
                     
-                    with dpg.group(): # 그룹핑 및 실행 버튼 그룹
+                    with dpg.group(): # 그룹핑, 플롯 타입 및 실행 버튼 그룹
                         dpg.add_text("Grouping Option")
                         dpg.add_checkbox(label="Group by Target (Categorical Target, 2-5 Categories)",
-                                         tag=TAG_SVA_GROUP_BY_TARGET_CHECKBOX, default_value=False
-                                         # callback 제거 (버튼으로 실행)
+                                         tag=TAG_SVA_GROUP_BY_TARGET_CHECKBOX, default_value=False,
+                                         user_data=main_callbacks,
+                                         callback=_sva_group_by_target_callback # 콜백 연결
                                          )
+                        # 그룹핑 시 플롯 타입 선택 라디오 버튼 (초기에는 숨김)
+                        dpg.add_radio_button(items=["KDE", "Histogram"], 
+                                             tag=TAG_SVA_GROUPED_PLOT_TYPE_RADIO, 
+                                             default_value="KDE", horizontal=True, show=False)
+                                             # user_data=main_callbacks,
+                                             # callback=lambda s,a,u: _apply_sva_filters_and_run(u) # 필요시 콜백 추가
+
                         dpg.add_spacer(height=10)
                         dpg.add_button(label="Run Single Variable Analysis", tag=TAG_SVA_RUN_BUTTON,
                                        callback=lambda: _apply_sva_filters_and_run(main_callbacks),
-                                       width=-1, height=30) # 너비 채움
+                                       width=-1, height=30)
                 dpg.add_separator()
-                with dpg.child_window(tag=TAG_SVA_RESULTS_CHILD_WINDOW, border=True): # 결과창에 테두리 추가
+                with dpg.child_window(tag=TAG_SVA_RESULTS_CHILD_WINDOW, border=True):
                     dpg.add_text("Select filter options and click 'Run Single Variable Analysis'.")
 
             # --- MVA 탭 UI (이전과 동일하게 유지) ---
