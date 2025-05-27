@@ -1,33 +1,37 @@
 # main_app.py
 import dearpygui.dearpygui as dpg
 import pandas as pd
-import platform # Moved to top
-import os       # Moved to top
+import platform
+import os
 
 import utils
 import step_01_data_loading
 import step_02_exploratory_data_analysis
+import traceback
 
 current_df: pd.DataFrame = None
 original_df: pd.DataFrame = None
 loaded_file_path: str = None
 
 step_group_tags = {}
-module_ui_updaters = {}
+module_ui_updaters = {} # {module_name_key: update_function}
 active_step_name: str = None
-selected_target_variable: str = None # 전역 타겟 변수
+selected_target_variable: str = None
 TARGET_VARIABLE_COMBO_TAG = "target_variable_combo"
+
+_eda_sva_initialized = False # EDA 탭의 SVA가 초기 실행되었는지 여부 플래그
 
 ANALYSIS_STEPS = [
     "1. Data Loading and Overview",
     "2. Exploratory Data Analysis (EDA)",
-    # "3. Data Quality Assessment", # To be added later
-    # "4. Data Preprocessing",   # To be added later
+    # "3. Data Quality Assessment",
+    # "4. Data Preprocessing",
 ]
 
+# 폰트 설정 함수 (이전과 동일하게 유지)
 def setup_korean_font():
     font_path = None
-    font_size = 17
+    font_size = 17 # macOS에서는 17 정도가 적당할 수 있습니다.
     os_type = platform.system()
     print(f"--- Font Setup Initiated ---")
     print(f"Operating System: {os_type}")
@@ -51,196 +55,197 @@ def setup_korean_font():
             print(f"macOS: Selected font for use: {font_path}")
         else:
             print("macOS: ERROR - No AppleGothic or AppleSDGothicNeo font found.")
-    # (다른 OS 로직은 생략 또는 유지)
     elif os_type == "Windows":
-        print("Windows: OS detected, skipping macOS/Linux font search for this focused fix.")
+        # Windows 폰트 경로 (이전 코드 참조)
+        potential_paths = ["C:/Windows/Fonts/malgun.ttf", "C:/Windows/Fonts/gulim.ttc"]
+        for p in potential_paths:
+            if os.path.exists(p): font_path = p; break
+        if font_path: print(f"Windows: Selected font {font_path}")
+        else: print("Windows: Malgun Gothic or Gulim not found.")
     elif os_type == "Linux":
-        print("Linux: OS detected, skipping macOS/Windows font search for this focused fix.")
+        # Linux 폰트 경로 (이전 코드 참조)
+        potential_paths = ["/usr/share/fonts/truetype/nanum/NanumGothic.ttf"]
+        bundled_font_path = "NanumGothic.ttf"
+        if os.path.exists(bundled_font_path): font_path = bundled_font_path
+        else:
+            for p in potential_paths:
+                if os.path.exists(p): font_path = p; break
+        if font_path: print(f"Linux: Selected font {font_path}")
+        else: print("Linux: NanumGothic not found.")
     else:
         print(f"Unsupported OS for specific font setup: {os_type}.")
 
     if font_path and os.path.exists(font_path):
         print(f"Attempting to load and bind font: '{font_path}' with size {font_size}")
         try:
-            font_registry_tag = "global_font_registry_unique" # 태그를 조금 더 유니크하게 변경 (선택 사항)
-            font_to_bind_tag = "korean_apple_font"      # 태그를 조금 더 유니크하게 변경 (선택 사항)
+            font_registry_tag = "global_font_registry_unique" 
+            font_to_bind_tag = "korean_font_for_app" # 태그명 변경 가능
 
-            # 1. 폰트 레지스트리가 없으면 생성
             if not dpg.does_item_exist(font_registry_tag):
                 dpg.add_font_registry(tag=font_registry_tag)
                 print(f"Font registry '{font_registry_tag}' created.")
             else:
                 print(f"Font registry '{font_registry_tag}' already exists.")
 
-            # 2. 폰트 추가 (with 구문 없이, parent 인자 사용)
-            #    폰트 태그가 이미 존재하면 오류가 발생하므로, 없을 때만 추가하거나, 삭제 후 추가해야 합니다.
-            #    이 함수는 앱 시작 시 한 번만 호출되는 것이 가장 이상적입니다.
             if not dpg.does_item_exist(font_to_bind_tag):
                 dpg.add_font(
                     file=font_path,
                     size=font_size,
                     tag=font_to_bind_tag,
-                    parent=font_registry_tag # 명시적으로 부모 레지스트리 지정
+                    parent=font_registry_tag
                 )
-                # 3. 추가된 폰트에 대해 글리프 범위 설정 (parent 인자 사용)
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean, parent=font_to_bind_tag)
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Default, parent=font_to_bind_tag)
                 print(f"Font '{font_path}' added with tag '{font_to_bind_tag}' to registry '{font_registry_tag}'.")
             else:
                 print(f"Font with tag '{font_to_bind_tag}' already exists. Attempting to use existing.")
 
-            # 4. 폰트 바인딩
             dpg.bind_font(font_to_bind_tag)
             print(f"Successfully attempted to bind font '{font_to_bind_tag}' (from {font_path}).")
         except Exception as e:
-            # 여기서 발생하는 예외는 DPG 내부 C++ 레벨 오류와 다를 수 있습니다.
             print(f"Error during explicit font processing for '{font_path}': {e}. DPG default font will be used.")
-            import traceback
-            traceback.print_exc() # 파이썬 예외의 전체 스택 트레이스 출력
-    elif font_path and not os.path.exists(font_path):
+            traceback.print_exc()
+    elif font_path and not os.path.exists(font_path): # font_path는 있었으나 파일이 없는 경우
         print(f"Font path '{font_path}' was determined, but the file does not exist. DPG default font will be used.")
-    else:
-        print("No suitable Korean font path was found for macOS. DPG default font will be used.")
-    
+    else: # 적절한 font_path를 찾지 못한 경우
+        print("No suitable Korean font path was found. DPG default font will be used.")
     print(f"--- Font Setup Finished ---")
 
 
+# 타겟 변수 콤보박스 아이템 업데이트 함수 (이전과 동일)
+def update_target_variable_combo():
+    global current_df, selected_target_variable, TARGET_VARIABLE_COMBO_TAG
+    if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG):
+        if current_df is not None and not current_df.empty:
+            items = [""] + list(current_df.columns) 
+            dpg.configure_item(TARGET_VARIABLE_COMBO_TAG, items=items)
+            if selected_target_variable and selected_target_variable in current_df.columns:
+                dpg.set_value(TARGET_VARIABLE_COMBO_TAG, selected_target_variable)
+            else:
+                dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
+        else:
+            dpg.configure_item(TARGET_VARIABLE_COMBO_TAG, items=[""])
+            dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
+
+
+# 데이터 로드 함수 (이전과 거의 동일, _eda_sva_initialized 플래그 초기화 추가)
 def load_data_from_file(file_path: str) -> bool:
-    global current_df, original_df, loaded_file_path, selected_target_variable # selected_target_variable 추가
-    success = False # 성공 여부 플래그 초기화
+    global current_df, original_df, loaded_file_path, selected_target_variable, _eda_sva_initialized
+    success = False
     try:
         current_df = pd.read_parquet(file_path)
         original_df = current_df.copy()
         loaded_file_path = file_path
         print(f"Data loaded successfully: {file_path}, Shape: {current_df.shape}")
-        success = True # 데이터 로드 성공
+        success = True
     except Exception as e:
-        current_df = None
-        original_df = None
-        loaded_file_path = None
+        current_df = None; original_df = None; loaded_file_path = None
         print(f"Error loading data: {e}")
-        if dpg.does_item_exist(step_01_data_loading.TAG_DL_FILE_SUMMARY_TEXT): # step_01_data_loading 모듈의 태그 사용
+        if dpg.does_item_exist(step_01_data_loading.TAG_DL_FILE_SUMMARY_TEXT):
             dpg.set_value(step_01_data_loading.TAG_DL_FILE_SUMMARY_TEXT, f"Error: {e}")
-        success = False # 데이터 로드 실패
+        success = False
 
-    # try-except 블록이 끝난 후, 성공 여부에 따라 후속 처리
     if success:
-        # 데이터 로드 성공 시 step_01_data_loading 모듈의 전역 변수 초기화
-        if hasattr(step_01_data_loading, '_type_selections'):
-            step_01_data_loading._type_selections.clear()
-        if hasattr(step_01_data_loading, '_imputation_selections'):
-            step_01_data_loading._imputation_selections.clear()
+        if hasattr(step_01_data_loading, '_type_selections'): step_01_data_loading._type_selections.clear()
+        if hasattr(step_01_data_loading, '_imputation_selections'): step_01_data_loading._imputation_selections.clear()
         
-        # _custom_nan_input_value 초기화 및 UI 업데이트 (필요시 주석 해제)
-        # if hasattr(step_01_data_loading, '_custom_nan_input_value'):
-        #     step_01_data_loading._custom_nan_input_value = "" 
-        # if dpg.does_item_exist(step_01_data_loading.TAG_DL_CUSTOM_NAN_INPUT):
-        #    dpg.set_value(step_01_data_loading.TAG_DL_CUSTOM_NAN_INPUT, "")
-
-        # 타겟 변수 콤보 박스 아이템 업데이트 (새로운 컬럼 목록으로)
-        if callable(update_target_variable_combo): # 함수 존재 여부 확인
-            update_target_variable_combo()
-        
-        # 이전에 선택된 타겟 변수가 새 데이터프레임에 여전히 존재하는지 확인
+        _eda_sva_initialized = False # 새 데이터 로드 시 SVA 초기화 플래그 리셋
+        update_target_variable_combo()
         if selected_target_variable and current_df is not None and selected_target_variable not in current_df.columns:
-            print(f"Previously selected target variable '{selected_target_variable}' not found in the new data. Resetting target variable.")
             selected_target_variable = None
-            # UI의 콤보박스 값도 초기화 (선택 안 함 상태로)
-            if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG):
-                dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
-        
-        trigger_all_module_updates() # 모든 모듈 UI 업데이트
+            if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
+        trigger_all_module_updates()
         return True
     else:
-        # 데이터 로드 실패 시에도 타겟 변수 콤보 박스는 빈 목록으로 업데이트
-        if callable(update_target_variable_combo): # 함수 존재 여부 확인
-            update_target_variable_combo()
-        # 실패 시에도 selected_target_variable 초기화
+        _eda_sva_initialized = False # 실패 시에도 리셋
+        update_target_variable_combo()
         selected_target_variable = None
-        if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG):
-             dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
-
+        if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
         trigger_all_module_updates() 
         return False
-    
+
+# 타겟 변수 선택 콜백 (이전과 동일)
 def target_variable_selected_callback(sender, app_data, user_data):
-    """타겟 변수 콤보박스 선택 시 호출될 콜백"""
-    global selected_target_variable
-    selected_target_variable = app_data # app_data가 선택된 컬럼명
+    global selected_target_variable, _eda_sva_initialized
+    selected_target_variable = app_data
     print(f"Target variable selected: {selected_target_variable}")
-    # 타겟 변수 변경에 따른 UI 및 분석 업데이트 트리거
-    # 예: trigger_specific_module_update("2. Exploratory Data Analysis (EDA)")
-    # 또는 trigger_all_module_updates()
+    _eda_sva_initialized = False # 타겟 변경 시 SVA 다시 초기 실행하도록 유도 가능 (선택사항)
     trigger_all_module_updates()
 
-def update_target_variable_combo():
-    """데이터프레임 로드/변경 시 타겟 변수 콤보박스 아이템 업데이트"""
-    global current_df
-    if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG):
-        if current_df is not None and not current_df.empty:
-            items = [""] + list(current_df.columns) # 첫 번째는 "선택 안 함" 옵션
-            dpg.configure_item(TARGET_VARIABLE_COMBO_TAG, items=items)
-            # 이전에 선택된 타겟이 현재 컬럼 목록에 여전히 존재하면 그 값을 유지
-            if selected_target_variable and selected_target_variable in current_df.columns:
-                dpg.set_value(TARGET_VARIABLE_COMBO_TAG, selected_target_variable)
-            else: # 그렇지 않으면 "선택 안 함" 또는 첫 번째 컬럼 등으로 초기화
-                dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "") # "선택 안 함"
-        else:
-            dpg.configure_item(TARGET_VARIABLE_COMBO_TAG, items=[""])
-            dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
-
+# 파일 로드 콜백 (이전과 동일)
 def file_load_callback(sender, app_data):
     selected_file_path = app_data.get('file_path_name')
-    if selected_file_path:
-        load_data_from_file(selected_file_path)
-    else:
-        print("File selection cancelled.")
+    if selected_file_path: load_data_from_file(selected_file_path)
+    else: print("File selection cancelled.")
 
+# 원본 데이터로 리셋 함수 (이전과 거의 동일, _eda_sva_initialized 플래그 초기화 추가)
 def reset_current_df_to_original_data():
-    global current_df, original_df, selected_target_variable
+    global current_df, original_df, selected_target_variable, _eda_sva_initialized
     if original_df is not None:
         current_df = original_df.copy()
         print("Data reset to original.")
-        # ... (기존 _type_selections 등 초기화 로직) ...
-        update_target_variable_combo() # 컬럼 목록이 원본으로 돌아갔으므로 호출
-        # 원본 데이터에 이전 타겟이 여전히 있는지 확인
-        if selected_target_variable and selected_target_variable not in current_df.columns:
+        if hasattr(step_01_data_loading, '_type_selections'): step_01_data_loading._type_selections.clear()
+        if hasattr(step_01_data_loading, '_imputation_selections'): step_01_data_loading._imputation_selections.clear()
+        
+        _eda_sva_initialized = False # 리셋 시 SVA 초기화 플래그 리셋
+        update_target_variable_combo()
+        if selected_target_variable and current_df is not None and selected_target_variable not in current_df.columns:
             selected_target_variable = None
-            print("Previously selected target variable not found in original data after reset. Resetting target.")
-            if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG):
-                dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
-
+            if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
         trigger_all_module_updates()
     else:
         print("No original data to reset to.")
 
+# 스텝 UI 전환 함수 (SVA 초기 실행 로직 추가)
 def switch_step_view(sender, app_data, user_data_step_name: str):
-    global active_step_name
+    global active_step_name, _eda_sva_initialized
     print(f"Attempting to switch to step: {user_data_step_name}")
 
-    for step_name, group_tag in step_group_tags.items():
+    for step_name_iter, group_tag in step_group_tags.items(): # step_name 변수명 변경
         if dpg.does_item_exist(group_tag):
-            if step_name == user_data_step_name:
+            if step_name_iter == user_data_step_name:
                 dpg.show_item(group_tag)
-                active_step_name = step_name
-                trigger_specific_module_update(step_name) 
+                active_step_name = step_name_iter
+                trigger_specific_module_update(step_name_iter) # 일반적인 모듈 업데이트 호출
+
+                # EDA 탭으로 처음 전환되거나, SVA가 아직 초기화되지 않았을 때 SVA 자동 실행
+                # if step_name_iter == "2. Exploratory Data Analysis (EDA)" and not _eda_sva_initialized:
+                #     print("EDA tab selected: Triggering initial SVA run.")
+                #     if hasattr(step_02_exploratory_data_analysis, '_apply_sva_filters_and_run'):
+                #         # main_app_callbacks를 통해 EDA 모듈의 함수를 직접 호출
+                #         # 또는 EDA 모듈의 update_ui 함수가 이 초기 실행 로직을 포함하도록 할 수도 있음
+                #         # 여기서는 EDA 모듈의 함수를 직접 호출한다고 가정 (main_callbacks 전달)
+                #         step_02_exploratory_data_analysis._apply_sva_filters_and_run(main_app_callbacks)
+                #         _eda_sva_initialized = True
             else:
                 dpg.hide_item(group_tag)
     print(f"Active step: {active_step_name}")
 
+# 특정 모듈 UI 업데이트 (이전과 동일)
 def trigger_specific_module_update(module_name_key: str):
     if module_name_key in module_ui_updaters:
         updater = module_ui_updaters[module_name_key]
-        updater(current_df, original_df, util_functions_for_modules, loaded_file_path)
+        # updater는 (current_df, main_callbacks) 또는 (current_df, original_df, util_funcs, file_path, main_callbacks) 등
+        # 모듈의 update_ui 시그니처에 맞춰서 호출해야 함.
+        # step_02_exploratory_data_analysis.update_ui는 (current_df, main_callbacks)를 받음
+        if module_name_key == "2. Exploratory Data Analysis (EDA)":
+            updater(current_df, main_app_callbacks) # EDA 모듈의 update_ui 호출 방식
+        else: # 다른 모듈은 기존 방식 (step_01_data_loading 등)
+             updater(current_df, original_df, util_functions_for_modules, loaded_file_path)
         print(f"Module UI updated for: '{module_name_key}'")
     else:
         print(f"Warning: No UI updater found for '{module_name_key}'.")
 
+# 모든 모듈 UI 업데이트 (이전과 동일)
 def trigger_all_module_updates():
+    global _eda_sva_initialized # 모든 모듈 업데이트 시 SVA 초기화 플래그도 리셋 고려
+    # _eda_sva_initialized = False # 데이터가 크게 변경될 수 있으므로 리셋
     print("Updating all module UIs...")
-    for step_name_key in module_ui_updaters.keys():
+    for step_name_key in list(module_ui_updaters.keys()): # 키 리스트 복사 후 반복
         trigger_specific_module_update(step_name_key)
 
+
+# --- 유틸리티 함수 딕셔너리 (이전과 동일) ---
 util_functions_for_modules = {
     'create_table_with_data': utils.create_table_with_data,
     'calculate_column_widths': utils.calculate_column_widths,
@@ -248,6 +253,32 @@ util_functions_for_modules = {
     'get_safe_text_size': utils.get_safe_text_size,
 }
 
+# --- 사용자 지정 분석용 타입 정보 가져오는 함수 ---
+def get_column_analysis_types_from_user_settings():
+    """
+    step_01_data_loading 모듈에서 사용자가 최종 선택한 
+    각 컬럼의 "분석용 타입" 정보를 반환합니다.
+    실제 구현에서는 step_01_data_loading._type_selections를 참조해야 합니다.
+    """
+    if hasattr(step_01_data_loading, '_type_selections') and \
+       isinstance(step_01_data_loading._type_selections, dict):
+        # print(f"DEBUG: Returning analysis types from _type_selections: {step_01_data_loading._type_selections}")
+        return step_01_data_loading._type_selections.copy() 
+    else:
+        print("Warning: User-defined analysis types (_type_selections) not found in step_01_data_loading.")
+        # 타입 편집 전이거나 정보가 없는 경우, 현재 df의 Dtype을 기본으로 사용하거나 빈 dict 반환
+        # EDA 필터에서 dtypes를 fallback으로 사용하도록 유도
+        if current_df is not None:
+            # 임시로 Dtype을 반환 (이상적으로는 step_01에서 타입 편집 완료 후 EDA 진입)
+            # return {col: str(current_df[col].dtype) for col in current_df.columns}
+            # 또는 _infer_series_type을 모든 컬럼에 적용한 결과를 반환할 수도 있으나,
+            # 이는 사용자의 명시적 타입 지정을 무시할 수 있음.
+            # 여기서는 빈 dict를 반환하여, _get_filtered_variables 내부에서 dtypes를 사용하도록 함.
+             return {col: step_02_exploratory_data_analysis._infer_series_type(current_df[col])[0] for col in current_df.columns} # 추론 타입 사용
+        return {}
+
+
+# --- 메인 앱 콜백 딕셔너리 ---
 main_app_callbacks = {
     'get_current_df': lambda: current_df,
     'get_original_df': lambda: original_df,
@@ -256,51 +287,33 @@ main_app_callbacks = {
     'show_file_dialog': lambda: dpg.show_item("file_dialog_id"),
     'register_step_group_tag': lambda name, tag: step_group_tags.update({name: tag}),
     'register_module_updater': lambda name, func: module_ui_updaters.update({name: func}),
-    'trigger_module_update': trigger_specific_module_update,
-    'reset_current_df_to_original': reset_current_df_to_original_data, # 이 부분 추가
-    'trigger_all_module_updates': trigger_all_module_updates, # 모든 모듈 업데이트 트리거 (추가 또는 확인)
+    'trigger_module_update': trigger_specific_module_update, # 특정 모듈 업데이트 요청
+    'reset_current_df_to_original': reset_current_df_to_original_data,
+    'trigger_all_module_updates': trigger_all_module_updates, 
     'get_selected_target_variable': lambda: selected_target_variable,
-    'update_target_variable_combo_items': update_target_variable_combo
+    'update_target_variable_combo_items': update_target_variable_combo,
+    'get_column_analysis_types': get_column_analysis_types_from_user_settings, # 추가된 콜백
 }
 
+
+# --- DPG 초기화 및 실행 ---
 dpg.create_context()
+setup_korean_font() # 폰트 설정
 
-# >>>>> 중요: 여기에 setup_korean_font() 함수 호출 추가 <<<<<
-setup_korean_font()
-# >>>>> 여기까지 <<<<<
-
-
+# File Dialog (이전과 동일)
 with dpg.file_dialog(directory_selector=False, show=False, callback=file_load_callback,
                      id="file_dialog_id", width=700, height=400, modal=True):
-    dpg.add_file_extension(".parquet")
-    dpg.add_file_extension(".*")
+    dpg.add_file_extension(".parquet"); dpg.add_file_extension(".*")
 
+# Main Window (이전과 동일, 타겟 변수 UI 위치 수정 반영)
 with dpg.window(label="Data Analysis Platform", tag="main_window"):
-    # 전체 창을 가로로 나누는 메인 그룹
     with dpg.group(horizontal=True):
-        # --- 수정된 Navigation Panel ---
         with dpg.child_window(width=280, tag="navigation_panel", border=True):
-            # 1. 타겟 변수 선택 섹션 (패널 최상단)
-            dpg.add_text("Target Variable (y):") # 1행: 레이블
-            dpg.add_combo(items=[""], # 초기 아이템은 update_target_variable_combo에서 채워짐
-                          tag=TARGET_VARIABLE_COMBO_TAG, 
-                          width=-1, # 부모 너비에 맞춤
-                          callback=target_variable_selected_callback) # 2행: 드롭다운
-            
-            # (선택 사항) 타겟 변수 클리어 버튼
-            # dpg.add_button(label="Clear Target", width=-1, 
-            #                callback=lambda: (
-            #                    globals().update(selected_target_variable=None), 
-            #                    dpg.set_value(TARGET_VARIABLE_COMBO_TAG, ""), 
-            #                    trigger_all_module_updates()
-            #                ))
-            
-            dpg.add_separator() # 3행: 구분자
-            dpg.add_spacer(height=5) # 구분자와 다음 텍스트 사이 간격
-
-            # 4. 기존 Analysis Steps 섹션
-            dpg.add_text("Analysis Steps", color=[255, 255, 0])
-            dpg.add_separator()
+            dpg.add_text("Target Variable (y):")
+            dpg.add_combo(items=[""], tag=TARGET_VARIABLE_COMBO_TAG, width=-1,
+                          callback=target_variable_selected_callback)
+            dpg.add_separator(); dpg.add_spacer(height=5)
+            dpg.add_text("Analysis Steps", color=[255, 255, 0]); dpg.add_separator()
             for step_name_nav in ANALYSIS_STEPS:
                 dpg.add_button(label=step_name_nav, callback=switch_step_view,
                               user_data=step_name_nav, width=-1, height=30)
@@ -310,32 +323,34 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
                 "1. Data Loading and Overview": step_01_data_loading,
                 "2. Exploratory Data Analysis (EDA)": step_02_exploratory_data_analysis,
             }
-
             for step_name_create in ANALYSIS_STEPS:
                 module = module_map.get(step_name_create)
                 if module and hasattr(module, 'create_ui'):
+                    # EDA 모듈의 create_ui는 main_callbacks만 받도록 시그니처 통일 시도
+                    # 현재 step_02_exploratory_data_analysis.create_ui는 (step_name, parent_tag, main_callbacks)를 받음
                     module.create_ui(step_name_create, "content_area", main_app_callbacks)
                     print(f"UI created for '{step_name_create}'.")
-                else:
+                else: # Fallback
                     fallback_tag = f"{step_name_create.lower().replace(' ', '_').replace('.', '').replace('&', 'and')}_fallback_group"
-                    main_app_callbacks['register_step_group_tag'](step_name_create, fallback_tag)
-                    with dpg.group(tag=fallback_tag, parent="content_area", show=False):
-                        dpg.add_text(f"--- {step_name_create} ---")
-                        dpg.add_separator()
-                        dpg.add_text(f"UI for '{step_name_create}' will be configured here.")
-                    main_app_callbacks['register_module_updater'](step_name_create, lambda *args, **kwargs: None)
+                    if not dpg.does_item_exist(fallback_tag): # 중복 생성 방지
+                        main_app_callbacks['register_step_group_tag'](step_name_create, fallback_tag)
+                        with dpg.group(tag=fallback_tag, parent="content_area", show=False):
+                            dpg.add_text(f"--- {step_name_create} ---"); dpg.add_separator()
+                            dpg.add_text(f"UI for '{step_name_create}' will be configured here.")
+                        main_app_callbacks['register_module_updater'](step_name_create, lambda *args, **kwargs: None)
 
             if ANALYSIS_STEPS:
                 first_step = ANALYSIS_STEPS[0]
-                if first_step in step_group_tags: 
+                # Ensure first step UI is shown after all UIs are created
+                # dpg.split_frame() # <--- 이 줄을 주석 처리하거나 삭제합니다.
+                if first_step in step_group_tags and dpg.does_item_exist(step_group_tags[first_step]):
                      switch_step_view(None, None, first_step)
-                else: 
-                    print(f"Warning: First step '{first_step}' not immediately found in step_group_tags during init. May show after full DPG loop.")
+                else:
+                    print(f"Warning: First step '{first_step}' UI group not found immediately after creation.") #
 
-
-dpg.create_viewport(title='Modular Data Analysis Platform GUI', width=1440, height=1200) # Height corrected from your original 900 to 1200 as per my earlier code, adjust if needed
-dpg.setup_dearpygui()
-dpg.show_viewport()
-dpg.set_primary_window("main_window", True)
-dpg.start_dearpygui()
-dpg.destroy_context()
+dpg.create_viewport(title='Modular Data Analysis Platform GUI', width=1440, height=1200) #
+dpg.setup_dearpygui() #
+dpg.show_viewport() #
+dpg.set_primary_window("main_window", True) #
+dpg.start_dearpygui() #
+dpg.destroy_context() #
