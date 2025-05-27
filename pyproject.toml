@@ -10,6 +10,7 @@ dependencies = [
     "pandas>=2.2.3",
     "pyarrow>=20.0.0",
     "scikit-learn>=1.6.1",
+    "scipy>=1.15.3",
     "setuptools>=80.9.0",
     "ydata-profiling>=4.16.1",
 ]
