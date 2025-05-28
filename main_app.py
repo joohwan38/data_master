@@ -348,8 +348,9 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
                 else:
                     print(f"Warning: First step '{first_step}' UI group not found immediately after creation.") #
 
-dpg.create_viewport(title='Modular Data Analysis Platform GUI', width=1440, height=1200) #
+dpg.create_viewport(title='Modular Data Analysis Platform GUI', width=1440, height=1000) #
 dpg.setup_dearpygui() #
+dpg.maximize_viewport()
 dpg.show_viewport() #
 dpg.set_primary_window("main_window", True) #
 dpg.start_dearpygui() #
