@@ -9,6 +9,8 @@ import step_01_data_loading
 import step_02_exploratory_data_analysis
 import traceback
 
+
+
 current_df: pd.DataFrame = None
 original_df: pd.DataFrame = None
 loaded_file_path: str = None
