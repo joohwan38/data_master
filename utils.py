@@ -64,18 +64,33 @@ def _guess_target_type(df: pd.DataFrame, column_name: str,
     return "Continuous" # 모든 조건 불일치 시 기본값
 
 
-def get_safe_text_size(text: str) -> tuple[float, float]:
-    """Safely gets text size, handling empty strings and non-running DPG."""
-    text_str = str(text)
-    if not text_str:
-        return (0.0, 0.0)
-    
+def get_safe_text_size(text: str, font=None, wrap_width: float = -1.0) -> tuple[int, int]:
+    """
+    텍스트 크기를 안전하게 가져옵니다.
+    DPG가 실행 중이 아니거나 텍스트 크기 측정에 실패할 경우, 기본 추정값을 반환합니다.
+    """
+    # 기본 추정 크기: 글자당 가로 8픽셀, 기본 높이 16픽셀
+    # 실제 폰트와 렌더링 환경에 따라 다를 수 있으므로, 이는 오류 방지를 위한 값입니다.
+    default_width = len(str(text)) * 8
+    default_height = 16
+    default_size = (default_width, default_height)
+
     if not dpg.is_dearpygui_running():
-        # Estimate size when DPG is not running (e.g., during setup)
-        return (len(text_str) * 7.0, 16.0) 
+        return default_size
     
-    size = dpg.get_text_size(text_str)
-    return size if size != (0.0, 0.0) else (len(text_str) * 7.0, 16.0)
+    try:
+        # dpg.get_text_size는 (width, height) 튜플을 반환합니다.
+        size = dpg.get_text_size(text, font=font, wrap_width=wrap_width)
+        
+        # 간혹 size가 None으로 반환될 경우를 대비
+        if size is None or not isinstance(size, (tuple, list)) or len(size) != 2:
+            return default_size
+        
+        # 정수형으로 변환하여 반환
+        return int(size[0]), int(size[1])
+    except Exception:
+        # dpg.get_text_size 호출 중 예외 발생 시 (예: 폰트 문제, 초기화 미완료 등)
+        return default_size
 
 def format_text_for_display(text_val, max_chars=TARGET_DATA_CHARS) -> str:
     """Formats text for display, truncating if necessary."""

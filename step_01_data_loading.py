@@ -3,8 +3,10 @@ import dearpygui.dearpygui as dpg
 import pandas as pd
 import numpy as np
 from collections import Counter
+from typing import Dict, Tuple, Optional, Any, List
+import traceback
 
-# --- 기존 TAG 정의에 새로운 UI 요소들 추가 ---
+# UI 태그 정의
 TAG_DL_GROUP = "step1_data_loading_group"
 TAG_DL_FILE_SUMMARY_TEXT = "step1_file_summary_text"
 TAG_DL_SHAPE_TEXT = "step1_df_summary_shape_text"
@@ -13,37 +15,34 @@ TAG_DL_DESCRIBE_TABLE = "step1_df_summary_describe_table"
 TAG_DL_HEAD_TABLE = "step1_df_summary_head_table"
 TAG_DL_PROCESSED_TABLE = "step1_df_processed_table"
 TAG_DL_OVERVIEW_TAB_BAR = "step1_overview_tab_bar"
-
-# 새로운 UI 요소 태그
 TAG_DL_RESET_BUTTON = "step1_reset_data_button"
 TAG_DL_TYPE_EDITOR_TABLE = "step1_type_editor_table"
 TAG_DL_APPLY_TYPE_CHANGES_BUTTON = "step1_apply_type_changes_button"
 TAG_DL_INFER_TYPES_BUTTON = "step1_infer_types_button"
-
 TAG_DL_CUSTOM_NAN_INPUT = "step1_custom_nan_input"
 TAG_DL_APPLY_CUSTOM_NAN_BUTTON = "step1_apply_custom_nan_button"
 TAG_DL_MISSING_HANDLER_TABLE = "step1_missing_handler_table"
 TAG_DL_APPLY_MISSING_TREATMENTS_BUTTON = "step1_apply_missing_treatments_button"
-TAG_DL_COLUMN_CONFIG_TABLE_GROUP = "dl_column_config_table_group_tag" # 예시 태그 이름
+TAG_DL_COLUMN_CONFIG_TABLE_GROUP = "dl_column_config_table_group_tag"
 
+# 전역 변수 (모듈 내 상태 관리)
+_type_selections: Dict[str, str] = {}
+_imputation_selections: Dict[str, Tuple[str, Optional[str]]] = {}
+_custom_nan_input_value: str = ""
 
-# --- 전역 변수 (모듈 내에서 타입/결측치 선택 상태 임시 저장용) ---
-# 이 값들은 "적용" 버튼 클릭 시 current_df에 반영되고, UI 업데이트 시 다시 로드됩니다.
-_type_selections = {} # {col_name: selected_type_tag}
-_imputation_selections = {} # {col_name: (method_tag, value_tag or None)}
-_custom_nan_input_value = ""
+# 타입 추론 관련 상수
+SENSITIVE_KEYWORDS = ['name', 'email', 'phone', 'ssn', '주민', '전번', '이멜', '이름']
+DATE_FORMATS = [
+    "%Y%m%d", "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y",
+    "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S",
+    "%d-%m-%Y", "%Y%m%d%H%M%S", "%Y.%m.%d"
+]
+TIMEDELTA_KEYWORDS = ["duration", "period", "interval", "lead_time", "경과", "기간"]
 
-
-# --- Helper Functions for Type Inference and Conversion ---
-# step_01_data_loading.py 내의 _infer_series_type 함수 수정
-
-def _infer_series_type(series: pd.Series):
+def _infer_series_type(series: pd.Series) -> Tuple[str, Optional[str], bool]:
     """
-    Pandas Series를 분석하여 데이터 타입을 추론하고, 추가 정보(힌트)와 이진 숫자형 여부를 반환.
-    반환: (추론타입_문자열, 힌트_문자열_또는_None, 이진숫자형_bool)
-    추론타입 종류: "Numeric", "Numeric (Binary)", "Datetime", "Timedelta",
-                   "Categorical", "Categorical (Binary Text)", "Text (ID/Code)", "Text (Long/Free)",
-                   "Potentially Sensitive (Review Needed)", "Unknown", "All Missing"
+    Pandas Series를 분석하여 데이터 타입을 추론
+    Returns: (추론타입, 힌트, 이진숫자형여부)
     """
     if series.empty:
         return "Unknown", None, False
@@ -60,490 +59,700 @@ def _infer_series_type(series: pd.Series):
     current_dtype_kind = series.dtype.kind
     series_name_lower = str(series.name).lower()
 
-    # 0. 민감 정보 패턴 (컬럼명 기반의 매우 간단한 휴리스틱 - 주의 필요!)
-    sensitive_keywords = ['name', 'email', 'phone', 'ssn', ' 주민', ' 전번', ' 이멜', ' 이름']
-    if any(keyword in series_name_lower for keyword in sensitive_keywords):
+    # 민감 정보 체크
+    if any(keyword in series_name_lower for keyword in SENSITIVE_KEYWORDS):
         if series_sample.astype(str).str.contains('@').any():
-             return "Potentially Sensitive (Email?)", "Review for PII", False
+            return "Potentially Sensitive (Email?)", "Review for PII", False
         return "Potentially Sensitive (Name/Phone?)", "Review for PII", False
 
-    # 1. 0/1 값 처리 (기본을 수치형으로) - Boolean 타입 추론 로직은 여기서 제외됨
-    is_binary_numeric_flag = False
-    if current_dtype_kind in 'iuf': 
+    # 이진 숫자 체크
+    is_binary_numeric = False
+    if current_dtype_kind in 'iuf':
         str_unique_values = set(series_valid.astype(str).unique())
-        if str_unique_values == {'0', '1'} or \
-           str_unique_values == {'0.0', '1.0'} or \
-           str_unique_values == {'0.0', '1'} or \
-           str_unique_values == {'0', '1.0'}:
-            is_binary_numeric_flag = True
-            return "Numeric (Binary)", "Can be Categorical", is_binary_numeric_flag
+        binary_sets = [{'0', '1'}, {'0.0', '1.0'}, {'0.0', '1'}, {'0', '1.0'}]
+        if str_unique_values in binary_sets:
+            is_binary_numeric = True
+            return "Numeric (Binary)", "Can be Categorical", is_binary_numeric
 
-    # 2. 현재 Dtype이 이미 숫자(정수, 부동소수점, 복소수)인 경우
+    # 숫자형 체크
     if current_dtype_kind in 'iufc':
-        return "Numeric", None, is_binary_numeric_flag
+        return "Numeric", None, is_binary_numeric
 
-
-    # 3. Dtype이 Object(문자열 등) 또는 다른 타입인 경우
-    # 3-1. 날짜/시간형 시도
+    # 날짜/시간형 체크
     if current_dtype_kind == 'O' or pd.api.types.is_datetime64_any_dtype(series.dtype):
         if pd.api.types.is_datetime64_any_dtype(series.dtype):
-             return "Datetime", "Original Dtype was Datetime", False
+            return "Datetime", "Original Dtype was Datetime", False
 
-        date_formats_to_try = ["%Y%m%d", "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y",
-                               "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S",
-                               "%d-%m-%Y", "%Y%m%d%H%M%S", "%Y.%m.%d"]
-        best_date_format = None
-        max_conversion_rate_date = 0
-        
-        for fmt in date_formats_to_try:
-            try:
-                converted_dates = pd.to_datetime(series_sample, format=fmt, errors='coerce')
-                conversion_rate = converted_dates.notna().sum() / len(series_sample)
-                if conversion_rate > max_conversion_rate_date and conversion_rate > 0.85:
-                    max_conversion_rate_date = conversion_rate
-                    best_date_format = fmt
-            except (ValueError, TypeError):
-                continue
+        # 날짜 형식 추론
+        best_date_format, max_conversion_rate = _find_best_date_format(series_sample)
         if best_date_format:
             return "Datetime", f"Format ~{best_date_format}", False
 
-    # 3-2. Timedelta 시도
-    if current_dtype_kind in 'iuf' or current_dtype_kind == 'O':
-        try:
-            if current_dtype_kind == 'O':
-                converted_td_sample = pd.to_timedelta(series_sample, errors='coerce')
-                if converted_td_sample.notna().sum() / len(series_sample) > 0.8:
-                    return "Timedelta", "From Text", False
-            timedelta_keywords = ["duration", "period", "interval", "lead_time", "경과", "기간"]
-            if any(keyword in series_name_lower for keyword in timedelta_keywords) and current_dtype_kind in 'iuf':
-                return "Timedelta", "From Numeric (unit needed)", False
-        except Exception:
-            pass
+    # Timedelta 체크
+    if _check_timedelta_type(series, series_sample, series_name_lower, current_dtype_kind):
+        return "Timedelta", "From Numeric (unit needed)" if current_dtype_kind in 'iuf' else "From Text", False
 
-    # 3-3. Object 타입의 숫자 변환 시도
+    # Object 타입의 숫자 변환 시도
     if current_dtype_kind == 'O':
+        numeric_type, is_binary = _check_numeric_conversion(series_sample)
+        if numeric_type:
+            return numeric_type, None, is_binary
+
+    # 범주형 또는 텍스트형 판단
+    return _classify_categorical_or_text(series_valid)
+
+def _find_best_date_format(series_sample: pd.Series) -> Tuple[Optional[str], float]:
+    """날짜 형식 찾기"""
+    best_format = None
+    max_conversion_rate = 0
+    
+    for fmt in DATE_FORMATS:
         try:
-            numeric_converted_sample = pd.to_numeric(series_sample.astype(str), errors='coerce')
-            conversion_rate_numeric = numeric_converted_sample.notna().sum() / len(series_sample)
-            if conversion_rate_numeric > 0.95:
-                unique_vals_after_conversion = numeric_converted_sample.dropna().unique()
-                str_unique_vals_after_conversion = set(map(str, unique_vals_after_conversion))
-                if str_unique_vals_after_conversion == {'0', '1'} or \
-                   str_unique_vals_after_conversion == {'0.0', '1.0'} or \
-                   str_unique_vals_after_conversion == {'0.0', '1'} or \
-                   str_unique_vals_after_conversion == {'0', '1.0'}:
-                    is_binary_numeric_flag = True # 이 플래그는 Numeric (Binary from Text)에만 해당
-                    return "Numeric (Binary from Text)", "Can be Categorical", is_binary_numeric_flag
-                return "Numeric (from Text)", None, False # 일반 숫자 변환은 is_binary_numeric_flag가 False
-        except Exception:
-            pass
+            converted_dates = pd.to_datetime(series_sample, format=fmt, errors='coerce')
+            conversion_rate = converted_dates.notna().sum() / len(series_sample)
+            if conversion_rate > max_conversion_rate and conversion_rate > 0.85:
+                max_conversion_rate = conversion_rate
+                best_format = fmt
+        except (ValueError, TypeError):
+            continue
+    
+    return best_format, max_conversion_rate
 
-    # 4. 범주형 또는 텍스트형으로 최종 판단
-    num_unique_values = series_valid.nunique()
-    len_valid_series = len(series_valid)
-    avg_str_len = series_valid.astype(str).str.len().mean() if len_valid_series > 0 else 0
+def _check_timedelta_type(series: pd.Series, series_sample: pd.Series, 
+                         series_name_lower: str, dtype_kind: str) -> bool:
+    """Timedelta 타입 체크"""
+    try:
+        if dtype_kind == 'O':
+            converted_td = pd.to_timedelta(series_sample, errors='coerce')
+            if converted_td.notna().sum() / len(series_sample) > 0.8:
+                return True
+        if any(keyword in series_name_lower for keyword in TIMEDELTA_KEYWORDS) and dtype_kind in 'iuf':
+            return True
+    except Exception:
+        pass
+    return False
 
-    # 이진값 텍스트 (예: "A", "B" 또는 "True", "False" 문자열 - Boolean 타입 추론이 제거되었으므로 여기서 처리)
-    if num_unique_values == 2:
+def _check_numeric_conversion(series_sample: pd.Series) -> Tuple[Optional[str], bool]:
+    """Object 타입의 숫자 변환 체크"""
+    try:
+        numeric_converted = pd.to_numeric(series_sample.astype(str), errors='coerce')
+        conversion_rate = numeric_converted.notna().sum() / len(series_sample)
+        if conversion_rate > 0.95:
+            unique_vals = set(map(str, numeric_converted.dropna().unique()))
+            binary_sets = [{'0', '1'}, {'0.0', '1.0'}, {'0.0', '1'}, {'0', '1.0'}]
+            if unique_vals in binary_sets:
+                return "Numeric (Binary from Text)", True
+            return "Numeric (from Text)", False
+    except Exception:
+        pass
+    return None, False
+
+def _classify_categorical_or_text(series_valid: pd.Series) -> Tuple[str, Optional[str], bool]:
+    """범주형 또는 텍스트형 분류"""
+    num_unique = series_valid.nunique()
+    len_valid = len(series_valid)
+    avg_str_len = series_valid.astype(str).str.len().mean() if len_valid > 0 else 0
+
+    if num_unique == 2:
         return "Categorical (Binary Text)", None, False
-
-    if num_unique_values / len_valid_series > 0.8 and num_unique_values > 1000 and avg_str_len < 50:
+    
+    if num_unique / len_valid > 0.8 and num_unique > 1000 and avg_str_len < 50:
         return "Text (ID/Code)", None, False
     
-    if num_unique_values < max(30, len_valid_series * 0.05):
+    if num_unique < max(30, len_valid * 0.05):
         return "Categorical", None, False
     
-    if avg_str_len > 100 :
+    if avg_str_len > 100:
         return "Text (Long/Free)", None, False
-        
+    
     return "Text (General)", None, False
 
-
 def _apply_type_changes(main_callbacks: dict):
-    current_df = main_callbacks['get_current_df']()
-    if current_df is None: return
+    """타입 변경 적용"""
+    df = main_callbacks['get_df_after_step1']()
+    if df is None:
+        df = main_callbacks['get_original_df']()
+    if df is None:
+        return
+    
+    df = df.copy()
     print("Applying type changes...")
-
-    for col_name, new_type_info in _type_selections.items():
-        if col_name not in current_df.columns: continue
-        
-        original_series = current_df[col_name].copy()
-        new_type_str = new_type_info
+    
+    for col_name, new_type in _type_selections.items():
+        if col_name not in df.columns:
+            continue
         
         try:
-            print(f" Column '{col_name}': Changing type to '{new_type_str}'...")
-            if new_type_str == "Numeric (int)":
-                current_df[col_name] = pd.to_numeric(current_df[col_name], errors='coerce').astype('Int64')
-            elif new_type_str == "Numeric (float)":
-                current_df[col_name] = pd.to_numeric(current_df[col_name], errors='coerce').astype(float)
-            elif new_type_str == "Categorical" or new_type_str.startswith("Categorical ("):
-                current_df[col_name] = current_df[col_name].astype('category')
-            # Boolean 타입 변환 로직 제거됨
-            elif new_type_str.startswith("Datetime"):
-                current_df[col_name] = pd.to_datetime(current_df[col_name], errors='coerce')
-            elif new_type_str.startswith("Timedelta"):
-                current_df[col_name] = pd.to_timedelta(current_df[col_name], errors='coerce')
-            elif new_type_str.startswith("Text (") or new_type_str == "Original Text":
-                current_df[col_name] = current_df[col_name].astype(pd.StringDtype())
-            elif new_type_str == "Original":
-                original_dtype = main_callbacks['get_original_df']()[col_name].dtype
-                current_df[col_name] = current_df[col_name].astype(original_dtype)
-            elif new_type_str == "Potentially Sensitive (Review Needed)" or new_type_str.startswith("Potentially Sensitive ("):
-                print(f" Column '{col_name}' marked as Potentially Sensitive. No type change applied by default. Convert to Text (string) if needed for masking.")
-                if current_df[col_name].dtype == 'object':
-                     current_df[col_name] = current_df[col_name].astype(pd.StringDtype())
-
-            print(f" Column '{col_name}' type change successful. New Dtype: {current_df[col_name].dtype}, Missing: {current_df[col_name].isnull().sum()}")
+            print(f"  Converting '{col_name}' to '{new_type}'...")
+            df[col_name] = _convert_column_type(df[col_name], new_type, 
+                                               main_callbacks['get_original_df']())
+            print(f"  Success. New dtype: {df[col_name].dtype}")
         except Exception as e:
-            print(f"Error changing type for column '{col_name}' to '{new_type_str}': {e}. Reverting to original series for this column.")
-            current_df[col_name] = original_series
-            import traceback
+            print(f"  Error converting '{col_name}': {e}")
             traceback.print_exc()
+    
+    # 변경사항을 main_app에 알림
+    main_callbacks['step1_processing_complete'](df)
+    print("Type changes applied.")
 
-    main_callbacks['trigger_all_module_updates']()
-    print("Type changes application process finished.")
-
+def _convert_column_type(series: pd.Series, new_type: str, original_df: pd.DataFrame) -> pd.Series:
+    """컬럼 타입 변환"""
+    if new_type == "Numeric (int)":
+        return pd.to_numeric(series, errors='coerce').astype('Int64')
+    elif new_type == "Numeric (float)":
+        return pd.to_numeric(series, errors='coerce').astype(float)
+    elif new_type == "Categorical" or new_type.startswith("Categorical ("):
+        return series.astype('category')
+    elif new_type.startswith("Datetime"):
+        return pd.to_datetime(series, errors='coerce')
+    elif new_type.startswith("Timedelta"):
+        return pd.to_timedelta(series, errors='coerce')
+    elif new_type.startswith("Text (") or new_type == "Original Text":
+        return series.astype(pd.StringDtype())
+    elif new_type == "Original":
+        if series.name in original_df.columns:
+            return series.astype(original_df[series.name].dtype)
+    elif new_type.startswith("Potentially Sensitive"):
+        if series.dtype == 'object':
+            return series.astype(pd.StringDtype())
+    
+    return series
 
 def _apply_custom_nans(main_callbacks: dict, custom_nan_str: str):
-    """사용자가 입력한 문자열들을 NaN으로 변환합니다."""
-    current_df = main_callbacks['get_current_df']()
-    if current_df is None:
-        print("데이터가 로드되지 않아 Custom NaN을 적용할 수 없습니다.")
+    """사용자 정의 NaN 값 적용"""
+    df = main_callbacks['get_df_after_step1']()
+    if df is None:
+        df = main_callbacks['get_original_df']()
+    if df is None:
+        print("No data loaded to apply custom NaN.")
         return
     
     if not custom_nan_str.strip():
-        print("Custom NaN으로 처리할 문자열이 입력되지 않았습니다.")
+        print("No custom NaN values specified.")
         return
-
-    nan_values_to_replace = [s.strip() for s in custom_nan_str.split(',')]
-    print(f"Custom NaN 적용 시작: {nan_values_to_replace}")
     
-    for col in current_df.columns:
-        # object 타입 컬럼에 대해서만 문자열 대체를 시도 (숫자형 컬럼은 숫자형 결측값으로 처리)
-        if current_df[col].dtype == 'object':
-            current_df[col].replace(nan_values_to_replace, np.nan, inplace=True)
+    df = df.copy()
+    nan_values = [s.strip() for s in custom_nan_str.split(',')]
+    print(f"Applying custom NaN values: {nan_values}")
     
-    main_callbacks['trigger_all_module_updates']()
-    print("Custom NaN 적용 완료.")
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col].replace(nan_values, np.nan, inplace=True)
+    
+    main_callbacks['step1_processing_complete'](df)
+    print("Custom NaN values applied.")
 
-def _apply_missing_value_treatments(main_callbacks:dict):
-    """_imputation_selections에 저장된 사용자 선택 결측치 처리 방법을 current_df에 적용합니다."""
-    current_df = main_callbacks['get_current_df']()
-    if current_df is None:
-        print("데이터가 로드되지 않아 결측치 처리를 적용할 수 없습니다.")
+def _apply_missing_value_treatments(main_callbacks: dict):
+    """결측치 처리 적용"""
+    df = main_callbacks['get_df_after_step1']()
+    if df is None:
+        df = main_callbacks['get_original_df']()
+    if df is None:
+        print("No data loaded for missing value treatment.")
         return
-
-    print("결측치 처리 적용 시작...")
-    for col_name, selection in _imputation_selections.items():
-        if col_name not in current_df.columns or not selection:
+    
+    df = df.copy()
+    print("Applying missing value treatments...")
+    
+    for col_name, (method, fill_value_str) in _imputation_selections.items():
+        if col_name not in df.columns:
             continue
-
-        method, fill_value_str = selection # method는 태그값, fill_value_str는 입력된 문자열
         
         try:
-            print(f" 컬럼 '{col_name}' 결측치 처리 시도 (방법: {method})...")
-            if method == "drop_rows":
-                current_df.dropna(subset=[col_name], inplace=True)
-            elif method == "fill_mean":
-                if pd.api.types.is_numeric_dtype(current_df[col_name]):
-                    current_df[col_name].fillna(current_df[col_name].mean(), inplace=True)
-            elif method == "fill_median":
-                if pd.api.types.is_numeric_dtype(current_df[col_name]):
-                    current_df[col_name].fillna(current_df[col_name].median(), inplace=True)
-            elif method == "fill_mode":
-                current_df[col_name].fillna(current_df[col_name].mode().iloc[0] if not current_df[col_name].mode().empty else np.nan, inplace=True)
-            elif method == "fill_custom":
-                # fill_value_str을 해당 컬럼 타입에 맞게 변환 시도 필요
-                try:
-                    # TODO: 컬럼 타입에 따른 적절한 변환 로직 필요
-                    converted_value = float(fill_value_str) # 임시로 float 변환
-                    current_df[col_name].fillna(converted_value, inplace=True)
-                except ValueError:
-                    current_df[col_name].fillna(fill_value_str, inplace=True) # 문자열로 채우기
-            elif method == "as_category_missing":
-                if pd.api.types.is_categorical_dtype(current_df[col_name]):
-                    if "Missing" not in current_df[col_name].cat.categories:
-                        current_df[col_name] = current_df[col_name].cat.add_categories("Missing")
-                else: # 범주형이 아니면 먼저 범주형으로 변환
-                    current_df[col_name] = current_df[col_name].astype('category')
-                    if "Missing" not in current_df[col_name].cat.categories:
-                         current_df[col_name] = current_df[col_name].cat.add_categories("Missing")
-                current_df[col_name].fillna("Missing", inplace=True)
-            print(f" 컬럼 '{col_name}' 결측치 처리 완료.")
+            print(f"  Treating '{col_name}' with method: {method}")
+            df = _apply_imputation_method(df, col_name, method, fill_value_str)
+            print(f"  Treatment completed for '{col_name}'")
         except Exception as e:
-            print(f"오류: 컬럼 '{col_name}' 결측치 처리 중 오류: {e}")
+            print(f"  Error treating '{col_name}': {e}")
+            traceback.print_exc()
     
-    _imputation_selections.clear() # 적용 후 선택 초기화
-    main_callbacks['trigger_all_module_updates']()
-    print("결측치 처리 적용 완료.")
+    _imputation_selections.clear()
+    main_callbacks['step1_processing_complete'](df)
+    print("Missing value treatments applied.")
 
-# --- Main UI Creation and Update Functions ---
+def _apply_imputation_method(df: pd.DataFrame, col_name: str, 
+                            method: str, fill_value_str: str) -> pd.DataFrame:
+    """개별 결측치 처리 방법 적용"""
+    if method == "drop_rows":
+        return df.dropna(subset=[col_name])
+    elif method == "fill_mean" and pd.api.types.is_numeric_dtype(df[col_name]):
+        df[col_name].fillna(df[col_name].mean(), inplace=True)
+    elif method == "fill_median" and pd.api.types.is_numeric_dtype(df[col_name]):
+        df[col_name].fillna(df[col_name].median(), inplace=True)
+    elif method == "fill_mode":
+        mode_val = df[col_name].mode().iloc[0] if not df[col_name].mode().empty else np.nan
+        df[col_name].fillna(mode_val, inplace=True)
+    elif method == "fill_custom" and fill_value_str:
+        try:
+            # 타입에 맞게 변환 시도
+            if pd.api.types.is_numeric_dtype(df[col_name]):
+                converted_value = float(fill_value_str)
+            else:
+                converted_value = fill_value_str
+            df[col_name].fillna(converted_value, inplace=True)
+        except ValueError:
+            df[col_name].fillna(fill_value_str, inplace=True)
+    elif method == "as_category_missing":
+        if not pd.api.types.is_categorical_dtype(df[col_name]):
+            df[col_name] = df[col_name].astype('category')
+        if "Missing" not in df[col_name].cat.categories:
+            df[col_name] = df[col_name].cat.add_categories("Missing")
+        df[col_name].fillna("Missing", inplace=True)
+    
+    return df
+
 def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
-    """기존 UI 생성 함수 확장: 데이터 타입 편집 및 결측치 처리 탭 추가."""
+    """UI 생성"""
     main_callbacks['register_step_group_tag'](step_name, TAG_DL_GROUP)
     
     with dpg.group(tag=TAG_DL_GROUP, parent=parent_container_tag, show=False):
         dpg.add_text(f"--- {step_name} ---")
         dpg.add_separator()
         
+        # 파일 로드 버튼
         with dpg.group(horizontal=True):
-            dpg.add_button(label="Open Parquet File", callback=main_callbacks['show_file_dialog'])
-            dpg.add_button(label="Reset to Original Data", tag=TAG_DL_RESET_BUTTON,
-                           callback=lambda: (
-                               main_callbacks['reset_current_df_to_original'](), # main_app.py에 이 함수 필요
-                               main_callbacks['trigger_all_module_updates']()
-                           ))
+            dpg.add_button(label="Open Parquet File", 
+                          callback=main_callbacks['show_file_dialog'])
+            dpg.add_button(label="Reset to Original Data", 
+                          tag=TAG_DL_RESET_BUTTON,
+                          callback=lambda: main_callbacks['reset_current_df_to_original']())
+        
         dpg.add_text("No data loaded.", tag=TAG_DL_FILE_SUMMARY_TEXT, wrap=700)
         dpg.add_spacer(height=10)
         
         dpg.add_text("--- Data Details & Preprocessing ---")
         dpg.add_separator()
         
+        # 탭 구성
         with dpg.tab_bar(tag=TAG_DL_OVERVIEW_TAB_BAR):
-            # --- 1. 원본 데이터 탭 (기존 내용 유지) ---
-            with dpg.tab(label="Data Summary"):
-                dpg.add_button(label="Refresh DataFrame Info", width=-1, height=30,
-                               callback=lambda: main_callbacks['trigger_module_update'](step_name))
-                dpg.add_text("Shape: N/A (No data)", tag=TAG_DL_SHAPE_TEXT)
-                dpg.add_separator()
-                dpg.add_text("Column Info (Type, Missing, Unique):")
-                with dpg.table(header_row=True, resizable=True, policy=dpg.mvTable_SizingFixedFit,
-                               borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True,
-                               tag=TAG_DL_INFO_TABLE, scrollX=True, scrollY=True, height=200, freeze_columns=0): pass
-                dpg.add_separator()
-                dpg.add_text("Descriptive Statistics (Numeric Columns):")
-                with dpg.table(header_row=True, resizable=True, policy=dpg.mvTable_SizingFixedFit,
-                               borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True,
-                               tag=TAG_DL_DESCRIBE_TABLE, scrollX=True, scrollY=True, height=200, freeze_columns=0): pass
-                dpg.add_separator()
-                dpg.add_text("Data Head (First 5 Rows):")
-                with dpg.table(header_row=True, resizable=True, policy=dpg.mvTable_SizingFixedFit,
-                               borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True,
-                               tag=TAG_DL_HEAD_TABLE, scrollX=True, scrollY=True, height=150, freeze_columns=0): pass
-            
-            # --- 2. 변수 타입 편집 탭 ---
-            with dpg.tab(label="Variable Type Editor"):
-                dpg.add_text("Infer and set data types for analysis.")
-                with dpg.group(horizontal=True):
-                    dpg.add_button(label="Infer All Types (Rule-based)", tag=TAG_DL_INFER_TYPES_BUTTON,
-                                   callback=lambda: _populate_type_editor_table(main_callbacks, infer_all=True))
-                    dpg.add_button(label="Apply Type Changes", tag=TAG_DL_APPLY_TYPE_CHANGES_BUTTON,
-                                   callback=lambda: _apply_type_changes(main_callbacks))
-                with dpg.table(header_row=True, resizable=True, policy=dpg.mvTable_SizingFixedFit,
-                               tag=TAG_DL_TYPE_EDITOR_TABLE, scrollX=True, scrollY=True, height=400,
-                               borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
-                    # 헤더는 _populate_type_editor_table 에서 동적으로 추가
-                    pass
-
-            # --- 3. 결측값 처리 탭 ---
-            with dpg.tab(label="Missing Value Handler"):
-                dpg.add_text("Define and handle missing values.")
-                with dpg.group(horizontal=True):
-                    global _custom_nan_input_value # dpg.add_input_text 콜백에서 사용하기 위함
-                    dpg.add_text("Custom NaN strings (comma-separated):")
-                    dpg.add_input_text(tag=TAG_DL_CUSTOM_NAN_INPUT, width=300, default_value=_custom_nan_input_value,
-                                       callback=lambda sender, app_data: globals().update(_custom_nan_input_value=app_data))
-                    dpg.add_button(label="Convert Custom NaNs to np.nan", tag=TAG_DL_APPLY_CUSTOM_NAN_BUTTON,
-                                   callback=lambda: _apply_custom_nans(main_callbacks, _custom_nan_input_value))
-                
-                dpg.add_button(label="Apply Selected Missing Value Treatments", tag=TAG_DL_APPLY_MISSING_TREATMENTS_BUTTON,
-                               callback=lambda: _apply_missing_value_treatments(main_callbacks))
-                with dpg.table(header_row=True, resizable=True, policy=dpg.mvTable_SizingFixedFit,
-                               tag=TAG_DL_MISSING_HANDLER_TABLE, scrollX=True, scrollY=True, height=400,
-                               borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
-                    # 헤더는 _populate_missing_handler_table 에서 동적으로 추가
-                    pass
-
+            _create_data_summary_tab()
+            _create_type_editor_tab(main_callbacks)
+            _create_missing_value_handler_tab(main_callbacks)
+    
     main_callbacks['register_module_updater'](step_name, update_ui)
-    update_ui(main_callbacks['get_current_df'](), 
-              main_callbacks['get_original_df'](), 
-              main_callbacks['get_util_funcs'](),
-              main_callbacks['get_loaded_file_path']())
 
+def _create_data_summary_tab():
+    """데이터 요약 탭 생성"""
+    with dpg.tab(label="Data Summary"):
+        dpg.add_button(label="Refresh DataFrame Info", width=-1, height=30,
+                      callback=lambda: trigger_update())
+        dpg.add_text("Shape: N/A (No data)", tag=TAG_DL_SHAPE_TEXT)
+        dpg.add_separator()
+        
+        dpg.add_text("Column Info (Type, Missing, Unique):")
+        with dpg.table(header_row=True, resizable=True, 
+                      policy=dpg.mvTable_SizingFixedFit,
+                      borders_outerH=True, borders_innerV=True, 
+                      borders_innerH=True, borders_outerV=True,
+                      tag=TAG_DL_INFO_TABLE, scrollX=True, 
+                      scrollY=True, height=200, freeze_columns=0):
+            pass
+        
+        dpg.add_separator()
+        dpg.add_text("Descriptive Statistics (Numeric Columns):")
+        with dpg.table(header_row=True, resizable=True, 
+                      policy=dpg.mvTable_SizingFixedFit,
+                      borders_outerH=True, borders_innerV=True, 
+                      borders_innerH=True, borders_outerV=True,
+                      tag=TAG_DL_DESCRIBE_TABLE, scrollX=True, 
+                      scrollY=True, height=200, freeze_columns=0):
+            pass
+        
+        dpg.add_separator()
+        dpg.add_text("Data Head (First 5 Rows):")
+        with dpg.table(header_row=True, resizable=True, 
+                      policy=dpg.mvTable_SizingFixedFit,
+                      borders_outerH=True, borders_innerV=True, 
+                      borders_innerH=True, borders_outerV=True,
+                      tag=TAG_DL_HEAD_TABLE, scrollX=True, 
+                      scrollY=True, height=150, freeze_columns=0):
+            pass
 
-def _populate_type_editor_table(main_callbacks: dict, infer_all=False):
-    """변수 타입 편집 테이블을 데이터프레임 정보로 채웁니다."""
+def _create_type_editor_tab(main_callbacks: dict):
+    """타입 편집 탭 생성"""
+    with dpg.tab(label="Variable Type Editor"):
+        dpg.add_text("Infer and set data types for analysis.")
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Infer All Types (Rule-based)", 
+                          tag=TAG_DL_INFER_TYPES_BUTTON,
+                          callback=lambda: _populate_type_editor_table(main_callbacks, infer_all=True))
+            dpg.add_button(label="Apply Type Changes", 
+                          tag=TAG_DL_APPLY_TYPE_CHANGES_BUTTON,
+                          callback=lambda: _apply_type_changes(main_callbacks))
+        
+        with dpg.table(header_row=True, resizable=True, 
+                      policy=dpg.mvTable_SizingFixedFit,
+                      tag=TAG_DL_TYPE_EDITOR_TABLE, scrollX=True, 
+                      scrollY=True, height=400,
+                      borders_outerH=True, borders_innerV=True, 
+                      borders_innerH=True, borders_outerV=True):
+            pass
+
+def _create_missing_value_handler_tab(main_callbacks: dict):
+    """결측값 처리 탭 생성"""
+    with dpg.tab(label="Missing Value Handler"):
+        dpg.add_text("Define and handle missing values.")
+        
+        with dpg.group(horizontal=True):
+            global _custom_nan_input_value
+            dpg.add_text("Custom NaN strings (comma-separated):")
+            dpg.add_input_text(tag=TAG_DL_CUSTOM_NAN_INPUT, width=300, 
+                             default_value=_custom_nan_input_value,
+                             callback=lambda s, a: globals().update(_custom_nan_input_value=a))
+            dpg.add_button(label="Convert to NaN", 
+                          tag=TAG_DL_APPLY_CUSTOM_NAN_BUTTON,
+                          callback=lambda: _apply_custom_nans(main_callbacks, _custom_nan_input_value))
+        
+        dpg.add_button(label="Apply Missing Value Treatments", 
+                      tag=TAG_DL_APPLY_MISSING_TREATMENTS_BUTTON,
+                      callback=lambda: _apply_missing_value_treatments(main_callbacks))
+        
+        with dpg.table(header_row=True, resizable=True, 
+                      policy=dpg.mvTable_SizingFixedFit,
+                      tag=TAG_DL_MISSING_HANDLER_TABLE, scrollX=True, 
+                      scrollY=True, height=400,
+                      borders_outerH=True, borders_innerV=True, 
+                      borders_innerH=True, borders_outerV=True):
+            pass
+
+def _populate_type_editor_table(main_callbacks: dict, infer_all: bool = False):
+    """타입 편집 테이블 채우기"""
     global _type_selections
-    current_df = main_callbacks['get_current_df']()
+    
+    df = main_callbacks['get_original_df']()
     util_funcs = main_callbacks['get_util_funcs']()
     
-    if not dpg.does_item_exist(TAG_DL_TYPE_EDITOR_TABLE): return
+    if not dpg.does_item_exist(TAG_DL_TYPE_EDITOR_TABLE):
+        return
+    
     dpg.delete_item(TAG_DL_TYPE_EDITOR_TABLE, children_only=True)
-
-    if current_df is None:
+    
+    if df is None:
         dpg.add_table_column(label="Info", parent=TAG_DL_TYPE_EDITOR_TABLE)
         with dpg.table_row(parent=TAG_DL_TYPE_EDITOR_TABLE):
             dpg.add_text("Load data to edit types.")
         return
-
-    dpg.add_table_column(label="Column Name", parent=TAG_DL_TYPE_EDITOR_TABLE)
-    dpg.add_table_column(label="Original Dtype", parent=TAG_DL_TYPE_EDITOR_TABLE)
-    dpg.add_table_column(label="Inferred Type", parent=TAG_DL_TYPE_EDITOR_TABLE)
-    dpg.add_table_column(label="Selected Type", parent=TAG_DL_TYPE_EDITOR_TABLE, width=200)
-    dpg.add_table_column(label="Unique Count", parent=TAG_DL_TYPE_EDITOR_TABLE)
-    dpg.add_table_column(label="Sample Values", parent=TAG_DL_TYPE_EDITOR_TABLE, width=300)
-
-    available_types = ["Original", "Numeric (int)", "Numeric (float)", 
-                       "Categorical", # "Categorical (Ordered)"는 UI 지원 시 추가
-                       "Datetime", "Timedelta", 
-                       "Text (ID/Code)", "Text (Long/Free)", "Text (General)", # pd.StringDtype()으로 통합 가능
-                       "Potentially Sensitive (Review Needed)"]
-
-    for col_name in current_df.columns:
+    
+    # 테이블 헤더
+    columns = ["Column Name", "Original Dtype", "Inferred Type", 
+              "Selected Type", "Unique Count", "Sample Values"]
+    for col in columns:
+        dpg.add_table_column(label=col, parent=TAG_DL_TYPE_EDITOR_TABLE)
+    
+    available_types = [
+        "Original", "Numeric (int)", "Numeric (float)",
+        "Categorical", "Datetime", "Timedelta",
+        "Text (ID/Code)", "Text (Long/Free)", "Text (General)",
+        "Potentially Sensitive (Review Needed)"
+    ]
+    
+    # 각 컬럼에 대한 행 생성
+    for col_name in df.columns:
         with dpg.table_row(parent=TAG_DL_TYPE_EDITOR_TABLE):
+            # 컬럼명
             dpg.add_text(util_funcs['format_text_for_display'](col_name, max_chars=30))
-            dpg.add_text(str(current_df[col_name].dtype))
             
-            # _infer_series_type는 이제 3개의 값을 반환합니다.
-            inferred_type_str, inferred_hint, is_col_binary_numeric = _infer_series_type(current_df[col_name])
+            # 원본 dtype
+            dpg.add_text(str(df[col_name].dtype))
             
-            inferred_type_display = inferred_type_str
-            if inferred_hint: 
-                inferred_type_display = f"{inferred_type_str} ({inferred_hint})"
-            dpg.add_text(inferred_type_display)
-
-            current_selection = _type_selections.get(col_name)
-            if infer_all and not current_selection: 
-                if inferred_type_str.startswith("Numeric"):
-                    current_selection = "Numeric (int)" if is_col_binary_numeric else "Numeric (float)" 
-                elif inferred_type_str == "Datetime":
-                    current_selection = "Datetime"
-                elif inferred_type_str.startswith("Categorical"): # "Categorical", "Categorical (Binary Text)" 등
-                    current_selection = "Categorical" # 대표 타입으로 설정
-                # Boolean 관련 로직은 이미 _infer_series_type에서 Numeric(Binary) 등으로 처리되므로 별도 조건 불필요
-                elif inferred_type_str.startswith("Text (ID/Code)"):
-                    current_selection = "Text (ID/Code)"
-                elif inferred_type_str.startswith("Text (Long/Free)"):
-                    current_selection = "Text (Long/Free)"
-                elif inferred_type_str.startswith("Text"): # "Text (General)" 등
-                    current_selection = "Text (General)"
-                elif inferred_type_str.startswith("Timedelta"):
-                    current_selection = "Timedelta"
-                elif inferred_type_str.startswith("Potentially Sensitive"):
-                    current_selection = "Potentially Sensitive (Review Needed)"
-                else: # Unknown, All Missing 등
-                    current_selection = "Original" # 기본값으로 Original 또는 Text (General) 고려
+            # 추론된 타입
+            inferred_type, hint, is_binary = _infer_series_type(df[col_name])
+            display_text = f"{inferred_type} ({hint})" if hint else inferred_type
+            dpg.add_text(display_text)
+            
+            # 타입 선택 콤보박스
+            current_selection = _type_selections.get(col_name, "Original")
+            if infer_all and col_name not in _type_selections:
+                current_selection = _map_inferred_to_available_type(
+                    inferred_type, is_binary
+                )
                 _type_selections[col_name] = current_selection
-            elif not current_selection:
-                 current_selection = "Original"
-
-            combo_tag = f"type_combo_{col_name}"
-            dpg.add_combo(items=available_types, default_value=current_selection, tag=combo_tag, width=-1,
-                          user_data=col_name, callback=lambda sender, app_data, user_data: _type_selections.update({user_data: app_data}))
             
-            dpg.add_text(str(current_df[col_name].nunique()))
-            sample_vals = current_df[col_name].dropna().head(3).astype(str).tolist()
-            dpg.add_text(util_funcs['format_text_for_display'](", ".join(sample_vals), max_chars=50))
+            combo_tag = f"type_combo_{col_name}"
+            dpg.add_combo(items=available_types, default_value=current_selection, 
+                         tag=combo_tag, width=-1, user_data=col_name,
+                         callback=lambda s, a, u: _type_selections.update({u: a}))
+            
+            # 고유값 수
+            dpg.add_text(str(df[col_name].nunique()))
+            
+            # 샘플 값
+            sample_vals = df[col_name].dropna().head(3).astype(str).tolist()
+            dpg.add_text(util_funcs['format_text_for_display'](
+                ", ".join(sample_vals), max_chars=50
+            ))
 
+def _map_inferred_to_available_type(inferred_type: str, is_binary: bool) -> str:
+    """추론된 타입을 사용 가능한 타입으로 매핑"""
+    if inferred_type.startswith("Numeric"):
+        if is_binary or "Binary" in inferred_type:
+            return "Numeric (int)"
+        return "Numeric (float)"
+    elif inferred_type == "Datetime":
+        return "Datetime"
+    elif inferred_type.startswith("Categorical"):
+        return "Categorical"
+    elif inferred_type == "Text (ID/Code)":
+        return "Text (ID/Code)"
+    elif inferred_type == "Text (Long/Free)":
+        return "Text (Long/Free)"
+    elif inferred_type.startswith("Text"):
+        return "Text (General)"
+    elif inferred_type == "Timedelta":
+        return "Timedelta"
+    elif inferred_type.startswith("Potentially Sensitive"):
+        return "Potentially Sensitive (Review Needed)"
+    else:
+        return "Original"
 
 def _populate_missing_handler_table(main_callbacks: dict):
-    """결측값 처리 테이블을 데이터프레임 정보로 채웁니다."""
+    """결측값 처리 테이블 채우기"""
     global _imputation_selections
-    current_df = main_callbacks['get_current_df']()
+    
+    df = main_callbacks['get_original_df']()
+    if main_callbacks['get_df_after_step1']() is not None:
+        df = main_callbacks['get_df_after_step1']()
+    
     util_funcs = main_callbacks['get_util_funcs']()
-
-    if not dpg.does_item_exist(TAG_DL_MISSING_HANDLER_TABLE): return
+    
+    if not dpg.does_item_exist(TAG_DL_MISSING_HANDLER_TABLE):
+        return
+    
     dpg.delete_item(TAG_DL_MISSING_HANDLER_TABLE, children_only=True)
-
-    if current_df is None:
+    
+    if df is None:
         dpg.add_table_column(label="Info", parent=TAG_DL_MISSING_HANDLER_TABLE)
         with dpg.table_row(parent=TAG_DL_MISSING_HANDLER_TABLE):
             dpg.add_text("Load data to handle missing values.")
         return
-
-    dpg.add_table_column(label="Column Name", parent=TAG_DL_MISSING_HANDLER_TABLE)
-    dpg.add_table_column(label="Missing Count", parent=TAG_DL_MISSING_HANDLER_TABLE)
-    dpg.add_table_column(label="Missing %", parent=TAG_DL_MISSING_HANDLER_TABLE)
-    dpg.add_table_column(label="Imputation Method", parent=TAG_DL_MISSING_HANDLER_TABLE, width=200)
-    dpg.add_table_column(label="Custom Fill Value", parent=TAG_DL_MISSING_HANDLER_TABLE, width=150)
-
-    imputation_methods = ["Keep Missing", "Drop Rows with Missing", "Fill with Mean", 
-                          "Fill with Median", "Fill with Mode", "Fill with Custom Value", 
-                          "As 'Missing' Category"]
-
-    for col_name in current_df.columns:
-        missing_count = current_df[col_name].isnull().sum()
-        if missing_count == 0: continue # 결측치 없는 컬럼은 스킵 (선택사항)
-
+    
+    # 테이블 헤더
+    columns = ["Column Name", "Missing Count", "Missing %", 
+              "Imputation Method", "Custom Fill Value"]
+    for col in columns:
+        dpg.add_table_column(label=col, parent=TAG_DL_MISSING_HANDLER_TABLE)
+    
+    imputation_methods = [
+        "Keep Missing", "Drop Rows with Missing", "Fill with Mean",
+        "Fill with Median", "Fill with Mode", "Fill with Custom Value",
+        "As 'Missing' Category"
+    ]
+    
+    # 각 컬럼에 대한 행 생성
+    for col_name in df.columns:
+        missing_count = df[col_name].isnull().sum()
+        if missing_count == 0:
+            continue
+        
         with dpg.table_row(parent=TAG_DL_MISSING_HANDLER_TABLE):
+            # 컬럼명
             dpg.add_text(util_funcs['format_text_for_display'](col_name, max_chars=30))
-            dpg.add_text(str(missing_count))
-            dpg.add_text(f"{missing_count / len(current_df) * 100:.2f}%")
-
-            # 이전에 선택된 값으로 초기화
-            current_method_selection, current_fill_value = "Keep Missing", ""
-            if col_name in _imputation_selections:
-                current_method_selection = _imputation_selections[col_name][0]
-                current_fill_value = _imputation_selections[col_name][1] if _imputation_selections[col_name][1] is not None else ""
-
-
-            method_combo_tag = f"impute_method_combo_{col_name}"
-            fill_value_input_tag = f"impute_value_input_{col_name}"
-
-            # 콜백에서 현재 컬럼명, 메소드 콤보 태그, 값 입력 태그를 알아야 함
-            callback_user_data = {"col": col_name, "m_tag": method_combo_tag, "v_tag": fill_value_input_tag}
-
-            dpg.add_combo(items=imputation_methods, default_value=current_method_selection, 
-                          tag=method_combo_tag, width=-1, user_data=callback_user_data,
-                          callback=lambda s, a, u: _imputation_selections.update(
-                              {u["col"]: (a, dpg.get_value(u["v_tag"]) if dpg.does_item_exist(u["v_tag"]) else "")}
-                          ))
             
-            dpg.add_input_text(tag=fill_value_input_tag, default_value=current_fill_value, width=-1, user_data=callback_user_data,
-                               callback=lambda s, a, u: _imputation_selections.update(
-                                   {u["col"]: (dpg.get_value(u["m_tag"]), a)}
-                               ))
+            # 결측치 수
+            dpg.add_text(str(missing_count))
+            
+            # 결측치 비율
+            dpg.add_text(f"{missing_count / len(df) * 100:.2f}%")
+            
+            # 처리 방법 선택
+            current_method = "Keep Missing"
+            current_fill_value = ""
+            if col_name in _imputation_selections:
+                current_method = _convert_method_tag_to_display(
+                    _imputation_selections[col_name][0]
+                )
+                current_fill_value = _imputation_selections[col_name][1] or ""
+            
+            method_combo_tag = f"impute_method_{col_name}"
+            fill_input_tag = f"impute_value_{col_name}"
+            
+            dpg.add_combo(items=imputation_methods, default_value=current_method,
+                         tag=method_combo_tag, width=-1,
+                         callback=lambda s, a, u=(col_name, fill_input_tag): 
+                             _update_imputation_selection(u[0], a, u[1]))
+            
+            # 커스텀 값 입력
+            dpg.add_input_text(tag=fill_input_tag, default_value=current_fill_value,
+                             width=-1,
+                             callback=lambda s, a, u=(col_name, method_combo_tag):
+                                 _update_imputation_value(u[0], a, u[1]))
 
+def _convert_method_tag_to_display(method_tag: str) -> str:
+    """메서드 태그를 표시용 텍스트로 변환"""
+    mapping = {
+        "keep_missing": "Keep Missing",
+        "drop_rows": "Drop Rows with Missing",
+        "fill_mean": "Fill with Mean",
+        "fill_median": "Fill with Median",
+        "fill_mode": "Fill with Mode",
+        "fill_custom": "Fill with Custom Value",
+        "as_category_missing": "As 'Missing' Category"
+    }
+    return mapping.get(method_tag, "Keep Missing")
 
-def update_ui(current_df: pd.DataFrame, original_df: pd.DataFrame, util_funcs: dict, file_path: str = None):
-    """기존 UI 업데이트 함수 확장: 새로운 탭들의 테이블도 업데이트."""
+def _convert_display_to_method_tag(display_text: str) -> str:
+    """표시용 텍스트를 메서드 태그로 변환"""
+    mapping = {
+        "Keep Missing": "keep_missing",
+        "Drop Rows with Missing": "drop_rows",
+        "Fill with Mean": "fill_mean",
+        "Fill with Median": "fill_median",
+        "Fill with Mode": "fill_mode",
+        "Fill with Custom Value": "fill_custom",
+        "As 'Missing' Category": "as_category_missing"
+    }
+    return mapping.get(display_text, "keep_missing")
+
+def _update_imputation_selection(col_name: str, method_display: str, 
+                                fill_input_tag: str):
+    """결측치 처리 선택 업데이트"""
+    method_tag = _convert_display_to_method_tag(method_display)
+    fill_value = ""
+    if dpg.does_item_exist(fill_input_tag):
+        fill_value = dpg.get_value(fill_input_tag)
+    _imputation_selections[col_name] = (method_tag, fill_value)
+
+def _update_imputation_value(col_name: str, fill_value: str, 
+                            method_combo_tag: str):
+    """결측치 처리 값 업데이트"""
+    method_display = "Keep Missing"
+    if dpg.does_item_exist(method_combo_tag):
+        method_display = dpg.get_value(method_combo_tag)
+    method_tag = _convert_display_to_method_tag(method_display)
+    _imputation_selections[col_name] = (method_tag, fill_value)
+
+def update_ui(current_df: pd.DataFrame, original_df: pd.DataFrame, 
+             util_funcs: dict, file_path: str = None):
+    """UI 업데이트"""
     if not dpg.is_dearpygui_running() or not dpg.does_item_exist(TAG_DL_GROUP):
         return
-
-    # --- 1. 파일 요약 및 원본 데이터 탭 업데이트 (기존 로직) ---
-    create_table_func = util_funcs.get('create_table_with_data', lambda *args, **kwargs: None)
-    if dpg.does_item_exist(TAG_DL_FILE_SUMMARY_TEXT):
-        if file_path: dpg.set_value(TAG_DL_FILE_SUMMARY_TEXT, f"File: {file_path}")
-        elif current_df is None: dpg.set_value(TAG_DL_FILE_SUMMARY_TEXT, "No data loaded.")
-    if dpg.does_item_exist(TAG_DL_SHAPE_TEXT):
-        dpg.set_value(TAG_DL_SHAPE_TEXT, f"Shape: {current_df.shape}" if current_df is not None else "Shape: N/A (No data)")
     
-    if current_df is not None:
-        info_df_data = {
-            "Column Name": current_df.columns.astype(str),
-            "Original Dtype": [str(dtype) for dtype in current_df.dtypes],
-            "Missing Values": current_df.isnull().sum().values,
-            "Unique Values": current_df.nunique().values
+    # 파일 요약 업데이트
+    if dpg.does_item_exist(TAG_DL_FILE_SUMMARY_TEXT):
+        if file_path:
+            dpg.set_value(TAG_DL_FILE_SUMMARY_TEXT, f"File: {file_path}")
+        elif original_df is None:
+            dpg.set_value(TAG_DL_FILE_SUMMARY_TEXT, "No data loaded.")
+    
+    # 작업할 DataFrame 결정
+    df = current_df if current_df is not None else original_df
+    
+    # Shape 업데이트
+    if dpg.does_item_exist(TAG_DL_SHAPE_TEXT):
+        shape_text = f"Shape: {df.shape}" if df is not None else "Shape: N/A (No data)"
+        dpg.set_value(TAG_DL_SHAPE_TEXT, shape_text)
+    
+    # 테이블 업데이트
+    create_table_func = util_funcs.get('create_table_with_data', lambda *args, **kwargs: None)
+    
+    if df is not None:
+        # Info 테이블
+        info_data = {
+            "Column Name": df.columns.astype(str),
+            "Original Dtype": [str(dtype) for dtype in df.dtypes],
+            "Missing Values": df.isnull().sum().values,
+            "Unique Values": df.nunique().values
         }
-        info_df = pd.DataFrame(info_df_data)
+        info_df = pd.DataFrame(info_data)
         create_table_func(TAG_DL_INFO_TABLE, info_df, parent_df_for_widths=info_df)
         
-        numeric_df = current_df.select_dtypes(include=np.number)
+        # Describe 테이블
+        numeric_df = df.select_dtypes(include=np.number)
         if not numeric_df.empty:
-            descriptive_stats_df = numeric_df.describe().reset_index().rename(columns={'index': 'Statistic'})
-            create_table_func(TAG_DL_DESCRIBE_TABLE, descriptive_stats_df, utils_format_numeric=True, parent_df_for_widths=descriptive_stats_df)
+            desc_df = numeric_df.describe().reset_index().rename(columns={'index': 'Statistic'})
+            create_table_func(TAG_DL_DESCRIBE_TABLE, desc_df, 
+                            utils_format_numeric=True, parent_df_for_widths=desc_df)
         else:
-            create_table_func(TAG_DL_DESCRIBE_TABLE, pd.DataFrame({"Info": ["No numeric columns found."]}))
-        create_table_func(TAG_DL_HEAD_TABLE, current_df.head(), parent_df_for_widths=current_df)
+            create_table_func(TAG_DL_DESCRIBE_TABLE, 
+                            pd.DataFrame({"Info": ["No numeric columns found."]}))
+        
+        # Head 테이블
+        create_table_func(TAG_DL_HEAD_TABLE, df.head(), parent_df_for_widths=df)
     else:
+        # 빈 테이블
         create_table_func(TAG_DL_INFO_TABLE, None)
         create_table_func(TAG_DL_DESCRIBE_TABLE, None)
         create_table_func(TAG_DL_HEAD_TABLE, None)
-
-    # --- 2. 변수 타입 편집 탭 테이블 업데이트 ---
-    # main_callbacks를 여기서 직접 구성하거나, update_ui 호출 시 main_callbacks 자체를 넘겨받아야 함.
-    # 지금은 main_callbacks가 없으므로, _populate_type_editor_table 호출을 위한 임시 main_callbacks 생성
-    temp_main_callbacks_for_type_editor = {
-        'get_current_df': lambda: current_df,
-        'get_original_df': lambda: original_df, # 원본 Dtype 복원 등에 필요할 수 있음
+    
+    # 타입 편집 및 결측값 처리 테이블 업데이트
+    temp_callbacks = {
+        'get_original_df': lambda: original_df,
+        'get_df_after_step1': lambda: current_df,
         'get_util_funcs': lambda: util_funcs
-        # 'trigger_all_module_updates' 등은 여기서 직접 호출하지 않음
     }
-    _populate_type_editor_table(temp_main_callbacks_for_type_editor, infer_all=False) # UI 로드 시에는 자동추론 결과만 보여줌
+    _populate_type_editor_table(temp_callbacks, infer_all=False)
+    _populate_missing_handler_table(temp_callbacks)
 
-    # --- 3. 결측값 처리 탭 테이블 업데이트 ---
-    temp_main_callbacks_for_missing_handler = {
-         'get_current_df': lambda: current_df,
-         'get_util_funcs': lambda: util_funcs
-    }
-    _populate_missing_handler_table(temp_main_callbacks_for_missing_handler)
+def process_newly_loaded_data(original_df: pd.DataFrame, main_callbacks: dict):
+    """새로 로드된 데이터 처리"""
+    if original_df is None:
+        return
+    
+    print("Processing newly loaded data with default settings...")
+    
+    # 타입 추론 및 설정
+    global _type_selections
+    _type_selections.clear()
+    
+    for col in original_df.columns:
+        inferred_type, _, is_binary = _infer_series_type(original_df[col])
+        _type_selections[col] = _map_inferred_to_available_type(inferred_type, is_binary)
+    
+    # 처리 완료를 main_app에 알림
+    main_callbacks['step1_processing_complete'](original_df.copy())
+
+def apply_step1_settings_and_process(original_df: pd.DataFrame, 
+                                   settings: dict, main_callbacks: dict):
+    """저장된 설정을 적용하여 데이터 처리"""
+    if original_df is None:
+        return
+    
+    print("Applying Step 1 settings and processing data...")
+    
+    # 설정 복원
+    global _type_selections, _imputation_selections, _custom_nan_input_value
+    
+    _type_selections = settings.get('type_selections', {}).copy()
+    _imputation_selections = settings.get('imputation_selections', {}).copy()
+    _custom_nan_input_value = settings.get('custom_nan_input_value', '')
+    
+    # UI 업데이트
+    if dpg.does_item_exist(TAG_DL_CUSTOM_NAN_INPUT):
+        dpg.set_value(TAG_DL_CUSTOM_NAN_INPUT, _custom_nan_input_value)
+    
+    # 데이터 처리
+    df = original_df.copy()
+    
+    # 타입 변환 적용
+    for col_name, col_type in _type_selections.items():
+        if col_name in df.columns:
+            try:
+                df[col_name] = _convert_column_type(df[col_name], col_type, original_df)
+            except Exception as e:
+                print(f"Error converting '{col_name}': {e}")
+    
+    # 결측치 처리 적용
+    for col_name, (method, fill_value) in _imputation_selections.items():
+        if col_name in df.columns:
+            try:
+                df = _apply_imputation_method(df, col_name, method, fill_value)
+            except Exception as e:
+                print(f"Error treating missing values in '{col_name}': {e}")
+    
+    # 처리 완료를 main_app에 알림
+    main_callbacks['step1_processing_complete'](df)
+
+def reset_step1_state():
+    """Step 1 상태 초기화"""
+    global _type_selections, _imputation_selections, _custom_nan_input_value
+    
+    _type_selections.clear()
+    _imputation_selections.clear()
+    _custom_nan_input_value = ""
+    
+    if dpg.does_item_exist(TAG_DL_CUSTOM_NAN_INPUT):
+        dpg.set_value(TAG_DL_CUSTOM_NAN_INPUT, "")
+    
+    if dpg.does_item_exist(TAG_DL_COLUMN_CONFIG_TABLE_GROUP):
+        dpg.delete_item(TAG_DL_COLUMN_CONFIG_TABLE_GROUP, children_only=True)
+        dpg.add_text("Load data to configure.", parent=TAG_DL_COLUMN_CONFIG_TABLE_GROUP)
