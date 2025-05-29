@@ -24,6 +24,8 @@ TAG_DL_CUSTOM_NAN_INPUT = "step1_custom_nan_input"
 TAG_DL_APPLY_CUSTOM_NAN_BUTTON = "step1_apply_custom_nan_button"
 TAG_DL_MISSING_HANDLER_TABLE = "step1_missing_handler_table"
 TAG_DL_APPLY_MISSING_TREATMENTS_BUTTON = "step1_apply_missing_treatments_button"
+TAG_DL_COLUMN_CONFIG_TABLE_GROUP = "dl_column_config_table_group_tag" # 예시 태그 이름
+
 
 # --- 전역 변수 (모듈 내에서 타입/결측치 선택 상태 임시 저장용) ---
 # 이 값들은 "적용" 버튼 클릭 시 current_df에 반영되고, UI 업데이트 시 다시 로드됩니다.
