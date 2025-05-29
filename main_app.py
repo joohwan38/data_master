@@ -14,7 +14,7 @@ import json
 
 SETTINGS_DIR_NAME = ".app_file_settings"
 SESSION_INFO_FILE = os.path.join(SETTINGS_DIR_NAME, "session_info.json")
-selected_target_variable_type: str = "Continuous" # 기본값 또는 None, "Categorical" 또는 "Continuous" 저장
+selected_target_variable_type: str = "Continuous"
 TARGET_VARIABLE_TYPE_RADIO_TAG = "target_variable_type_radio"
 TARGET_VARIABLE_TYPE_LABEL_TAG = "target_variable_type_label"
 
@@ -23,26 +23,47 @@ original_df: pd.DataFrame = None
 loaded_file_path: str = None
 
 step_group_tags = {}
-module_ui_updaters = {} # {module_name_key: update_function}
+module_ui_updaters = {}
 active_step_name: str = None
 selected_target_variable: str = None
 TARGET_VARIABLE_COMBO_TAG = "target_variable_combo"
 
-_eda_sva_initialized = False # EDA 탭의 SVA가 초기 실행되었는지 여부 플래그
+_eda_sva_initialized = False
 
 ANALYSIS_STEPS = [
     "1. Data Loading and Overview",
     "2. Exploratory Data Analysis (EDA)",
-    # "3. Data Quality Assessment",
-    # "4. Data Preprocessing",
 ]
 active_settings = {}
 
+# --- Helper function to show a simple modal message ---
+_MODAL_ID_SIMPLE_MESSAGE = "simple_modal_message_id"
+
+def _show_simple_modal_message(title: str, message: str, width: int = 450, height: int = 200):
+    if dpg.does_item_exist(_MODAL_ID_SIMPLE_MESSAGE):
+        dpg.delete_item(_MODAL_ID_SIMPLE_MESSAGE)
+
+    # Calculate center position
+    viewport_width = dpg.get_viewport_width() if dpg.is_dearpygui_running() else 1000 # Default if not running
+    viewport_height = dpg.get_viewport_height() if dpg.is_dearpygui_running() else 700
+    
+    modal_pos_x = (viewport_width - width) // 2
+    modal_pos_y = (viewport_height - height) // 2
+    
+    with dpg.window(label=title, modal=True, show=True, id=_MODAL_ID_SIMPLE_MESSAGE,
+                    no_close=True, width=width, height=height, pos=[modal_pos_x, modal_pos_y],
+                    no_saved_settings=True, autosize=False): # autosize False for fixed size
+        dpg.add_text(message, wrap=width - 20) # Allow padding
+        dpg.add_spacer(height=15)
+        with dpg.group(horizontal=True):
+            # Simple centering for a single button
+            dpg.add_spacer(width= (width - 100 - 30) // 2) # (modal_width - button_width - padding) / 2
+            dpg.add_button(label="OK", width=100, callback=lambda: dpg.configure_item(_MODAL_ID_SIMPLE_MESSAGE, show=False))
 
 # 폰트 설정 함수 (이전과 동일하게 유지)
 def setup_korean_font():
     font_path = None
-    font_size = 17 # macOS에서는 17 정도가 적당할 수 있습니다.
+    font_size = 17
     os_type = platform.system()
     print(f"--- Font Setup Initiated ---")
     print(f"Operating System: {os_type}")
@@ -67,14 +88,12 @@ def setup_korean_font():
         else:
             print("macOS: ERROR - No AppleGothic or AppleSDGothicNeo font found.")
     elif os_type == "Windows":
-        # Windows 폰트 경로 (이전 코드 참조)
         potential_paths = ["C:/Windows/Fonts/malgun.ttf", "C:/Windows/Fonts/gulim.ttc"]
         for p in potential_paths:
             if os.path.exists(p): font_path = p; break
         if font_path: print(f"Windows: Selected font {font_path}")
         else: print("Windows: Malgun Gothic or Gulim not found.")
     elif os_type == "Linux":
-        # Linux 폰트 경로 (이전 코드 참조)
         potential_paths = ["/usr/share/fonts/truetype/nanum/NanumGothic.ttf"]
         bundled_font_path = "NanumGothic.ttf"
         if os.path.exists(bundled_font_path): font_path = bundled_font_path
@@ -90,7 +109,7 @@ def setup_korean_font():
         print(f"Attempting to load and bind font: '{font_path}' with size {font_size}")
         try:
             font_registry_tag = "global_font_registry_unique" 
-            font_to_bind_tag = "korean_font_for_app" # 태그명 변경 가능
+            font_to_bind_tag = "korean_font_for_app"
 
             if not dpg.does_item_exist(font_registry_tag):
                 dpg.add_font_registry(tag=font_registry_tag)
@@ -116,14 +135,13 @@ def setup_korean_font():
         except Exception as e:
             print(f"Error during explicit font processing for '{font_path}': {e}. DPG default font will be used.")
             traceback.print_exc()
-    elif font_path and not os.path.exists(font_path): # font_path는 있었으나 파일이 없는 경우
+    elif font_path and not os.path.exists(font_path):
         print(f"Font path '{font_path}' was determined, but the file does not exist. DPG default font will be used.")
-    else: # 적절한 font_path를 찾지 못한 경우
+    else:
         print("No suitable Korean font path was found. DPG default font will be used.")
     print(f"--- Font Setup Finished ---")
 
 
-# 타겟 변수 콤보박스 아이템 업데이트 함수 (이전과 동일)
 def update_target_variable_combo():
     global current_df, selected_target_variable, TARGET_VARIABLE_COMBO_TAG
     if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG):
@@ -139,7 +157,6 @@ def update_target_variable_combo():
             dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
 
 
-# 데이터 로드 함수 (이전과 거의 동일, _eda_sva_initialized 플래그 초기화 추가)
 def load_data_from_file(file_path: str) -> bool:
     global current_df, original_df, loaded_file_path, selected_target_variable, _eda_sva_initialized
     success = False
@@ -160,12 +177,10 @@ def load_data_from_file(file_path: str) -> bool:
         if hasattr(step_01_data_loading, '_type_selections'): step_01_data_loading._type_selections.clear()
         if hasattr(step_01_data_loading, '_imputation_selections'): step_01_data_loading._imputation_selections.clear()
         
-        _eda_sva_initialized = False # 새 데이터 로드 시 SVA 초기화 플래그 리셋
+        _eda_sva_initialized = False 
         update_target_variable_combo()
-        # 타겟 변수 선택 및 타입 추론은 target_variable_selected_callback에서 처리되므로 여기서 직접 호출 불필요
-        # (콤보박스 값 변경 시 콜백 자동 호출)
         if selected_target_variable and current_df is not None and selected_target_variable not in current_df.columns:
-            selected_target_variable = None # 이전 타겟이 새 데이터에 없으면 초기화
+            selected_target_variable = None 
             if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
             if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
             if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
@@ -173,11 +188,11 @@ def load_data_from_file(file_path: str) -> bool:
         trigger_all_module_updates()
         return True
     else:
-        _eda_sva_initialized = False # 실패 시에도 리셋
-        update_target_variable_combo() # 콤보박스 아이템은 업데이트
-        selected_target_variable = None # 선택된 타겟 변수 초기화
+        _eda_sva_initialized = False 
+        update_target_variable_combo() 
+        selected_target_variable = None 
         global selected_target_variable_type
-        selected_target_variable_type = "Continuous" # 기본값으로
+        selected_target_variable_type = "Continuous" 
         if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
         if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
         if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): 
@@ -190,53 +205,44 @@ def load_data_from_file(file_path: str) -> bool:
 def target_variable_type_changed_callback(sender, app_data, user_data):
     global selected_target_variable_type, active_settings, current_df, selected_target_variable
 
-    newly_selected_type = app_data # "Categorical" 또는 "Continuous"
-    previous_type = selected_target_variable_type # 변경 전 값 저장
+    newly_selected_type = app_data 
+    previous_type = selected_target_variable_type 
 
-    # 유효성 검사: 텍스트 기반 변수를 "Continuous"로 설정하려는 경우 방지
     if newly_selected_type == "Continuous" and selected_target_variable and current_df is not None:
         s1_column_types = main_app_callbacks.get('get_column_analysis_types', lambda: {})()
         analysis_type_from_s1 = s1_column_types.get(selected_target_variable)
 
         is_text_based = False
         if analysis_type_from_s1:
-            # step_01_data_loading._infer_series_type 에서 정의된 텍스트 관련 타입들
             text_keywords = ["Text (", "Potentially Sensitive"] 
             if any(keyword in analysis_type_from_s1 for keyword in text_keywords):
                 is_text_based = True
         
-        # Step 1 정보가 없거나 Text가 아니면, Pandas Dtype으로 한 번 더 간단히 체크 (매우 엄격하진 않음)
         elif selected_target_variable in current_df.columns and \
              (pd.api.types.is_object_dtype(current_df[selected_target_variable].dtype) or \
               pd.api.types.is_string_dtype(current_df[selected_target_variable].dtype)):
-            # 이 경우, 거의 모든 값이 고유한 ID성 문자열인지 등으로 추가 판단 가능하나,
-            # 여기서는 Step 1의 타입 지정을 더 우선시함.
-            # 만약 Step 1에서 Numeric 등으로 변환했다면 그 타입을 따름.
-            # 순수 Object/String인데 Step 1 타입 정보가 없다면 Text로 간주 가능성 높음.
-            if analysis_type_from_s1 is None: # Step 1 타입 정보가 아예 없을 때만 이 조건 고려
+            if analysis_type_from_s1 is None: 
                 is_text_based = True
 
-
         if is_text_based:
-            dpg.alert_dialog(title="Type Selection Error",
-                             message=f"Variable '{selected_target_variable}' is identified as Text-based.\nIt cannot be set to 'Continuous'.\n\nPlease use 'Categorical' or change the variable type in 'Step 1. Data Loading and Overview' if it's misclassified.",
-                             width=450, height=200)
-            # 라디오 버튼 값을 이전 값으로 되돌림
+            error_message = (f"Variable '{selected_target_variable}' is identified as Text-based.\n"
+                             f"It cannot be set to 'Continuous'.\n\n"
+                             f"Please use 'Categorical' or change the variable type in\n"
+                             f"'Step 1. Data Loading and Overview' if it's misclassified.")
+            _show_simple_modal_message("Type Selection Error", error_message)
+            
             if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
                 dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, previous_type)
-            # selected_target_variable_type은 변경하지 않고 종료
             return
 
-    # 유효성 검사 통과 또는 "Categorical" 선택 시
     selected_target_variable_type = newly_selected_type
     print(f"Target variable type explicitly set to: {selected_target_variable_type}")
 
-    if active_settings: # 현재 파일에 대한 설정이 있다면 업데이트
+    if active_settings: 
         active_settings['selected_target_variable_type'] = selected_target_variable_type
 
-    # 목표 변수 유형 변경 시 관련 분석(예: SVA)을 다시 트리거 할 수 있음
-    if active_step_name == ANALYSIS_STEPS[1]: # "2. Exploratory Data Analysis (EDA)"
-         _eda_sva_initialized = False # SVA 재실행 필요
+    if active_step_name == ANALYSIS_STEPS[1]: 
+         _eda_sva_initialized = False 
          trigger_specific_module_update(ANALYSIS_STEPS[1])
 
 
@@ -245,19 +251,14 @@ def target_variable_selected_callback(sender, app_data, user_data):
 
     new_target = app_data
 
-    # 실제 변경이 없으면 종료하지 않음. 타입 추론은 항상 실행될 수 있도록.
-    # if new_target == selected_target_variable:
-    #     return
-
     selected_target_variable = new_target
     print(f"Target variable selected: {selected_target_variable}")
 
     if selected_target_variable and current_df is not None and selected_target_variable in current_df.columns:
-        # Step 1의 타입 선택 정보 가져오기 (콜백 사용)
         s1_type_selections = main_app_callbacks.get('get_column_analysis_types', lambda: {})()
 
         guessed_type = utils._guess_target_type(current_df, selected_target_variable, s1_type_selections)
-        selected_target_variable_type = guessed_type # 전역 변수 업데이트
+        selected_target_variable_type = guessed_type 
 
         if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
             dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, selected_target_variable_type)
@@ -269,30 +270,28 @@ def target_variable_selected_callback(sender, app_data, user_data):
         if active_settings:
             active_settings['selected_target_variable'] = selected_target_variable
             active_settings['selected_target_variable_type'] = selected_target_variable_type
-    else: # 목표 변수 선택 해제 시
-        selected_target_variable_type = "Continuous" # 기본값으로 초기화
+    else: 
+        selected_target_variable_type = "Continuous" 
         if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG):
             dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
         if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
             dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
-            dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, selected_target_variable_type) # 기본값으로 설정
+            dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, selected_target_variable_type) 
 
         if active_settings:
             active_settings['selected_target_variable'] = None
-            active_settings['selected_target_variable_type'] = None # 또는 기본값 selected_target_variable_type
+            active_settings['selected_target_variable_type'] = None 
 
     _eda_sva_initialized = False
     trigger_all_module_updates()
 
 def get_settings_filepath(original_data_filepath: str) -> str:
-    """원본 데이터 파일 경로로부터 고유한 설정 파일 경로를 생성합니다."""
     if not original_data_filepath:
         return None
     filename = hashlib.md5(original_data_filepath.encode('utf-8')).hexdigest() + ".json"
     return os.path.join(SETTINGS_DIR_NAME, filename)
 
 def load_json_settings(settings_filepath: str) -> dict:
-    """JSON 설정 파일을 로드합니다."""
     if settings_filepath and os.path.exists(settings_filepath):
         try:
             with open(settings_filepath, 'r') as f:
@@ -303,7 +302,6 @@ def load_json_settings(settings_filepath: str) -> dict:
     return None
 
 def save_json_settings(settings_filepath: str, settings_dict: dict):
-    """설정 딕셔너리를 JSON 파일로 저장합니다."""
     if not settings_filepath or not settings_dict:
         return
     try:
@@ -317,19 +315,17 @@ def save_json_settings(settings_filepath: str, settings_dict: dict):
         traceback.print_exc()
 
 def gather_current_settings() -> dict:
-    """현재 애플리케이션의 모든 관련 설정을 수집합니다."""
     global selected_target_variable, selected_target_variable_type, active_step_name, _eda_sva_initialized
     
     settings = {
         'selected_target_variable': selected_target_variable,
-        'selected_target_variable_type': selected_target_variable_type, # 추가
+        'selected_target_variable_type': selected_target_variable_type, 
         'active_step_name': active_step_name,
         '_eda_sva_initialized': _eda_sva_initialized,
         'step_01_settings': {},
         'step_02_settings': {}
     }
 
-    # Step 01 설정 수집
     if hasattr(step_01_data_loading, '_type_selections'):
         settings['step_01_settings']['type_selections'] = step_01_data_loading._type_selections.copy()
     if hasattr(step_01_data_loading, '_imputation_selections'):
@@ -337,7 +333,6 @@ def gather_current_settings() -> dict:
     if hasattr(step_01_data_loading, '_custom_nan_input_value'):
         settings['step_01_settings']['custom_nan_input_value'] = step_01_data_loading._custom_nan_input_value
     
-    # Step 02 EDA 설정 수집 (DPG 아이템 값 가져오기)
     try:
         if dpg.is_dearpygui_running():
             s02_set = settings['step_02_settings']
@@ -369,13 +364,12 @@ def apply_settings(settings_dict: dict):
         print("apply_settings: No specific settings provided. Using original_df as current_df.")
         current_df = original_df.copy()
         selected_target_variable = None
-        selected_target_variable_type = "Continuous" # 기본값
+        selected_target_variable_type = "Continuous" 
         _eda_sva_initialized = False
         if hasattr(step_01_data_loading, '_type_selections'): step_01_data_loading._type_selections.clear()
         if hasattr(step_01_data_loading, '_imputation_selections'): step_01_data_loading._imputation_selections.clear()
         if hasattr(step_01_data_loading, '_custom_nan_input_value'): step_01_data_loading._custom_nan_input_value = ""
         active_settings = gather_current_settings() 
-        # UI 업데이트는 호출부에서
         if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
         if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): 
             dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
@@ -387,7 +381,7 @@ def apply_settings(settings_dict: dict):
     current_df = original_df.copy()
 
     selected_target_variable = settings_dict.get('selected_target_variable', None)
-    selected_target_variable_type = settings_dict.get('selected_target_variable_type', "Continuous") # 추가 및 기본값
+    selected_target_variable_type = settings_dict.get('selected_target_variable_type', "Continuous") 
     _eda_sva_initialized = settings_dict.get('_eda_sva_initialized', False)
 
     s01_settings = settings_dict.get('step_01_settings', {})
@@ -417,9 +411,6 @@ def apply_settings(settings_dict: dict):
         update_target_variable_combo()
         if selected_target_variable and current_df is not None and selected_target_variable in current_df.columns:
             dpg.set_value(TARGET_VARIABLE_COMBO_TAG, selected_target_variable)
-            # 타겟 변수 선택 콜백을 여기서 직접 호출하여 타입 라디오 버튼 상태도 복원
-            # target_variable_selected_callback(TARGET_VARIABLE_COMBO_TAG, selected_target_variable, None)
-            # -> 위 방식 대신 아래처럼 직접 UI 상태 복원
             if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
                 dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, selected_target_variable_type)
             if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG):
@@ -436,7 +427,6 @@ def apply_settings(settings_dict: dict):
         dpg.set_value(step_01_data_loading.TAG_DL_CUSTOM_NAN_INPUT, custom_nan_val_s01)
 
     s02_ui_settings = settings_dict.get('step_02_settings', {})
-    # ... (Step 02 UI 복원 로직은 기존과 거의 동일하게 유지) ...
     sva_filter = s02_ui_settings.get('sva_filter_strength')
     if sva_filter and dpg.does_item_exist(step_02_exploratory_data_analysis.TAG_SVA_FILTER_STRENGTH_RADIO):
         dpg.set_value(step_02_exploratory_data_analysis.TAG_SVA_FILTER_STRENGTH_RADIO, sva_filter)
@@ -507,7 +497,7 @@ def reset_application_state(clear_df=True):
         loaded_file_path = None
     
     selected_target_variable = None
-    selected_target_variable_type = "Continuous" # 기본값으로 리셋
+    selected_target_variable_type = "Continuous" 
     _eda_sva_initialized = False
     active_settings = {}
 
@@ -519,12 +509,11 @@ def reset_application_state(clear_df=True):
         dpg.configure_item(TARGET_VARIABLE_COMBO_TAG, items=[""])
         dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
     
-    # 타겟 변수 타입 UI 초기화
     if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG):
         dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
     if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
         dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
-        dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, selected_target_variable_type) # 기본값 설정
+        dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, selected_target_variable_type) 
 
     if dpg.does_item_exist(step_01_data_loading.TAG_DL_CUSTOM_NAN_INPUT):
         dpg.set_value(step_01_data_loading.TAG_DL_CUSTOM_NAN_INPUT, "")
@@ -594,7 +583,6 @@ def file_load_callback(sender, app_data):
     else:
         print(f"No settings found for {loaded_file_path}. Using default settings.")
         active_settings = gather_current_settings() 
-        # 타겟 변수 UI 초기화 (reset_application_state에서 이미 처리)
         if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
         if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
 
@@ -607,7 +595,7 @@ def file_load_callback(sender, app_data):
 
 
 def initial_load_on_startup():
-    global loaded_file_path, active_settings, original_df, current_df, selected_target_variable_type
+    global loaded_file_path, active_settings, original_df, current_df, selected_target_variable_type, selected_target_variable
 
     print("Attempting initial load on startup...")
     session_info = load_json_settings(SESSION_INFO_FILE)
@@ -630,18 +618,21 @@ def initial_load_on_startup():
 
             settings_filepath = get_settings_filepath(last_file)
             specific_settings = load_json_settings(settings_filepath)
+            
             if specific_settings:
-                apply_settings(specific_settings) 
+                apply_settings(specific_settings)
+                # Ensure selected_target_variable is also restored from settings before UI update
+                selected_target_variable = specific_settings.get('selected_target_variable', None) 
+                selected_target_variable_type = specific_settings.get('selected_target_variable_type', "Continuous")
             else: 
                 active_settings = gather_current_settings() 
-                # 타겟 변수 UI는 apply_settings 또는 reset_application_state에 의해 관리됨
-                # apply_settings({})를 호출하면 기본값으로 설정됨
+                selected_target_variable = None # No settings, so no target var
+                selected_target_variable_type = "Continuous"
                 if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
                 if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
 
-            update_target_variable_combo() # 아이템 채우기
-            # apply_settings 이후에 selected_target_variable 값에 따라 target_variable_selected_callback이
-            # 직접 호출되지는 않으므로, UI 상태를 명시적으로 한 번 더 동기화
+            update_target_variable_combo() 
+            
             if selected_target_variable and selected_target_variable in current_df.columns:
                 if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
                     dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, selected_target_variable_type)
@@ -649,9 +640,11 @@ def initial_load_on_startup():
                     dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=True)
                 if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
                     dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=True)
-            else:
+            else: # No target selected or target not in current df
                 if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
-                if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
+                if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): 
+                    dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
+                    dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, "Continuous") # Set to default
 
             trigger_all_module_updates()
 
@@ -699,11 +692,9 @@ def reset_current_df_to_original_data():
         if hasattr(step_01_data_loading, '_imputation_selections'): step_01_data_loading._imputation_selections.clear()
         
         _eda_sva_initialized = False 
-        update_target_variable_combo() # 콤보 아이템 리프레시
+        update_target_variable_combo() 
 
-        # 타겟 변수 선택 및 타입 UI도 초기화 또는 재추론
         if selected_target_variable and selected_target_variable in current_df.columns:
-            # 선택된 타겟 변수가 여전히 유효하면, 해당 변수에 대해 타입 재추론 및 UI 업데이트
             s1_selections = main_app_callbacks.get('get_column_analysis_types', lambda: {})()
             guessed_type = utils._guess_target_type(current_df, selected_target_variable, s1_selections)
             selected_target_variable_type = guessed_type
@@ -713,9 +704,9 @@ def reset_current_df_to_original_data():
                 dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=True)
             if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
                 dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=True)
-        elif selected_target_variable: # 선택된 타겟은 있었으나, 리셋 후 current_df에 없거나 문제가 생긴 경우
-            selected_target_variable = None
-            selected_target_variable_type = "Continuous" # 기본값으로
+        else: 
+            selected_target_variable = None # 명시적으로 None 처리
+            selected_target_variable_type = "Continuous" 
             if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
             if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
             if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): 
@@ -736,10 +727,6 @@ def switch_step_view(sender, app_data, user_data_step_name: str):
             if step_name_iter == user_data_step_name:
                 dpg.show_item(group_tag)
                 active_step_name = step_name_iter
-                # EDA 탭으로 전환 시 SVA가 초기화되지 않았다면 실행하지 않음 (Run 버튼으로 실행 유도)
-                # if active_step_name == ANALYSIS_STEPS[1] and not _eda_sva_initialized:
-                # print(f"Switched to EDA tab. SVA will run upon clicking 'Run SVA'.")
-                # else:
                 trigger_specific_module_update(step_name_iter)
             else:
                 dpg.hide_item(group_tag)
@@ -779,8 +766,19 @@ def get_column_analysis_types_from_user_settings():
         return step_01_data_loading._type_selections.copy() 
     else:
         print("Warning: User-defined analysis types (_type_selections) not found in step_01_data_loading.")
-        if current_df is not None:
-             return {col: step_02_exploratory_data_analysis._infer_series_type(current_df[col])[0] for col in current_df.columns}
+        if current_df is not None and not current_df.empty: # current_df가 비어있지 않은지 확인
+             # step_02_exploratory_data_analysis._infer_series_type 이 함수는 step_02 모듈에만 있어야 함.
+             # 여기서는 간단히 dtype을 반환하거나, utils에 유사한 타입 추론 함수를 만들 수 있음.
+             # 지금은 임시로 dtype 문자열을 반환.
+             # return {col: str(current_df[col].dtype) for col in current_df.columns}
+             # 또는 utils에 있는 _guess_target_type을 활용 (단, 이 함수는 이진 분류용)
+             # 더 나은 방법은 step_01_data_loading._infer_series_type 결과를 사용하는 것임
+             # 이 함수는 (type, hint, is_binary_numeric)을 반환.
+             # 여기서는 utils._guess_target_type과 유사하게, step_01의 추론 결과를 가져오도록 시도.
+             # (main_app에서는 step_01 모듈의 내부 함수를 직접 호출하지 않는 것이 좋음)
+             # 따라서, 이 fallback은 제한적일 수 밖에 없음.
+             # 가장 좋은 fallback은 pandas의 기본 dtype임.
+            return {col: str(current_df[col].dtype) for col in current_df.columns}
         return {}
 
 
@@ -796,7 +794,7 @@ main_app_callbacks = {
     'reset_current_df_to_original': reset_current_df_to_original_data,
     'trigger_all_module_updates': trigger_all_module_updates, 
     'get_selected_target_variable': lambda: selected_target_variable,
-    'get_selected_target_variable_type': lambda: selected_target_variable_type, # 수정됨
+    'get_selected_target_variable_type': lambda: selected_target_variable_type,
     'update_target_variable_combo_items': update_target_variable_combo,
     'get_column_analysis_types': get_column_analysis_types_from_user_settings,
 }
@@ -815,16 +813,16 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
         with dpg.child_window(width=280, tag="navigation_panel", border=True):
             dpg.add_text("Target Variable (y):")
             dpg.add_combo(items=[""], tag=TARGET_VARIABLE_COMBO_TAG, width=-1,
-                        callback=target_variable_selected_callback) # 콜백 연결
+                        callback=target_variable_selected_callback) 
 
-            dpg.add_text("Target Variable Type:", tag=TARGET_VARIABLE_TYPE_LABEL_TAG, show=False) # 초기 숨김
+            dpg.add_text("Target Variable Type:", tag=TARGET_VARIABLE_TYPE_LABEL_TAG, show=False) 
             dpg.add_radio_button(
                 items=["Categorical", "Continuous"],
                 tag=TARGET_VARIABLE_TYPE_RADIO_TAG,
                 horizontal=True,
-                default_value=selected_target_variable_type, # 전역 변수 기본값 사용
-                callback=target_variable_type_changed_callback, # 콜백 연결
-                show=False # 초기 숨김
+                default_value=selected_target_variable_type, 
+                callback=target_variable_type_changed_callback, 
+                show=False 
             )
 
             dpg.add_separator()
@@ -863,7 +861,7 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
 dpg.create_viewport(title='Modular Data Analysis Platform GUI', width=1440, height=1000)
 dpg.set_exit_callback(save_state_on_exit)
 dpg.setup_dearpygui()
-initial_load_on_startup() # 여기서 UI 상태 복원 시도
+initial_load_on_startup() 
 dpg.maximize_viewport()
 dpg.show_viewport()
 dpg.set_primary_window("main_window", True)
