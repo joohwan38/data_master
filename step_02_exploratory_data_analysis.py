@@ -224,20 +224,46 @@ def _get_filtered_variables(df: pd.DataFrame, filter_strength_selected: str,
         return [], filter_strength_selected # 빈 리스트와 원래 요청된 필터 반환 (fallback 안 함)
 
     target_series = df[target_var]
-    target_analysis_type = analysis_types_dict.get(target_var, str(target_series.dtype))
+    user_defined_target_type = main_callbacks['get_selected_target_variable_type']() # "Categorical" 또는 "Continuous"
+
     relevance_scores = []
     for col_name in numeric_cols_for_ranking:
         if col_name == target_var: continue
         score = 0.0
         try:
-            current_col_series = df[col_name]
-            if "Categorical" in target_analysis_type or ("Numeric (Binary)" in target_analysis_type and target_series.nunique(dropna=False) <=5 ):
+            current_col_series = df[col_name] # 현재 분석 대상인 숫자형 변수
+
+            if user_defined_target_type == "Categorical":
+                # 목표 변수가 사용자에 의해 "범주형"으로 지정됨 -> ANOVA F-value 사용
                 groups = [current_col_series[target_series == cat].dropna() for cat in target_series.dropna().unique()]
-                groups = [g for g in groups if len(g) >= 2];
-                if len(groups) >= 2: f_val, p_val = stats.f_oneway(*groups); score = f_val if pd.notna(f_val) else 0.0
-            elif "Numeric" in target_analysis_type: score = abs(current_col_series.corr(target_series))
-        except Exception: pass
-        if pd.notna(score): relevance_scores.append((col_name, score))
+                groups = [g for g in groups if len(g) >= 2]
+                if len(groups) >= 2: # ANOVA를 위한 최소 그룹 수 및 샘플 수 확인
+                    f_val, p_val = stats.f_oneway(*groups)
+                    score = f_val if pd.notna(f_val) else 0.0
+                else:
+                    print(f"Warning: Not enough valid groups for ANOVA between '{col_name}' and target '{target_var}'.")
+                    score = 0.0
+            elif user_defined_target_type == "Continuous":
+                # 목표 변수가 사용자에 의해 "연속형"으로 지정됨
+                # 목표 변수가 실제로 숫자형인지 확인 후 상관계수 계산
+                if pd.api.types.is_numeric_dtype(target_series.dtype):
+                    score = abs(current_col_series.corr(target_series))
+                    if not pd.notna(score): score = 0.0 # NaN 처리
+                else:
+                    # 사용자가 연속형으로 지정했으나 실제 타입이 숫자형이 아닌 경우 경고
+                    print(f"Warning: Target '{target_var}' designated 'Continuous' but is not numeric (actual dtype: {target_series.dtype}). Cannot calculate Pearson correlation for '{col_name}'.")
+                    score = 0.0
+            else:
+                # 목표 변수 유형이 설정되지 않았거나 예기치 않은 값일 경우
+                print(f"Warning: Target variable type for '{target_var}' is not set or invalid ('{user_defined_target_type}'). Relevance score for '{col_name}' set to 0.")
+                score = 0.0
+
+        except Exception as e:
+            print(f"Error calculating relevance for '{col_name}' vs target '{target_var}' (User type: '{user_defined_target_type}'): {e}")
+            score = 0.0
+
+        if pd.notna(score):
+            relevance_scores.append((col_name, score))
     
     relevance_scores.sort(key=lambda item: item[1], reverse=True)
     ranked_cols = [col for col, score in relevance_scores if pd.notna(score) and score > 0.001] 
@@ -372,31 +398,37 @@ def _create_sva_advanced_relations_table(parent_tag: str, series: pd.Series, ful
 def _create_single_var_plot(parent_group_tag: str, series: pd.Series, group_by_target_series: pd.Series = None, analysis_type_override:str=None,
                             grouped_plot_preference:str="KDE_AND_HIST"):
     plot_height = 230 + 60 # 높이 증가
-    plot_label = f"Distribution: {series.name}" # DPG 플롯 자체의 레이블 사용
-    
-    # 만약 별도의 제목 텍스트를 플롯 위에 추가하고 싶다면:
-    # dpg.add_text("Distribution Chart", parent=parent_group_tag) # 이 줄을 활성화
+    plot_label = f"Distribution: {series.name}"
 
     is_grouped_plotting = group_by_target_series is not None and \
                           group_by_target_series.nunique(dropna=False) >= 2 and \
+                          series.name != group_by_target_series.name and \
                           (analysis_type_override != "ForceCategoricalForBinaryNumeric" or not pd.api.types.is_numeric_dtype(series.dtype))
 
-    if is_grouped_plotting:
+    # 만약 시리즈 이름과 그룹바이 타겟 시리즈 이름이 같다면, 그룹핑 플롯팅을 비활성화
+    # 또는 사용자에게 알림을 표시하고 플롯 생성을 건너뛸 수 있습니다.
+    if group_by_target_series is not None and series.name == group_by_target_series.name:
+        plot_label += " (Overall)" # 그룹핑 없이 전체 분포로 표시함을 명시
+        # 그룹핑 플로팅을 비활성화하고, group_by_target_series를 None으로 설정하여 단일 플롯 로직을 따르도록 함
+        is_grouped_plotting = False
+        group_by_target_series = None # 단일 변수 플롯 로직을 타도록 강제
+        # 또는 아래처럼 메시지 표시 후 반환
+        # dpg.add_text(f"Plot for '{series.name}' grouped by itself is not generated.\nDisplaying overall distribution.", parent=parent_group_tag, color=(255, 200, 0))
+        # is_grouped_plotting = False # 이후 로직에서 그룹핑 없이 처리하도록
+        # group_by_target_series = None # 확실히 None으로 설정
+        # (만약 여기서 완전히 종료하고 싶다면, legend_tag 확인 후 삭제하고 return)
+
+
+    if is_grouped_plotting: # 이 조건은 위에서 series.name != group_by_target_series.name 이 이미 반영됨
         plot_label += f" (Grouped by {group_by_target_series.name})"
 
     plot_tag = dpg.generate_uuid()
     with dpg.plot(label=plot_label, height=plot_height, width=-1, parent=parent_group_tag, tag=plot_tag):
-        # 마우스 휠 줌 비활성화
-        xaxis_tag = dpg.add_plot_axis(dpg.mvXAxis, label=series.name, lock_min=False,
-    lock_max=False,
-    auto_fit=True)#, no_scroll_zoom=True)
+        xaxis_tag = dpg.add_plot_axis(dpg.mvXAxis, label=series.name, lock_min=False, lock_max=False, auto_fit=True)
         yaxis_tag = dpg.generate_uuid()
-        dpg.add_plot_axis(dpg.mvYAxis, label="Density / Frequency", tag=yaxis_tag, lock_min=False,
-    lock_max=False,
-    auto_fit=True)
+        dpg.add_plot_axis(dpg.mvYAxis, label="Density / Frequency", tag=yaxis_tag, lock_min=False, lock_max=False, auto_fit=True)
         
-        legend_tag = dpg.add_plot_legend(parent=plot_tag, location=8, outside=True) # 8 = mvPlotLocation_East
-
+        legend_tag = dpg.add_plot_legend(parent=plot_tag, location=8, outside=True)
 
         series_cleaned_for_plot_initial = series.dropna()
         series_cleaned_for_plot = series_cleaned_for_plot_initial.replace([np.inf, -np.inf], np.nan).dropna()
@@ -413,60 +445,59 @@ def _create_single_var_plot(parent_group_tag: str, series: pd.Series, group_by_t
                                               series.nunique(dropna=False) < 5)
 
         if pd.api.types.is_numeric_dtype(series.dtype) and not is_effectively_categorical_for_plot:
-            if is_grouped_plotting: # 그룹핑 활성화 시
+            if is_grouped_plotting and group_by_target_series is not None: # group_by_target_series가 None이 아닌지 한번 더 확인
                 unique_target_groups_numeric = sorted(group_by_target_series.dropna().unique())
                 
-                # 그룹별 색상 및 투명도 설정 (예시)
-                base_colors = [
-                    (0, 110, 255), (255, 120, 0), (0, 170, 0), 
-                    (200, 0, 0), (150, 50, 200) # 최대 5개 그룹 색상
-                ]
-                alpha_value = 150 # 반투명도 (0-255)
+                base_colors = [(0, 110, 255), (255, 120, 0), (0, 170, 0), (200, 0, 0), (150, 50, 200)]
+                alpha_value = 150
 
                 for idx, group_name in enumerate(unique_target_groups_numeric):
+                    # series.name == group_by_target_series.name 인 경우는 이미 위에서 처리되어
+                    # is_grouped_plotting = False 가 되므로 이 루프에 진입하지 않거나,
+                    # group_by_target_series가 None이 되어 이 블록 전체를 건너뜀.
                     group_data_initial = series_cleaned_for_plot[group_by_target_series == group_name]
                     group_data_cleaned = group_data_initial.replace([np.inf, -np.inf], np.nan).dropna()
 
-                    if len(group_data_cleaned) < 2 or group_data_cleaned.nunique() < 2:
-                        print(f"INFO: Group '{group_name}' for var '{series.name}' has insufficient data or no variance. Skipping plot for this group.")
-                        continue
-                    
-                    current_color = base_colors[idx % len(base_colors)] # 순환 색상
+                    # KDE를 위한 데이터 유효성 검사 강화
+                    if len(group_data_cleaned) < 2 or group_data_cleaned.nunique() < 2: # 분산이 없거나 데이터가 너무 적으면 KDE 스킵
+                        print(f"INFO: Group '{group_name}' for var '{series.name}' has insufficient data or no variance for KDE. Skipping plot for this group.")
+                        if grouped_plot_preference == "KDE": # KDE 선택 시에만 메시지 또는 처리
+                             # dpg.add_text(f"KDE skipped for group '{group_name}' (no variance/data)", parent=yaxis_tag, color=(255,165,0))
+                            continue # 다음 그룹으로
+                        # 히스토그램은 단일 값도 표시 가능하므로 계속 진행될 수 있음
+
+                    current_color = base_colors[idx % len(base_colors)]
                     
                     try:
                         if grouped_plot_preference == "KDE":
+                            # KDE를 위한 추가적인 데이터 유효성 검사
+                            if group_data_cleaned.nunique() < 2: # 이중 체크
+                                print(f"Skipping KDE for group '{group_name}' of var '{series.name}' due to no variance.")
+                                continue
                             kde = stats.gaussian_kde(group_data_cleaned)
                             kde_min = group_data_cleaned.min(); kde_max = group_data_cleaned.max()
                             padding = (kde_max - kde_min) * 0.05 if (kde_max - kde_min) > 0 else 0.1
                             x_vals = np.linspace(kde_min - padding, kde_max + padding, 100)
                             y_vals = kde(x_vals)
-                            line_series = dpg.add_line_series(x_vals.tolist(), y_vals.tolist(), label=f"KDE (T={group_name})", parent=yaxis_tag)
-                            # KDE 라인 색상 설정 (알파는 보통 라인에 직접 적용 안됨, 테마로 시도 가능하나 복잡)
-                            # dpg.bind_item_theme(line_series, create_series_theme(current_color)) # 테마 함수 필요
+                            line_series_tag = dpg.add_line_series(x_vals.tolist(), y_vals.tolist(), label=f"KDE (T={group_name})", parent=yaxis_tag)
+                            # 색상 적용 (간단한 방법은 아니지만, 테마나 다른 방법으로 시도 가능)
 
                         elif grouped_plot_preference == "Histogram":
                             hist_series = dpg.add_histogram_series(group_data_cleaned.tolist(), label=f"Hist (T={group_name})",
-                                                                  density=True, bins=-1, parent=yaxis_tag, bar_scale=0.9) # bar_scale로 막대 간격 약간 조정
-                            
-                            # 히스토그램 시리즈에 반투명 색상 적용 (테마 사용)
+                                                                  density=True, bins=-1, parent=yaxis_tag, bar_scale=0.9)
                             series_theme_tag = dpg.generate_uuid()
                             with dpg.theme(tag=series_theme_tag):
-                                with dpg.theme_component(dpg.mvHistogramSeries, parent=series_theme_tag): # 특정 시리즈 타입 지정
-                                    # mvPlotCol_Fill은 히스토그램 막대의 채우기 색상
+                                with dpg.theme_component(dpg.mvHistogramSeries, parent=series_theme_tag):
                                     dpg.add_theme_color(dpg.mvPlotCol_Fill, (current_color[0], current_color[1], current_color[2], alpha_value), 
                                                         category=dpg.mvThemeCat_Plots)
-                                    # mvPlotCol_Line은 히스토그램 막대의 테두리 색상 (필요시)
-                                    # dpg.add_theme_color(dpg.mvPlotCol_Line, (current_color[0], current_color[1], current_color[2], 255), 
-                                    #                     category=dpg.mvThemeCat_Plots)
                             dpg.bind_item_theme(hist_series, series_theme_tag)
-
                     except Exception as e_plot:
                         error_msg_group = f"Plot Error (Group '{group_name}', Type: {grouped_plot_preference})"
                         dpg.add_text(error_msg_group, parent=yaxis_tag, color=(255,100,100))
                         print(f"{error_msg_group} for var '{series.name}': {e_plot}\nData sample: {group_data_cleaned.head().tolist()}")
                         traceback.print_exc()
             
-            else: # 단일 숫자형 시리즈 (그룹핑 없음, 항상 히스토그램 + KDE)
+            else: # 단일 숫자형 시리즈 (그룹핑 없음)
                 if series_cleaned_for_plot.nunique() < 2 :
                     dpg.add_text("No variance in data for histogram/density plot.", parent=yaxis_tag, color=(255,200,0))
                     if dpg.does_item_exist(legend_tag): dpg.delete_item(legend_tag)
@@ -476,29 +507,32 @@ def _create_single_var_plot(parent_group_tag: str, series: pd.Series, group_by_t
                     dpg.add_histogram_series(series_cleaned_for_plot.tolist(), label="Histogram",
                                              density=True, bins=-1, parent=yaxis_tag, bar_scale=1.0)
                 except Exception as e_hist:
-                    # ... (기존 오류 처리)
                     dpg.add_text(f"Histogram Error", parent=yaxis_tag, color=(255,0,0))
                     print(f"Error plotting histogram for var '{series.name}': {e_hist}\nData sample: {series_cleaned_for_plot.head().tolist()}")
                     traceback.print_exc()
                 
                 try:
-                    kde = stats.gaussian_kde(series_cleaned_for_plot)
-                    kde_min = series_cleaned_for_plot.min(); kde_max = series_cleaned_for_plot.max()
-                    padding = (kde_max - kde_min) * 0.05 if (kde_max - kde_min) > 0 else 0.1
-                    x_vals = np.linspace(kde_min - padding, kde_max + padding, 150)
-                    y_vals = kde(x_vals)
-                    dpg.add_line_series(x_vals.tolist(), y_vals.tolist(), label="KDE", parent=yaxis_tag)
+                    # KDE를 위한 데이터 유효성 검사
+                    if series_cleaned_for_plot.nunique() < 2: # 이중 체크
+                        print(f"Skipping KDE for var '{series.name}' due to no variance.")
+                    else:
+                        kde = stats.gaussian_kde(series_cleaned_for_plot)
+                        kde_min = series_cleaned_for_plot.min(); kde_max = series_cleaned_for_plot.max()
+                        padding = (kde_max - kde_min) * 0.05 if (kde_max - kde_min) > 0 else 0.1
+                        x_vals = np.linspace(kde_min - padding, kde_max + padding, 150)
+                        y_vals = kde(x_vals)
+                        dpg.add_line_series(x_vals.tolist(), y_vals.tolist(), label="KDE", parent=yaxis_tag)
                 except Exception as e_kde:
-                    # ... (기존 오류 처리)
                     dpg.add_text(f"KDE Error", parent=yaxis_tag, color=(255,100,100))
                     print(f"Error plotting KDE for var '{series.name}': {e_kde}\nData sample: {series_cleaned_for_plot.head().tolist()}")
                     traceback.print_exc()
-        else:
+        else: # 범주형 데이터 플롯 로직 (이 부분은 크게 변경되지 않음)
+            # ... (기존 범주형 플롯 로직) ...
             top_n_categories = 10
-            if is_grouped_plotting and \
+            if is_grouped_plotting and group_by_target_series is not None and \
                group_by_target_series.nunique(dropna=False) <= 5 : 
                 
-                if dpg.does_item_exist(legend_tag): dpg.delete_item(legend_tag)
+                if dpg.does_item_exist(legend_tag): dpg.delete_item(legend_tag) # 범례 먼저 삭제 시도
                 
                 unique_target_groups_categorical = sorted(group_by_target_series.dropna().unique())
                 value_counts_overall = series_cleaned_for_plot.value_counts(dropna=False).nlargest(top_n_categories)
@@ -518,11 +552,10 @@ def _create_single_var_plot(parent_group_tag: str, series: pd.Series, group_by_t
                     dpg.add_bar_series(current_x_positions.tolist(), y_values, weight=bar_width_single, label=f"{group_name}", parent=yaxis_tag)
 
                 if categories_to_plot and dpg.does_item_exist(xaxis_tag):
-                     dpg.set_axis_ticks(xaxis_tag, tuple(zip(categories_to_plot, x_positions)))
-                if num_groups > 0 and dpg.does_item_exist(plot_tag):
-                    dpg.add_plot_legend(parent=plot_tag, 
-                                        location=8, # dpg.mvPlotLocation_East
-                                        outside=True)
+                     dpg.set_axis_ticks(xaxis_tag, tuple(zip([str(c) for c in categories_to_plot], x_positions))) # 레이블 문자열 변환
+                if num_groups > 0 and dpg.does_item_exist(plot_tag): # plot_tag로 부모 지정
+                    # 범례를 새로 추가하거나, 이미 있는 legend_tag를 활용 (여기서는 새로 추가)
+                    dpg.add_plot_legend(parent=plot_tag, location=8, outside=True) 
             else: 
                 if dpg.does_item_exist(legend_tag): dpg.delete_item(legend_tag)
                 value_counts_data = series_cleaned_for_plot.value_counts(dropna=False).nlargest(top_n_categories)
@@ -530,7 +563,7 @@ def _create_single_var_plot(parent_group_tag: str, series: pd.Series, group_by_t
                 bar_labels = [str(val) for val in value_counts_data.index.tolist()]
                 dpg.add_bar_series(x_pos, value_counts_data.values.tolist(), weight=0.7, label="Frequency", parent=yaxis_tag)
                 if bar_labels and dpg.does_item_exist(xaxis_tag): dpg.set_axis_ticks(xaxis_tag, tuple(zip(bar_labels, x_pos)))
-
+                
 def _apply_sva_filters_and_run(main_callbacks: dict):
     print("DEBUG: _apply_sva_filters_and_run CALLED.") # 함수 호출 시작 확인
 
@@ -585,31 +618,22 @@ def _apply_sva_filters_and_run(main_callbacks: dict):
     # --- 5. 그룹핑 옵션 유효성 검사 및 설정 ---
     # 이 부분이 그룹핑 체크 해제와 직접적으로 관련된 로직입니다.
     if group_by_target_flag: # 사용자가 UI에서 그룹핑을 선택한 경우
-        print(f"DEBUG: User selected 'Group by Target'. Initial target_var: '{target_var}'") # 사용자가 선택한 타겟 변수 확인
+        print(f"DEBUG: User selected 'Group by Target'. Initial target_var: '{target_var}'")
         if target_var and target_var in current_df.columns:
             unique_target_values = current_df[target_var].nunique(dropna=False)
-            target_col_actual_dtype = str(current_df[target_var].dtype) # 실제 Pandas Dtype
-            # analysis_types_dict_local에서 타겟 변수의 "분석용 타입" 가져오기
-            target_col_analysis_type = analysis_types_dict_local.get(target_var, target_col_actual_dtype) # 분석용 타입 없으면 실제 Dtype 사용
-
-            print(f"DEBUG: Target var '{target_var}': AnalysisType='{target_col_analysis_type}', ActualDtype='{target_col_actual_dtype}', UniqueValues={unique_target_values}") # 상세 정보 출력
-
-            # 그룹핑 조건 검사
-            condition_type_met = ("Categorical" in target_col_analysis_type or \
-                                  "Numeric (Binary)" in target_col_analysis_type or \
-                                  (pd.api.types.is_numeric_dtype(current_df[target_var].dtype) and unique_target_values <= 5 and unique_target_values >=2)) # 숫자형이면서 고유값 적은 경우도 허용 확대
-            condition_nunique_met = (unique_target_values >= 2 and unique_target_values <= 5) # 고유값 개수 조건은 유지
+            # 수정된 조건: 타입에 관계없이 고유값 개수(2~10개)만으로 판단.
+            condition_type_met = True # target_var가 유효한 컬럼이기만 하면 타입은 OK로 간주.
+            condition_nunique_met = (unique_target_values >= 2 and unique_target_values <= 10)
 
             if condition_type_met and condition_nunique_met:
                 target_series_for_grouping = current_df[target_var]
-                print(f"DEBUG: Grouping by target '{target_var}' WILL BE ATTEMPTED. Conditions met.")
-                # 이 경우 group_by_target_flag는 True로 유지됩니다.
+                print(f"DEBUG: Grouping by target '{target_var}' WILL BE ATTEMPTED. Conditions met (Unique values: {unique_target_values}).")
             else:
                 reasons_for_failure = []
-                if not condition_type_met:
-                    reasons_for_failure.append(f"Type '{target_col_analysis_type}' is not suitable (need Categorical, Numeric (Binary), or Numeric with 2-5 unique values)")
+                # if not condition_type_met: # 이 조건은 이제 거의 항상 참이므로 제거하거나 단순화 가능
+                #     reasons_for_failure.append(f"Target variable '{target_var}' type not suitable.")
                 if not condition_nunique_met:
-                    reasons_for_failure.append(f"Unique values count {unique_target_values} is not between 2-5")
+                    reasons_for_failure.append(f"Unique values count {unique_target_values} is not between 2-10")
                 
                 alert_message = (f"Target variable '{target_var}' is not suitable for grouping.\n"
                                  f"Reason(s): {'; '.join(reasons_for_failure)}.\n"
@@ -617,22 +641,23 @@ def _apply_sva_filters_and_run(main_callbacks: dict):
                 _show_alert_modal("Grouping Warning", alert_message)
                 
                 if dpg.does_item_exist(TAG_SVA_GROUP_BY_TARGET_CHECKBOX):
-                    dpg.set_value(TAG_SVA_GROUP_BY_TARGET_CHECKBOX, False) # UI 체크박스 해제
-                group_by_target_flag = False # 실제 그룹핑 로직에서도 사용될 플래그를 False로 설정
-                target_series_for_grouping = None # 그룹핑 시리즈 초기화
+                    dpg.set_value(TAG_SVA_GROUP_BY_TARGET_CHECKBOX, False)
+                group_by_target_flag = False
+                target_series_for_grouping = None
                 print(f"DEBUG: Grouping disabled for target '{target_var}'. Reasons: {'; '.join(reasons_for_failure)}")
         else:
+            # (기존 'Target variable not selected or is invalid...' 로직 유지)
             alert_message = "Target variable not selected or is invalid for grouping. Grouping disabled."
             _show_alert_modal("Grouping Info", alert_message)
             if dpg.does_item_exist(TAG_SVA_GROUP_BY_TARGET_CHECKBOX):
-                dpg.set_value(TAG_SVA_GROUP_BY_TARGET_CHECKBOX, False) # UI 체크박스 해제
-            group_by_target_flag = False # 실제 그룹핑 로직에서도 사용될 플래그를 False로 설정
-            target_series_for_grouping = None # 그룹핑 시리즈 초기화
+                dpg.set_value(TAG_SVA_GROUP_BY_TARGET_CHECKBOX, False)
+            group_by_target_flag = False
+            target_series_for_grouping = None
             print(f"DEBUG: Grouping disabled. Target variable not selected or does not exist in DataFrame.")
     else:
         print(f"DEBUG: User did not select 'Group by Target' checkbox.")
-        target_series_for_grouping = None # 명시적으로 None 설정
-        group_by_target_flag = False # 명시적으로 False 설정
+        target_series_for_grouping = None
+        group_by_target_flag = False
 
     # --- 6. 변수 필터링 실행 ---
     # (이하 _get_filtered_variables 호출 및 결과 처리 로직은 이전 답변의 최종본과 동일하게 유지)
