@@ -167,35 +167,94 @@ def _classify_categorical_or_text(series_valid: pd.Series) -> Tuple[str, Optiona
     
     return "Text (General)", None, False
 
+# step_01_data_loading.py
+
+# _apply_type_changes 함수 수정
 def _apply_type_changes(main_callbacks: dict):
     """타입 변경 적용"""
-    df = main_callbacks['get_df_after_step1']()
-    if df is None:
-        df = main_callbacks['get_original_df']()
-    if df is None:
+    print("--- _apply_type_changes called ---") # 함수 호출 확인
+    
+    # util_funcs를 여기서 가져옵니다.
+    util_funcs = main_callbacks['get_util_funcs']()
+
+    # _type_selections 내용을 먼저 확인합니다.
+    # 이 시점에서 _type_selections는 "Infer All Types" 또는 사용자 수동 변경에 의해 채워져 있어야 합니다.
+    print(f"Applying type changes with _type_selections at function start: {_type_selections}")
+
+    df_after_s1 = main_callbacks['get_df_after_step1']()
+    original_df = main_callbacks['get_original_df']()
+    df_to_process = None # 초기화
+
+    if df_after_s1 is not None:
+        print("Using df_after_step1 for processing.")
+        df_to_process = df_after_s1.copy() # 원본 df_after_step1을 변경하지 않기 위해 복사
+    elif original_df is not None:
+        print("Using original_df for processing as df_after_step1 was None.")
+        df_to_process = original_df.copy() # 원본 original_df를 변경하지 않기 위해 복사
+    
+    if df_to_process is None:
+        print("Error: No DataFrame available (both df_after_step1 and original_df are None). Cannot apply type changes.")
+        if util_funcs and '_show_simple_modal_message' in util_funcs:
+            util_funcs['_show_simple_modal_message']("Data Error", "No data available to apply type changes. Please load or process data first.")
         return
+
+    # _type_selections가 비어있는지 다시 한번 명시적으로 확인합니다.
+    # 만약 "Infer All Types"가 _type_selections를 제대로 채우지 못했다면 여기서 걸릴 것입니다.
+    if not _type_selections:
+        print("Warning: _type_selections is empty. No type changes to apply.")
+        if util_funcs and '_show_simple_modal_message' in util_funcs:
+            util_funcs['_show_simple_modal_message']("Info", "No type changes have been selected or inferred. Please select or infer types before applying.")
+        return # _type_selections가 비어있으면 실제 변환 로직을 수행하지 않습니다.
     
-    df = df.copy()
-    print("Applying type changes...")
+    print(f"Proceeding with type changes for {len(_type_selections)} columns. DataFrame to process shape: {df_to_process.shape}")
     
+    # 실제 타입 변환 루프 시작
+    conversion_errors_occurred = False
     for col_name, new_type in _type_selections.items():
-        if col_name not in df.columns:
+        if col_name not in df_to_process.columns:
+            print(f"Warning: Column '{col_name}' not found in the DataFrame. Skipping type conversion for this column.")
             continue
         
         try:
-            print(f"  Converting '{col_name}' to '{new_type}'...")
-            df[col_name] = _convert_column_type(df[col_name], new_type, 
-                                               main_callbacks['get_original_df']())
-            print(f"  Success. New dtype: {df[col_name].dtype}")
+            print(f"  Converting '{col_name}' (current dtype: {df_to_process[col_name].dtype}) to '{new_type}'...")
+            # _convert_column_type 함수가 util_funcs를 인자로 받도록 수정되었다고 가정합니다.
+            converted_series = _convert_column_type(df_to_process[col_name], new_type, 
+                                                    main_callbacks['get_original_df'](), util_funcs)
+            df_to_process[col_name] = converted_series
+            print(f"  Success for '{col_name}'. New dtype: {df_to_process[col_name].dtype}")
         except Exception as e:
-            print(f"  Error converting '{col_name}': {e}")
-            traceback.print_exc()
-    
-    # 변경사항을 main_app에 알림
-    main_callbacks['step1_processing_complete'](df)
-    print("Type changes applied.")
+            conversion_errors_occurred = True
+            # _convert_column_type 내부에서 이미 모달을 띄우므로, 여기서는 콘솔 로깅만 강화할 수 있습니다.
+            print(f"  Critical Error during conversion of '{col_name}' in _apply_type_changes: {e}")
+            # traceback.print_exc() # 필요한 경우 주석 해제
+            # 오류가 발생해도 다음 컬럼 처리를 위해 continue 할지, 아니면 여기서 중단할지 결정 필요.
+            # 현재는 _convert_column_type이 원본 시리즈를 반환하므로 계속 진행됩니다.
 
-def _convert_column_type(series: pd.Series, new_type: str, original_df: pd.DataFrame) -> pd.Series:
+    if conversion_errors_occurred:
+        print("Warning: Some type conversions may have failed. Check logs and modal messages.")
+        if util_funcs and '_show_simple_modal_message' in util_funcs:
+            util_funcs['_show_simple_modal_message']("Conversion Warning", "Some type conversions encountered errors. The original data for those columns might have been retained. Please check console logs for details.")
+
+    # 변경사항을 main_app에 알림
+    print("Type conversion loop finished. Calling step1_processing_complete...")
+    if df_to_process is not None: # 최종적으로 df_to_process가 None이 아닌지 확인
+        df_to_process.info() # 전달 직전 최종 df 상태 확인
+        main_callbacks['step1_processing_complete'](df_to_process)
+        print("step1_processing_complete called successfully.")
+
+        if util_funcs and '_show_simple_modal_message' in util_funcs and not conversion_errors_occurred:
+            num_processed_cols = len(_type_selections)
+            feedback_message = (
+                f"{num_processed_cols} column(s) had their type selections processed. "
+                f"Please check the 'Data Summary' tab for the updated column dtypes."
+            )
+            util_funcs['_show_simple_modal_message']("Type Changes Processed", feedback_message)
+    else:
+        print("Error: df_to_process became None unexpectedly before calling step1_processing_complete.")
+        if util_funcs and '_show_simple_modal_message' in util_funcs:
+            util_funcs['_show_simple_modal_message']("Processing Error", "An unexpected error occurred, and the DataFrame for processing became unavailable.")
+
+def _convert_column_type(series: pd.Series, new_type: str, original_df: pd.DataFrame, util_funcs: dict = None) -> pd.Series:
     """컬럼 타입 변환"""
     if new_type == "Numeric (int)":
         return pd.to_numeric(series, errors='coerce').astype('Int64')
