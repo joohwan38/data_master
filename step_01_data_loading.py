@@ -167,92 +167,59 @@ def _classify_categorical_or_text(series_valid: pd.Series) -> Tuple[str, Optiona
     
     return "Text (General)", None, False
 
-# step_01_data_loading.py
-
-# _apply_type_changes 함수 수정
 def _apply_type_changes(main_callbacks: dict):
     """타입 변경 적용"""
-    print("--- _apply_type_changes called ---") # 함수 호출 확인
+    print("--- _apply_type_changes called ---")
     
-    # util_funcs를 여기서 가져옵니다.
-    util_funcs = main_callbacks['get_util_funcs']()
+    util_funcs = main_callbacks['get_util_funcs']() # 오류 처리 등에 여전히 필요할 수 있음
 
-    # _type_selections 내용을 먼저 확인합니다.
-    # 이 시점에서 _type_selections는 "Infer All Types" 또는 사용자 수동 변경에 의해 채워져 있어야 합니다.
     print(f"Applying type changes with _type_selections at function start: {_type_selections}")
 
     df_after_s1 = main_callbacks['get_df_after_step1']()
     original_df = main_callbacks['get_original_df']()
-    df_to_process = None # 초기화
+    df_to_process = None
 
     if df_after_s1 is not None:
         print("Using df_after_step1 for processing.")
-        df_to_process = df_after_s1.copy() # 원본 df_after_step1을 변경하지 않기 위해 복사
+        df_to_process = df_after_s1.copy()
     elif original_df is not None:
         print("Using original_df for processing as df_after_step1 was None.")
-        df_to_process = original_df.copy() # 원본 original_df를 변경하지 않기 위해 복사
+        df_to_process = original_df.copy()
     
     if df_to_process is None:
-        print("Error: No DataFrame available (both df_after_step1 and original_df are None). Cannot apply type changes.")
-        if util_funcs and '_show_simple_modal_message' in util_funcs:
-            util_funcs['_show_simple_modal_message']("Data Error", "No data available to apply type changes. Please load or process data first.")
+        print("Error: No DataFrame available. Cannot apply type changes.")
         return
 
-    # _type_selections가 비어있는지 다시 한번 명시적으로 확인합니다.
-    # 만약 "Infer All Types"가 _type_selections를 제대로 채우지 못했다면 여기서 걸릴 것입니다.
     if not _type_selections:
         print("Warning: _type_selections is empty. No type changes to apply.")
-        if util_funcs and '_show_simple_modal_message' in util_funcs:
-            util_funcs['_show_simple_modal_message']("Info", "No type changes have been selected or inferred. Please select or infer types before applying.")
-        return # _type_selections가 비어있으면 실제 변환 로직을 수행하지 않습니다.
+        return
     
     print(f"Proceeding with type changes for {len(_type_selections)} columns. DataFrame to process shape: {df_to_process.shape}")
     
-    # 실제 타입 변환 루프 시작
-    conversion_errors_occurred = False
+    conversion_errors_occurred = False # 오류 발생 여부 플래그
     for col_name, new_type in _type_selections.items():
         if col_name not in df_to_process.columns:
-            print(f"Warning: Column '{col_name}' not found in the DataFrame. Skipping type conversion for this column.")
+            print(f"Warning: Column '{col_name}' not found. Skipping.")
             continue
         
         try:
-            print(f"  Converting '{col_name}' (current dtype: {df_to_process[col_name].dtype}) to '{new_type}'...")
-            # _convert_column_type 함수가 util_funcs를 인자로 받도록 수정되었다고 가정합니다.
+            print(f"  Converting '{col_name}' (current: {df_to_process[col_name].dtype}) to '{new_type}'...")
             converted_series = _convert_column_type(df_to_process[col_name], new_type, 
                                                     main_callbacks['get_original_df'](), util_funcs)
             df_to_process[col_name] = converted_series
             print(f"  Success for '{col_name}'. New dtype: {df_to_process[col_name].dtype}")
         except Exception as e:
             conversion_errors_occurred = True
-            # _convert_column_type 내부에서 이미 모달을 띄우므로, 여기서는 콘솔 로깅만 강화할 수 있습니다.
-            print(f"  Critical Error during conversion of '{col_name}' in _apply_type_changes: {e}")
-            # traceback.print_exc() # 필요한 경우 주석 해제
-            # 오류가 발생해도 다음 컬럼 처리를 위해 continue 할지, 아니면 여기서 중단할지 결정 필요.
-            # 현재는 _convert_column_type이 원본 시리즈를 반환하므로 계속 진행됩니다.
-
-    if conversion_errors_occurred:
-        print("Warning: Some type conversions may have failed. Check logs and modal messages.")
-        if util_funcs and '_show_simple_modal_message' in util_funcs:
-            util_funcs['_show_simple_modal_message']("Conversion Warning", "Some type conversions encountered errors. The original data for those columns might have been retained. Please check console logs for details.")
-
-    # 변경사항을 main_app에 알림
+            print(f"  Critical Error during conversion of '{col_name}': {e}")
+           
     print("Type conversion loop finished. Calling step1_processing_complete...")
-    if df_to_process is not None: # 최종적으로 df_to_process가 None이 아닌지 확인
-        df_to_process.info() # 전달 직전 최종 df 상태 확인
+    if df_to_process is not None:
+        df_to_process.info()
         main_callbacks['step1_processing_complete'](df_to_process)
         print("step1_processing_complete called successfully.")
-
-        if util_funcs and '_show_simple_modal_message' in util_funcs and not conversion_errors_occurred:
-            num_processed_cols = len(_type_selections)
-            feedback_message = (
-                f"{num_processed_cols} column(s) had their type selections processed. "
-                f"Please check the 'Data Summary' tab for the updated column dtypes."
-            )
-            util_funcs['_show_simple_modal_message']("Type Changes Processed", feedback_message)
     else:
-        print("Error: df_to_process became None unexpectedly before calling step1_processing_complete.")
-        if util_funcs and '_show_simple_modal_message' in util_funcs:
-            util_funcs['_show_simple_modal_message']("Processing Error", "An unexpected error occurred, and the DataFrame for processing became unavailable.")
+        print("Error: df_to_process became None unexpectedly.")
+
 
 def _convert_column_type(series: pd.Series, new_type: str, original_df: pd.DataFrame, util_funcs: dict = None) -> pd.Series:
     """컬럼 타입 변환"""
@@ -362,6 +329,8 @@ def _apply_imputation_method(df: pd.DataFrame, col_name: str,
 
 def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
     """UI 생성"""
+    global _module_main_callbacks
+    _module_main_callbacks = main_callbacks
     main_callbacks['register_step_group_tag'](step_name, TAG_DL_GROUP)
     
     with dpg.group(tag=TAG_DL_GROUP, parent=parent_container_tag, show=False):
@@ -390,11 +359,28 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
     
     main_callbacks['register_module_updater'](step_name, update_ui)
 
+def _trigger_step1_ui_update():
+    """Data Summary 탭의 UI 업데이트를 트리거하는 내부 함수"""
+    if not _module_main_callbacks:
+        print("Error: main_callbacks not initialized for Step 1 UI update.")
+        return
+
+    # main_callbacks를 통해 필요한 데이터 가져오기
+    current_df = _module_main_callbacks.get('get_current_df', lambda: None)()
+    original_df = _module_main_callbacks.get('get_original_df', lambda: None)()
+    util_funcs = _module_main_callbacks.get('get_util_funcs', lambda: {})()
+    file_path = _module_main_callbacks.get('get_loaded_file_path', lambda: None)()
+    
+    # update_ui 함수 호출
+    # update_ui 함수 시그니처: update_ui(current_df: pd.DataFrame, original_df: pd.DataFrame, util_funcs: dict, file_path: str = None)
+    update_ui(current_df, original_df, util_funcs, file_path)
+    print("Data Summary tab refreshed.")
+
 def _create_data_summary_tab():
     """데이터 요약 탭 생성"""
     with dpg.tab(label="Data Summary"):
         dpg.add_button(label="Refresh DataFrame Info", width=-1, height=30,
-                      callback=lambda: trigger_update())
+                      callback=lambda: _trigger_step1_ui_update())
         dpg.add_text("Shape: N/A (No data)", tag=TAG_DL_SHAPE_TEXT)
         dpg.add_separator()
         
@@ -475,28 +461,32 @@ def _create_missing_value_handler_tab(main_callbacks: dict):
             pass
 
 def _populate_type_editor_table(main_callbacks: dict, infer_all: bool = False):
-    """타입 편집 테이블 채우기"""
     global _type_selections
     
-    df = main_callbacks['get_original_df']()
+    original_df = main_callbacks['get_original_df']()
+    # df_after_step1은 Step 1의 모든 처리(타입 변경 포함)가 완료된 후의 DataFrame입니다.
+    df_after_step1 = main_callbacks['get_df_after_step1']() 
     util_funcs = main_callbacks['get_util_funcs']()
     
     if not dpg.does_item_exist(TAG_DL_TYPE_EDITOR_TABLE):
+        print(f"Error: Table with tag '{TAG_DL_TYPE_EDITOR_TABLE}' does not exist.")
         return
     
     dpg.delete_item(TAG_DL_TYPE_EDITOR_TABLE, children_only=True)
     
-    if df is None:
+    if original_df is None: # 원본 데이터프레임 기준으로 테이블을 구성하므로 original_df를 체크
         dpg.add_table_column(label="Info", parent=TAG_DL_TYPE_EDITOR_TABLE)
         with dpg.table_row(parent=TAG_DL_TYPE_EDITOR_TABLE):
             dpg.add_text("Load data to edit types.")
+        # 모달 대신 콘솔에만 출력하거나, 상태바가 있다면 그곳에 표시 가능
+        print("Info: Please load data first to infer or edit types.")
         return
     
-    # 테이블 헤더
-    columns = ["Column Name", "Original Dtype", "Inferred Type", 
-              "Selected Type", "Unique Count", "Sample Values"]
-    for col in columns:
-        dpg.add_table_column(label=col, parent=TAG_DL_TYPE_EDITOR_TABLE)
+    # 테이블 헤더 수정: "Applied Dtype" 추가
+    columns = ["Column Name", "Original Dtype", "Applied Dtype", 
+               "Selected Type", "Unique Count", "Sample Values"]
+    for col_label in columns: # 변수명 변경 (col -> col_label)
+        dpg.add_table_column(label=col_label, parent=TAG_DL_TYPE_EDITOR_TABLE)
     
     available_types = [
         "Original", "Numeric (int)", "Numeric (float)",
@@ -505,38 +495,44 @@ def _populate_type_editor_table(main_callbacks: dict, infer_all: bool = False):
         "Potentially Sensitive (Review Needed)"
     ]
     
-    # 각 컬럼에 대한 행 생성
-    for col_name in df.columns:
+    for col_name in original_df.columns:
         with dpg.table_row(parent=TAG_DL_TYPE_EDITOR_TABLE):
             # 컬럼명
             dpg.add_text(util_funcs['format_text_for_display'](col_name, max_chars=30))
             
-            # 원본 dtype
-            dpg.add_text(str(df[col_name].dtype))
+            # 원본 dtype (original_df 기준)
+            dpg.add_text(str(original_df[col_name].dtype))
             
-            # 추론된 타입
-            inferred_type, hint, is_binary = _infer_series_type(df[col_name])
-            display_text = f"{inferred_type} ({hint})" if hint else inferred_type
-            dpg.add_text(display_text)
+            # Applied Dtype (df_after_step1 기준, 없으면 original_df 기준)
+            applied_dtype_str = ""
+            # 고유 태그 대신, 이 텍스트는 매번 새로 그려지므로 직접 값을 설정합니다.
+            if df_after_step1 is not None and col_name in df_after_step1.columns:
+                applied_dtype_str = str(df_after_step1[col_name].dtype)
+            elif original_df is not None and col_name in original_df.columns: 
+                # df_after_step1이 None일 경우 (예: 최초 로드 후 아직 Apply 안 함) original_df의 dtype 표시
+                applied_dtype_str = str(original_df[col_name].dtype)
+            dpg.add_text(applied_dtype_str)
             
             # 타입 선택 콤보박스
+            # current_selection은 _type_selections에 저장된 값 (사용자 선택/추론)을 따름
             current_selection = _type_selections.get(col_name, "Original")
-            if infer_all and col_name not in _type_selections:
+            if infer_all and col_name not in _type_selections: # infer_all 시 _type_selections 업데이트
+                inferred_series_type_tuple = _infer_series_type(original_df[col_name]) # util_funcs 전달 불필요 시 제거
                 current_selection = _map_inferred_to_available_type(
-                    inferred_type, is_binary
+                    inferred_series_type_tuple[0], inferred_series_type_tuple[2] # inferred_type, is_binary
                 )
                 _type_selections[col_name] = current_selection
             
-            combo_tag = f"type_combo_{col_name}"
+            combo_tag = f"type_combo_{col_name.replace(' ', '_').replace('(', '').replace(')', '').replace('.', '')}" # 태그용 이름 정제
             dpg.add_combo(items=available_types, default_value=current_selection, 
-                         tag=combo_tag, width=-1, user_data=col_name,
-                         callback=lambda s, a, u: _type_selections.update({u: a}))
+                          tag=combo_tag, width=-1, user_data=col_name,
+                          callback=lambda s, a, u: _type_selections.update({u: a}))
             
-            # 고유값 수
-            dpg.add_text(str(df[col_name].nunique()))
+            # 고유값 수 (original_df 기준)
+            dpg.add_text(str(original_df[col_name].nunique()))
             
-            # 샘플 값
-            sample_vals = df[col_name].dropna().head(3).astype(str).tolist()
+            # 샘플 값 (original_df 기준)
+            sample_vals = original_df[col_name].dropna().head(3).astype(str).tolist()
             dpg.add_text(util_funcs['format_text_for_display'](
                 ", ".join(sample_vals), max_chars=50
             ))
