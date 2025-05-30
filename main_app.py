@@ -408,34 +408,61 @@ def gather_current_settings() -> dict:
     return settings
 
 def apply_settings(settings_dict: dict):
-    if app_state.original_df is None: _show_simple_modal_message("Error", "Cannot apply settings without data."); return
-    app_state.active_settings = settings_dict 
+    if app_state.original_df is None: 
+        _show_simple_modal_message("Error", "Cannot apply settings without data.")
+        return
+    app_state.active_settings = settings_dict # 전체 설정을 active_settings에 저장
 
     app_state.selected_target_variable = settings_dict.get('selected_target_variable')
     app_state.selected_target_variable_type = settings_dict.get('selected_target_variable_type', "Continuous")
     
     s01_settings = settings_dict.get('step_01_settings', {})
     if hasattr(step_01_data_loading, 'apply_step1_settings_and_process'):
+        # 이 함수 내부에서 step1_processing_complete를 호출하여 current_df 등이 설정될 것임
         step_01_data_loading.apply_step1_settings_and_process(app_state.original_df, s01_settings, main_app_callbacks)
-    else: 
+    else: # Fallback: Step1 처리 없이 원본을 사용하거나, 최소한의 처리만 가정
         if app_state.df_after_step1 is None: app_state.df_after_step1 = app_state.original_df.copy()
         app_state.current_df = app_state.df_after_step1.copy()
 
-    update_target_variable_combo() 
+    # --- ▼ [추가된 UI 업데이트 로직] 타겟 변수 타입 UI 상태 복원 ▼ ---
+    if app_state.selected_target_variable and \
+       app_state.current_df is not None and \
+       app_state.selected_target_variable in app_state.current_df.columns:
+        
+        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
+            dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, app_state.selected_target_variable_type)
+        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG):
+            dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=True)
+        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
+            dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=True)
+    else: # 선택된 타겟 변수가 없거나, current_df에 없거나, current_df가 None인 경우
+        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG):
+            dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
+        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
+            dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
+            # 설정에서 타겟 변수가 실제로 없는 것으로 로드되었다면 라디오 버튼 값도 기본값으로 리셋
+            if not settings_dict.get('selected_target_variable'): # app_state.selected_target_variable이 None일 때
+                 dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, "Continuous")
+    # --- ▲ [추가된 UI 업데이트 로직] 타겟 변수 타입 UI 상태 복원 ▲ ---
 
+    update_target_variable_combo() # current_df가 설정된 후 호출되어야 하며, 콤보 아이템 및 선택값 업데이트
+
+    # SVA 설정 적용 (step_02a_sva 모듈에 해당 함수가 있다고 가정)
     s02a_settings = settings_dict.get('step_02a_sva_settings', {})
     if hasattr(step_02a_sva, 'apply_sva_settings_from_loaded') and app_state.current_df is not None:
         step_02a_sva.apply_sva_settings_from_loaded(s02a_settings, app_state.current_df, main_app_callbacks)
         
+    # MVA 설정 적용 (step_02b_mva 모듈에 해당 함수가 있다고 가정)
     s02b_settings = settings_dict.get('step_02b_mva_settings', {})
     if hasattr(step_02b_mva, 'apply_mva_settings_from_loaded') and app_state.current_df is not None:
         step_02b_mva.apply_mva_settings_from_loaded(s02b_settings, app_state.current_df, main_app_callbacks)
 
     restored_active_step = settings_dict.get('active_step_name', ANALYSIS_STEPS[0] if ANALYSIS_STEPS else None)
-    trigger_all_module_updates() 
+    trigger_all_module_updates() # 모든 모듈 UI 업데이트 (SVA, MVA 포함)
     if restored_active_step and restored_active_step in app_state.step_group_tags and \
        dpg.does_item_exist(app_state.step_group_tags[restored_active_step]):
         switch_step_view(None, None, restored_active_step)
+
 
 
 def initial_load_on_startup():

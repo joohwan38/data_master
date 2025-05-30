@@ -158,7 +158,8 @@ def create_dpg_heatmap_plot(parent: str, matrix: pd.DataFrame, title: str, h: in
     r, c = matrix.shape
     if r == 0 or c == 0: dpg.add_text(f"{title}: Empty data (0 rows/cols).", parent=parent); return
 
-    data_np = np.nan_to_num(matrix.values.flatten().astype(float), nan=0.0, posinf=1.0, neginf=-1.0)
+    data_np = np.nan_to_num(matrix.values.flatten.astype(float), nan=0.0, posinf=1.0, neginf=-1.0)
+
     data_flat = data_np.tolist()
     if len(data_flat) != r * c: dpg.add_text(f"{title}: Data size mismatch.", parent=parent, color=(255,0,0)); return
 
