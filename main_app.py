@@ -254,26 +254,33 @@ def load_data_from_file(file_path: str) -> bool:
         trigger_all_module_updates()
         return False
 
+# main_app.py
+
 def target_variable_type_changed_callback(sender, app_data, user_data):
     """타겟 변수 타입 변경 콜백"""
     newly_selected_type = app_data
-    previous_type = app_state.selected_target_variable_type
+    # 콜백 발생 직전의 app_state에 저장된 유효한 타입을 가져옵니다.
+    previous_valid_type = app_state.selected_target_variable_type
 
-    # 타입 검증
+    # 타입 검증 로직
     if newly_selected_type == "Continuous" and app_state.selected_target_variable and \
        app_state.current_df is not None:
+        # Step 1에서 정의된 컬럼 분석 타입 가져오기
         s1_column_types = main_app_callbacks.get('get_column_analysis_types', lambda: {})()
         analysis_type_from_s1 = s1_column_types.get(app_state.selected_target_variable)
 
         is_text_based = False
-        if analysis_type_from_s1:
+        if analysis_type_from_s1: # Step 1 정보가 있으면 우선 사용
             text_keywords = ["Text (", "Potentially Sensitive", "Categorical (High Cardinality)"]
             if any(keyword in analysis_type_from_s1 for keyword in text_keywords):
                 is_text_based = True
+        # Step 1 정보가 없거나, Step 1에서 Numeric/Categorical 등으로 지정되었더라도
+        # 실제 데이터 타입이 object 또는 string 이면 텍스트 기반으로 추가 판단
         elif app_state.selected_target_variable in app_state.current_df.columns and \
              (pd.api.types.is_object_dtype(app_state.current_df[app_state.selected_target_variable].dtype) or \
               pd.api.types.is_string_dtype(app_state.current_df[app_state.selected_target_variable].dtype)):
-            if analysis_type_from_s1 is None:
+            # Step 1에서 명시적으로 Numeric 등으로 지정되지 않은 경우, object/string Dtype은 텍스트 기반으로 간주
+            if analysis_type_from_s1 is None or not any(k in analysis_type_from_s1 for k in ["Numeric", "Datetime", "Timedelta"]): # 더 정교한 조건
                 is_text_based = True
 
         if is_text_based:
@@ -284,15 +291,21 @@ def target_variable_type_changed_callback(sender, app_data, user_data):
                 f"'Step 1. Data Loading and Overview' if it's misclassified."
             )
             _show_simple_modal_message("Type Selection Warning", error_message)
-    
+            
+            if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
+                dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, previous_valid_type)
+            
+            print(f"Continuous type selection for '{app_state.selected_target_variable}' rejected. Reverted UI to '{previous_valid_type}'. App_state remains '{app_state.selected_target_variable_type}'.")
+            return # 함수 실행을 중단하여 아래의 app_state 업데이트 로직이 실행되지 않도록 합니다.
+
     app_state.selected_target_variable_type = newly_selected_type
-    print(f"Target variable type set to: {app_state.selected_target_variable_type}")
+    print(f"Target variable type successfully set to: {app_state.selected_target_variable_type}")
 
     if app_state.active_settings:
         app_state.active_settings['selected_target_variable_type'] = app_state.selected_target_variable_type
 
-    app_state._eda_sva_initialized = False
-    if app_state.active_step_name == ANALYSIS_STEPS[1]:
+    app_state._eda_sva_initialized = False 
+    if app_state.active_step_name == ANALYSIS_STEPS[1]: # 현재 EDA 탭이라면
         trigger_specific_module_update(ANALYSIS_STEPS[1])
 
 def target_variable_selected_callback(sender, app_data, user_data):
