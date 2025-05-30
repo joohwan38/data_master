@@ -72,7 +72,7 @@ def _show_simple_modal_message(title: str, message: str, width: int = 450, heigh
 def setup_korean_font():
     font_path, font_size, os_type = None, 17, platform.system()
     font_paths = {
-        "Darwin": ["/System/Library/Fonts/AppleSDGothicNeo.ttc", "/System/Library/Fonts/Supplemental/AppleGothic.ttf"],
+        "Darwin": ["fonts/NanumBarunGothic.otf","/System/Library/Fonts/AppleSDGothicNeo.ttc", "/System/Library/Fonts/Supplemental/AppleGothic.ttf"],
         "Windows": ["C:/Windows/Fonts/malgun.ttf", "C:/Windows/Fonts/gulim.ttc"],
         "Linux": ["NanumGothic.ttf", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"] # Bundled font 우선
     }

@@ -12,6 +12,90 @@ CELL_PADDING = 20
 TARGET_DATA_CHARS = 25
 ELLIPSIS = "..."
 
+def calculate_feature_target_relevance(
+    df: pd.DataFrame,
+    target_var: str,
+    target_var_type: str, # "Continuous" 또는 "Categorical"
+    features_to_analyze: List[str],
+    main_app_callbacks: Optional[Dict] = None # S1 타입을 고려하기 위해 추가 (선택적)
+) -> List[Tuple[str, float]]:
+    """
+    주어진 특성들과 타겟 변수 간의 연관성 점수를 계산합니다.
+    타겟이 연속형이면 (특성이 수치형일 때) 상관계수 절대값을,
+    타겟이 범주형이면 (특성이 수치형일 때) ANOVA F-통계량 절대값을 반환합니다.
+    결과는 (특성 변수명, 연관성 점수) 튜플의 리스트로, 점수가 높은 순으로 정렬됩니다.
+    """
+    if df is None or target_var not in df.columns or not features_to_analyze:
+        return []
+
+    scores = []
+    
+    s1_analysis_types = {}
+    if main_app_callbacks and 'get_column_analysis_types' in main_app_callbacks:
+        # Step 1에서 정의된 분석 타입을 가져옵니다. (예: main_app_callbacks['get_column_analysis_types']() 호출)
+        s1_analysis_types = main_app_callbacks['get_column_analysis_types']()
+
+
+    for feature_col in features_to_analyze:
+        if feature_col == target_var or feature_col not in df.columns:
+            continue
+
+        # 분석할 feature가 실제로 수치형인지 확인 (S1 타입 또는 pandas dtype 기준)
+        feature_s1_type = s1_analysis_types.get(feature_col, str(df[feature_col].dtype))
+        is_feature_numeric = ("Numeric" in feature_s1_type and "Binary" not in feature_s1_type) or \
+                             (pd.api.types.is_numeric_dtype(df[feature_col].dtype) and df[feature_col].nunique() > 5) # 고유값 많은 수치형
+
+
+        score = 0.0
+        try:
+            # 연관성 계산을 위한 데이터 준비 (결측값 제거)
+            # Series로 직접 작업하여 불필요한 DataFrame 복사 방지
+            target_series_clean = df[target_var].dropna()
+            feature_series_clean = df[feature_col].dropna()
+            
+            # 공통 인덱스 기준으로 데이터 정렬 및 필터링
+            common_index = target_series_clean.index.intersection(feature_series_clean.index)
+            if len(common_index) < 20: # 최소 데이터 포인트 수 (예: 20)
+                scores.append((feature_col, 0.0))
+                continue
+                
+            aligned_target = target_series_clean.loc[common_index]
+            aligned_feature = feature_series_clean.loc[common_index]
+
+            if target_var_type == "Categorical" and is_feature_numeric:
+                target_categories_local = aligned_target.unique()
+                if len(target_categories_local) >= 2: # ANOVA를 위한 최소 카테고리 수
+                    grouped_feature_data_for_anova = [
+                        aligned_feature[aligned_target == cat]
+                        for cat in target_categories_local
+                    ]
+                    valid_groups_anova = [g for g in grouped_feature_data_for_anova if len(g) >= 2] # 각 그룹 최소 샘플 수
+                    if len(valid_groups_anova) >= 2: # ANOVA를 위한 최소 그룹 수
+                        f_val, p_val = stats.f_oneway(*valid_groups_anova)
+                        score = abs(f_val) if pd.notna(f_val) and np.isfinite(f_val) else 0.0
+            
+            elif target_var_type == "Continuous" and is_feature_numeric:
+                # 타겟도 수치형이어야 상관계산 의미 있음
+                if pd.api.types.is_numeric_dtype(aligned_target.dtype):
+                    corr_val = aligned_feature.corr(aligned_target)
+                    score = abs(corr_val) if pd.notna(corr_val) and np.isfinite(corr_val) else 0.0
+            
+            # 다른 조합에 대한 연관성 계산 로직은 필요시 여기에 추가 가능
+            
+        except Exception as e_relevance:
+            # print(f"Relevance calculation error for {feature_col} vs {target_var}: {e_relevance}") # 디버깅용
+            score = 0.0 
+        
+        # 유의미한 점수만 추가 (0점은 제외하거나, 매우 작은 임계값 설정 가능)
+        if score > 1e-6: # 매우 작은 값은 사실상 0으로 간주될 수 있으므로 임계값 사용
+            scores.append((feature_col, score))
+        # else: # 0점인 경우도 추가하고 싶다면 이 부분을 활성화
+        #    scores.append((feature_col, 0.0))
+
+
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return scores
+
 def _get_numeric_cols(df: pd.DataFrame) -> List[str]:
     """DataFrame에서 수치형 데이터 타입을 가진 컬럼 목록을 반환합니다."""
     if df is None:

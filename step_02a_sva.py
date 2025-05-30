@@ -95,31 +95,14 @@ def _sva_get_filtered_variables(df: pd.DataFrame, strength: str, callbacks: dict
     if not num_cols_rank: utils.show_dpg_alert_modal("Filter Error", f"Filter '{strength}': No numeric vars.", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT); return [], strength
         
     target_type = callbacks['get_selected_target_variable_type']()
-    relevant_scores = _sva_calculate_relevance(df, target, target_type, num_cols_rank)
-    if not relevant_scores: utils.show_dpg_alert_modal("Filter Error", f"Filter '{strength}': No relevant vars.", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT); return [], strength
-    return relevant_scores[:10 if strength == "Strong (Top 5-10 relevant)" else 20], strength
+    relevance_tuples = utils.calculate_feature_target_relevance(
+        df, target, target_type, num_cols_rank, callbacks 
+    )
+    relevant_scores_vars = [var_name for var_name, score in relevance_tuples] # 변수명만 추출
 
-def _sva_calculate_relevance(df: pd.DataFrame, target_var: str, target_type: str, cols: List[str]) -> List[str]:
-    scores = []
-    for col in cols:
-        if col == target_var: continue
-        score = 0.0
-        try:
-            temp_df = pd.concat([df[col], df[target_var]], axis=1).dropna()
-            if len(temp_df) < 20: continue
-            if target_type == "Categorical": 
-                groups = [temp_df[col][temp_df[target_var] == cat] for cat in temp_df[target_var].unique()]
-                valid_groups = [g for g in groups if len(g) >= 2]
-                if len(valid_groups) >= 2:
-                    f_val, _ = stats.f_oneway(*valid_groups)
-                    score = f_val if pd.notna(f_val) and np.isfinite(f_val) else 0.0
-            elif target_type == "Continuous" and pd.api.types.is_numeric_dtype(temp_df[col].dtype):
-                corr_val = temp_df[col].corr(temp_df[target_var])
-                score = abs(corr_val) if pd.notna(corr_val) and np.isfinite(corr_val) else 0.0
-        except Exception: score = 0.0
-        if score > 1e-3 : scores.append((col, score))
-    scores.sort(key=lambda x: x[1], reverse=True)
-    return [col for col, _ in scores]
+    if not relevant_scores_vars: utils.show_dpg_alert_modal("Filter Error", f"Filter '{strength}': No relevant vars.", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT); return [], strength
+    return relevant_scores_vars[:10 if strength == "Strong (Top 5-10 relevant)" else 20], strength
+
 
 def _sva_create_basic_stats_table(parent: str, series: pd.Series, u_funcs: dict, analysis_override: str = None):
     dpg.add_text("Basic Statistics", parent=parent)
