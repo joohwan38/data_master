@@ -1,280 +1,479 @@
 # step_04_missing_values.py
 import dearpygui.dearpygui as dpg
 import pandas as pd
-from typing import Dict, Any, Optional
+import numpy as np
+from typing import Dict, Any, Optional, Tuple, List
+from sklearn.impute import SimpleImputer
+from sklearn.experimental import enable_iterative_imputer 
+from sklearn.impute import IterativeImputer 
 
-# --- 고유 태그 정의 ---
+# --- Unique DPG Tags for this module ---
 TAG_MV_STEP_GROUP = "step4_missing_values_group"
-TAG_MV_INFO_TABLE_BEFORE = "step4_mv_info_table_before"  # 처리 전 결측치 현황 테이블
-TAG_MV_METHOD_SELECTION_TABLE = "step4_mv_method_selection_table" # 변수별 처리 방법 선택 테이블
-TAG_MV_EXECUTE_BUTTON = "step4_mv_execute_button"       # 처리 실행 버튼
-TAG_MV_RESULTS_GROUP = "step4_mv_results_group"         # 결과 표시 그룹
-TAG_MV_INFO_TABLE_AFTER = "step4_mv_info_table_after"   # 처리 후 결측치 현황 테이블
-TAG_MV_LOG_TEXT_AREA = "step4_mv_log_text_area"         # 처리 로그 표시 영역 (Child Window)
-TAG_MV_LOG_TEXT = "step4_mv_log_text"                   # 실제 로그 텍스트
+TAG_MV_PREDEFINED_NAN_GROUP = "step4_mv_predefined_nan_group"
+TAG_MV_CONVERT_PREDEFINED_NANS_BUTTON = "step4_mv_convert_predefined_nans_button"
+TAG_MV_METHOD_SELECTION_TABLE = "step4_mv_method_selection_table"
+TAG_MV_EXECUTE_IMPUTATION_BUTTON = "step4_mv_execute_imputation_button"
+TAG_MV_RESULTS_GROUP = "step4_mv_results_group" 
+TAG_MV_LOG_TEXT_AREA = "step4_mv_log_text_area"
+TAG_MV_LOG_TEXT = "step4_mv_log_text"
 
-# --- 모듈 상태 변수 ---
+# --- Module State Variables ---
 _main_app_callbacks: Optional[Dict[str, Any]] = None
 _util_funcs: Optional[Dict[str, Any]] = None
-_current_df_for_this_step: Optional[pd.DataFrame] = None # 이 스텝에서 현재 보여주고 있는 DataFrame
+_current_df_for_this_step: Optional[pd.DataFrame] = None 
+_df_after_nan_conversion: Optional[pd.DataFrame] = None 
+_df_after_imputation: Optional[pd.DataFrame] = None 
 
-# 사용자가 선택한 처리 방법을 저장 (컬럼명: 방법)
-_imputation_method_selections: Dict[str, str] = {}
-# "특정 값으로 대체" 선택 시 사용자가 입력한 값을 저장 (컬럼명: 값)
-_custom_fill_values: Dict[str, str] = {}
+_imputation_method_selections: Dict[str, Tuple[str, Optional[str]]] = {} 
+
+PREDEFINED_NAN_STRINGS = ["N/A", "NA", "null", "Null", "NULL", "-", "?", "Missing", "missing", "not available", "", " "] 
+_selected_predefined_nans: Dict[str, bool] = {nan_str: False for nan_str in PREDEFINED_NAN_STRINGS}
 
 
-def _on_imputation_method_change(sender, app_data_method: str, user_data_col_name: str):
-    """콤보박스에서 처리 방법 변경 시 호출되는 콜백"""
-    _imputation_method_selections[user_data_col_name] = app_data_method
+def _on_predefined_nan_checkbox_change(sender, app_data: bool, user_data_nan_str: str):
+    _selected_predefined_nans[user_data_nan_str] = app_data
+    print(f"Step 4 MV: Predefined NaN string '{user_data_nan_str}' selection changed to {app_data}")
+
+def _convert_selected_to_nans_logic():
+    global _current_df_for_this_step, _df_after_nan_conversion, _util_funcs, _main_app_callbacks, _df_after_imputation
     
-    # "특정 값으로 대체" 선택 시 해당 컬럼의 "특정 값" 입력 필드 표시/숨김 처리
-    custom_fill_input_tag = f"custom_fill_input_{user_data_col_name}"
-    if dpg.does_item_exist(custom_fill_input_tag):
-        dpg.configure_item(custom_fill_input_tag, show=(app_data_method == "특정 값으로 대체"))
-    
-    print(f"결측치 처리: 컬럼 '{user_data_col_name}'의 처리 방법이 '{app_data_method}'(으)로 변경됨")
+    df_input_for_conversion = _df_after_imputation if _df_after_imputation is not None else \
+                              (_df_after_nan_conversion if _df_after_nan_conversion is not None else _current_df_for_this_step)
 
-def _on_custom_fill_value_change(sender, app_data_fill_value: str, user_data_col_name: str):
-    """ "특정 값" 입력 필드 값 변경 시 호출되는 콜백 """
-    _custom_fill_values[user_data_col_name] = app_data_fill_value
-    print(f"결측치 처리: 컬럼 '{user_data_col_name}'의 특정 대체 값이 '{app_data_fill_value}'(으)로 변경됨")
-
-def _execute_imputation_placeholder():
-    """ "결측치 처리 실행" 버튼 콜백 (현재는 플레이스홀더) """
-    global _main_app_callbacks, _current_df_for_this_step, _util_funcs
-    if not _main_app_callbacks or _current_df_for_this_step is None:
-        msg = "데이터가 로드되지 않았거나 내부 설정 오류입니다."
+    if df_input_for_conversion is None:
         if _util_funcs and '_show_simple_modal_message' in _util_funcs:
-            _util_funcs['_show_simple_modal_message']("처리 오류", msg)
-        else:
-            print(f"ERROR: {msg}")
+            _util_funcs['_show_simple_modal_message']("Error", "No data loaded to convert NaNs.")
         return
 
-    log_messages = ["--- 결측치 처리 실행 로그 (1-2 단계에서 실제 로직 구현 예정) ---"]
-    processed_df_placeholder = _current_df_for_this_step.copy() # 실제로는 이 DataFrame이 변경됨
+    df_to_convert = df_input_for_conversion.copy() 
+    strings_to_replace = [nan_str for nan_str, selected in _selected_predefined_nans.items() if selected]
+    log_messages = [f"--- Converting Predefined Strings to NaN (Step 4) ---"]
 
-    for col_name, method in _imputation_method_selections.items():
-        if col_name not in processed_df_placeholder.columns:
+    if not strings_to_replace:
+        log_messages.append("No predefined NaN strings selected for conversion.")
+        if _util_funcs and '_show_simple_modal_message' in _util_funcs:
+            _util_funcs['_show_simple_modal_message']("Info", "No predefined NaN strings were selected for conversion.")
+        _df_after_nan_conversion = df_to_convert 
+        _df_after_imputation = None 
+    else:
+        log_messages.append(f"Selected strings for NaN conversion: {', '.join(repr(s) for s in strings_to_replace)}")
+        converted_any = False
+        for col in df_to_convert.columns:
+            original_missing = df_to_convert[col].isnull().sum()
+            df_to_convert[col] = df_to_convert[col].replace(strings_to_replace, np.nan)
+            new_missing = df_to_convert[col].isnull().sum()
+            if new_missing > original_missing:
+                log_messages.append(f"  Column '{col}': Converted {new_missing - original_missing} additional values to NaN.")
+                converted_any = True
+        
+        if converted_any:
+            log_messages.append("Conversion complete. DataFrame updated for this step.")
+            if _util_funcs and '_show_simple_modal_message' in _util_funcs:
+                _util_funcs['_show_simple_modal_message']("Success", "Selected strings converted to NaN for further processing in this step.")
+        else:
+            log_messages.append("No values were converted to NaN based on selected strings.")
+            if _util_funcs and '_show_simple_modal_message' in _util_funcs:
+                _util_funcs['_show_simple_modal_message']("Info", "No values matched the selected strings for NaN conversion.")
+        _df_after_nan_conversion = df_to_convert 
+        _df_after_imputation = None 
+
+    if _main_app_callbacks:
+        update_ui(_df_after_nan_conversion, _main_app_callbacks) 
+
+    if dpg.does_item_exist(TAG_MV_LOG_TEXT):
+        dpg.set_value(TAG_MV_LOG_TEXT, "\n".join(log_messages))
+
+def _on_imputation_method_change(sender, app_data_method: str, user_data: Dict):
+    col_name = user_data["col_name"]
+    custom_value_input_tag = user_data["custom_value_input_tag"]
+    
+    current_custom_value = ""
+    if dpg.does_item_exist(custom_value_input_tag):
+        current_custom_value = dpg.get_value(custom_value_input_tag)
+    
+    _imputation_method_selections[col_name] = (app_data_method, current_custom_value if app_data_method == "Impute with Custom Value" else None)
+    
+    if dpg.does_item_exist(custom_value_input_tag):
+        dpg.configure_item(custom_value_input_tag, show=(app_data_method == "Impute with Custom Value"))
+    print(f"Step 4 MV: Column '{col_name}' imputation method: '{app_data_method}'")
+
+def _on_custom_fill_value_change(sender, app_data_fill_value: str, user_data_col_name: str):
+    if user_data_col_name in _imputation_method_selections:
+        method, _ = _imputation_method_selections[user_data_col_name]
+        if method == "Impute with Custom Value":
+            _imputation_method_selections[user_data_col_name] = (method, app_data_fill_value)
+    else:
+         _imputation_method_selections[user_data_col_name] = ("Impute with Custom Value", app_data_fill_value)
+    print(f"Step 4 MV: Column '{user_data_col_name}' custom fill value: '{app_data_fill_value}'")
+
+def _execute_imputation_logic():
+    global _main_app_callbacks, _df_after_nan_conversion, _current_df_for_this_step, _util_funcs, _df_after_imputation
+    
+    df_to_process = _df_after_nan_conversion if _df_after_nan_conversion is not None else _current_df_for_this_step
+
+    if not _main_app_callbacks or df_to_process is None:
+        if _util_funcs and '_show_simple_modal_message' in _util_funcs:
+            _util_funcs['_show_simple_modal_message']("Error", "No data or main callbacks available for imputation.")
+        if _main_app_callbacks: 
+             _main_app_callbacks['step4_missing_value_processing_complete'](None)
+        return
+
+    log_messages = ["--- Executing Selected Imputations (Step 4) ---"]
+    df_processed = df_to_process.copy() 
+    imputation_applied_any = False
+    
+    use_iterative_imputer = any(method == "Iterative Imputer (MICE)" for col, (method, _) in _imputation_method_selections.items())
+    
+    if use_iterative_imputer:
+        log_messages.append("Iterative Imputer (MICE) selected for one or more columns.")
+        log_messages.append("  └─ Applying IterativeImputer to all numeric columns with missing values.")
+        
+        numeric_cols_original_order = [col for col in df_processed.columns if pd.api.types.is_numeric_dtype(df_processed[col])]
+        
+        if not numeric_cols_original_order:
+            log_messages.append("  └─ No numeric columns found to apply IterativeImputer.")
+        else:
+            df_numeric_for_imputation = df_processed[numeric_cols_original_order].copy()
+            missing_in_numeric_before_iter = df_numeric_for_imputation.isnull().sum().sum()
+
+            if missing_in_numeric_before_iter > 0:
+                try:
+                    iter_imputer = IterativeImputer(random_state=0, max_iter=10) 
+                    df_numeric_imputed_values = iter_imputer.fit_transform(df_numeric_for_imputation)
+                    df_numeric_imputed = pd.DataFrame(df_numeric_imputed_values, columns=numeric_cols_original_order, index=df_numeric_for_imputation.index)
+                    
+                    for col_name_iter in numeric_cols_original_order:
+                        df_processed[col_name_iter] = df_numeric_imputed[col_name_iter]
+
+                    missing_in_numeric_after_iter = df_processed[numeric_cols_original_order].isnull().sum().sum()
+                    imputed_count_iter = missing_in_numeric_before_iter - missing_in_numeric_after_iter
+                    log_messages.append(f"  └─ IterativeImputer successfully applied to numeric columns. {imputed_count_iter} missing values imputed.")
+                    imputation_applied_any = True
+                except Exception as e_iter:
+                    log_messages.append(f"  └─ Error during IterativeImputer: {e_iter}")
+            else:
+                log_messages.append("  └─ No missing values found in numeric columns for IterativeImputer.")
+
+    for col_name, (method, custom_value_str) in _imputation_method_selections.items():
+        if col_name not in df_processed.columns:
             continue
         
-        log_messages.append(f"컬럼 [{col_name}]: 선택된 처리 방법 = '{method}'")
-        if method == "특정 값으로 대체":
-            fill_val = _custom_fill_values.get(col_name, "")
-            log_messages.append(f"  └─ 특정 대체 값: '{fill_val}' (실제 변환 로직은 추후 구현)")
-        # 여기에 다른 처리 방법들에 대한 로그도 추가될 수 있습니다.
-    
-    # 로그 업데이트
+        if method == "Iterative Imputer (MICE)" and pd.api.types.is_numeric_dtype(df_processed[col_name].dtype):
+            log_messages.append(f"Column '{col_name}' was processed by Iterative Imputer (MICE).")
+            continue 
+        elif method == "Iterative Imputer (MICE)" and not pd.api.types.is_numeric_dtype(df_processed[col_name].dtype):
+            log_messages.append(f"Column '{col_name}': Iterative Imputer (MICE) selected but column is non-numeric. Skipped by MICE.")
+            continue
+
+        if method == "Do Not Impute":
+            continue
+
+        log_messages.append(f"Processing Column '{col_name}' with method '{method}':")
+        original_missing_count_col = df_processed[col_name].isnull().sum()
+
+        try:
+            if method == "Remove Rows with Missing":
+                if original_missing_count_col > 0:
+                    rows_before = len(df_processed)
+                    df_processed.dropna(subset=[col_name], inplace=True) 
+                    rows_after = len(df_processed)
+                    log_messages.append(f"  └─ Removed {rows_before - rows_after} rows with missing values in '{col_name}'.")
+                    imputation_applied_any = True
+                else:
+                    log_messages.append(f"  └─ No missing values to remove in '{col_name}'.")
+            
+            elif original_missing_count_col > 0: 
+                series_to_impute_df = df_processed[[col_name]] 
+                imputer = None
+
+                if method == "Impute with 0":
+                    imputer = SimpleImputer(strategy='constant', fill_value=0)
+                elif method == "Impute with Mean":
+                    if pd.api.types.is_numeric_dtype(df_processed[col_name].dtype):
+                        imputer = SimpleImputer(strategy='mean')
+                    else:
+                        log_messages.append(f"  └─ Skipped: Mean imputation is for numeric columns only. '{col_name}' is {df_processed[col_name].dtype}.")
+                        continue
+                elif method == "Impute with Median":
+                    if pd.api.types.is_numeric_dtype(df_processed[col_name].dtype):
+                        imputer = SimpleImputer(strategy='median')
+                    else:
+                        log_messages.append(f"  └─ Skipped: Median imputation is for numeric columns only. '{col_name}' is {df_processed[col_name].dtype}.")
+                        continue
+                elif method == "Impute with Mode":
+                    imputer = SimpleImputer(strategy='most_frequent')
+                elif method == "Impute with Custom Value":
+                    fill_val_typed = custom_value_str 
+                    try:
+                        original_col_dtype = df_to_process[col_name].dtype 
+                        if pd.api.types.is_integer_dtype(original_col_dtype):
+                            fill_val_typed = int(custom_value_str)
+                        elif pd.api.types.is_float_dtype(original_col_dtype):
+                            fill_val_typed = float(custom_value_str)
+                        elif pd.api.types.is_bool_dtype(original_col_dtype):
+                            if custom_value_str.lower() == 'true': fill_val_typed = True
+                            elif custom_value_str.lower() == 'false': fill_val_typed = False
+                            else: raise ValueError("Boolean custom value must be 'true' or 'false'")
+                        elif pd.api.types.is_datetime64_any_dtype(original_col_dtype):
+                            fill_val_typed = pd.to_datetime(custom_value_str)
+                    except ValueError as ve:
+                        log_messages.append(f"  └─ Warning: Custom value '{custom_value_str}' for column '{col_name}' (dtype: {original_col_dtype}) caused conversion error: {ve}. Using as string if applicable, or imputation might fail.")
+                    imputer = SimpleImputer(strategy='constant', fill_value=fill_val_typed)
+
+                if imputer:
+                    transformed_col = imputer.fit_transform(series_to_impute_df)
+                    df_processed[col_name] = transformed_col 
+                    imputation_applied_any = True
+                    
+                    applied_stat_info = ""
+                    if hasattr(imputer, 'statistics_') and len(imputer.statistics_) > 0:
+                        stat_val = imputer.statistics_[0]
+                        if isinstance(stat_val, float): applied_stat_info = f" (applied: {stat_val:.2f})"
+                        else: applied_stat_info = f" (applied: '{stat_val}')"
+                    log_messages.append(f"  └─ Imputed {original_missing_count_col} missing values{applied_stat_info}.")
+            else: 
+                 log_messages.append(f"  └─ No missing values to impute in '{col_name}'.")
+        except Exception as e:
+            log_messages.append(f"  └─ Error during {method} for '{col_name}': {e}")
+
+    if not imputation_applied_any:
+        log_messages.append("No imputation methods selected or applied.")
+    else:
+        log_messages.append("--- Imputation execution finished. ---")
+
     if dpg.does_item_exist(TAG_MV_LOG_TEXT):
-        dpg.set_value(TAG_MV_LOG_TEXT, "\n".join(log_messages) if log_messages else "선택된 처리 작업이 없습니다.")
-
-    # 처리 후 테이블 업데이트 (플레이스홀더 - 실제로는 처리된 df_after_imputation 사용)
-    if dpg.does_item_exist(TAG_MV_INFO_TABLE_AFTER) and _util_funcs and 'create_table_with_data' in _util_funcs:
-        dpg.delete_item(TAG_MV_INFO_TABLE_AFTER, children_only=True) # 기존 내용 삭제
-        
-        # 지금은 원본 데이터의 결측치 정보를 다시 보여주지만, 1-2 단계에서는 처리 후의 정보를 보여줍니다.
-        missing_summary_after_placeholder = pd.DataFrame({
-            '컬럼명': processed_df_placeholder.columns,
-            '처리 후 결측 수': processed_df_placeholder.isnull().sum().values,
-            '처리 후 결측 비율 (%)': (processed_df_placeholder.isnull().mean() * 100).round(2).values
-        })
-        _util_funcs['create_table_with_data'](TAG_MV_INFO_TABLE_AFTER, missing_summary_after_placeholder, parent_df_for_widths=missing_summary_after_placeholder)
-
-    if _util_funcs and '_show_simple_modal_message' in _util_funcs:
-        _util_funcs['_show_simple_modal_message']("알림", "결측치 처리 실행 로직은 다음 단계에서 구현됩니다.\n현재는 선택된 설정에 대한 로그만 표시됩니다.")
+        dpg.set_value(TAG_MV_LOG_TEXT, "\n".join(log_messages))
     
-    # TODO (1-2 단계에서):
-    # 1. 실제 결측치 처리 로직 구현 (pandas 사용)
-    # 2. 처리된 DataFrame (df_after_imputation)을 main_app.py의 콜백 (예: step4_processing_complete)으로 전달하여
-    #    app_state.current_df 와 app_state.df_after_step4 (가칭) 등을 업데이트.
+    _df_after_imputation = df_processed.copy() 
+
+    if dpg.does_item_exist(TAG_MV_METHOD_SELECTION_TABLE) and _df_after_imputation is not None:
+        _populate_method_selection_table(_df_after_imputation) 
+
+    _show_simple_modal_message_func = _util_funcs.get('_show_simple_modal_message') if _util_funcs else None
+    if _show_simple_modal_message_func:
+        if imputation_applied_any:
+             _show_simple_modal_message_func("Imputation Complete", "Selected missing value treatments have been applied.\nCheck the 'Select Imputation Method & View Status' table and logs for details.")
+        else:
+             _show_simple_modal_message_func("Notice", "No imputation methods were selected or applied.")
+    
+    _main_app_callbacks['step4_missing_value_processing_complete'](_df_after_imputation)
 
 
 def _populate_method_selection_table(df: pd.DataFrame):
-    """결측치 처리 방법 선택 테이블 내용을 채우는 함수"""
+    """결측치 처리 방법 선택 테이블을 채웁니다. 현재 df에서 결측치가 있는 컬럼만 표시합니다.""" # 설명 수정
     if not dpg.does_item_exist(TAG_MV_METHOD_SELECTION_TABLE) or df is None or df.empty:
         if dpg.does_item_exist(TAG_MV_METHOD_SELECTION_TABLE):
             dpg.delete_item(TAG_MV_METHOD_SELECTION_TABLE, children_only=True)
-            dpg.add_table_column(label="정보", parent=TAG_MV_METHOD_SELECTION_TABLE)
+            dpg.add_table_column(label="Info", parent=TAG_MV_METHOD_SELECTION_TABLE)
             with dpg.table_row(parent=TAG_MV_METHOD_SELECTION_TABLE):
-                dpg.add_text("처리 방법을 선택할 데이터가 없습니다.")
+                dpg.add_text("No data available or no columns with missing values.") # 메시지 수정
         return
     
-    dpg.delete_item(TAG_MV_METHOD_SELECTION_TABLE, children_only=True) # 기존 내용 삭제
+    dpg.delete_item(TAG_MV_METHOD_SELECTION_TABLE, children_only=True)
     
-    # 사용 가능한 처리 방법 목록
-    imputation_options = [
-        "처리 안 함", "0으로 대체", "평균값으로 대체", 
-        "중앙값으로 대체", "최빈값으로 대체", "특정 값으로 대체", "행 제거"
+    imputation_options_base = [
+        "Do Not Impute", 
+        "Impute with 0", "Impute with Mean", "Impute with Median", "Impute with Mode", 
+        "Impute with Custom Value", 
+        "Remove Rows with Missing",
+        "Iterative Imputer (MICE)" 
     ]
 
-    # 테이블 헤더 정의
-    dpg.add_table_column(label="변수명", parent=TAG_MV_METHOD_SELECTION_TABLE, width_fixed=True, init_width_or_weight=150)
-    dpg.add_table_column(label="데이터 타입", parent=TAG_MV_METHOD_SELECTION_TABLE, width_fixed=True, init_width_or_weight=120)
-    dpg.add_table_column(label="결측치 수", parent=TAG_MV_METHOD_SELECTION_TABLE, width_fixed=True, init_width_or_weight=100)
-    dpg.add_table_column(label="처리 방법", parent=TAG_MV_METHOD_SELECTION_TABLE, width_stretch=True) # 남은 공간 채움
-    dpg.add_table_column(label="특정 값 (필요시 입력)", parent=TAG_MV_METHOD_SELECTION_TABLE, width_fixed=True, init_width_or_weight=180)
+    dpg.add_table_column(label="Column Name", parent=TAG_MV_METHOD_SELECTION_TABLE, width_fixed=True, init_width_or_weight=200)
+    dpg.add_table_column(label="Data Type", parent=TAG_MV_METHOD_SELECTION_TABLE, width_fixed=True, init_width_or_weight=120)
+    dpg.add_table_column(label="Current Missing Count", parent=TAG_MV_METHOD_SELECTION_TABLE, width_fixed=True, init_width_or_weight=150) 
+    dpg.add_table_column(label="Imputation Method", parent=TAG_MV_METHOD_SELECTION_TABLE, width_stretch=True) 
+    dpg.add_table_column(label="Custom Value", parent=TAG_MV_METHOD_SELECTION_TABLE, width_fixed=True, init_width_or_weight=180)
 
-    for col_name in df.columns:
+    # 결측치가 있는 컬럼만 필터링하여 표시
+    cols_with_missing = [col for col in df.columns if df[col].isnull().sum() > 0]
+
+    if not cols_with_missing:
+        with dpg.table_row(parent=TAG_MV_METHOD_SELECTION_TABLE):
+            dpg.add_text("No columns with missing values found in the current dataset.")
+            # 빈 셀 추가 (컬럼 헤더 유지용)
+            # 컬럼 수를 가져오는 방법 수정
+            num_columns = 0
+            if dpg.does_item_exist(TAG_MV_METHOD_SELECTION_TABLE):
+                table_config = dpg.get_item_configuration(TAG_MV_METHOD_SELECTION_TABLE)
+                num_columns = table_config.get('columns', 1) # 'columns' 키로 컬럼 수 가져오기 (기본값 1)
+            
+            for _ in range(max(0, num_columns - 1)): # 컬럼 수가 1보다 작을 경우 대비
+                 dpg.add_text("")
+        return
+
+    for col_name in cols_with_missing: # 결측치가 있는 컬럼에 대해서만 반복
         with dpg.table_row(parent=TAG_MV_METHOD_SELECTION_TABLE):
             dpg.add_text(col_name)
             dpg.add_text(str(df[col_name].dtype))
-            dpg.add_text(str(df[col_name].isnull().sum()))
+            missing_count = df[col_name].isnull().sum() # 이 값은 항상 > 0
+            dpg.add_text(str(missing_count))
             
-            # 현재 컬럼에 대해 저장된 처리 방법 가져오기 (없으면 "처리 안 함")
-            current_method = _imputation_method_selections.get(col_name, "처리 안 함")
-            # 데이터 타입에 따라 선택 불가능한 옵션 비활성화 (1-2 단계에서 구현 고려)
-            # 예: 범주형 변수에 "평균값으로 대체" 비활성화
+            current_method_tuple = _imputation_method_selections.get(col_name)
+            current_method = current_method_tuple[0] if current_method_tuple else "Do Not Impute"
             
-            # 처리 방법 선택 콤보박스
-            dpg.add_combo(imputation_options, default_value=current_method, width=-1,
-                          callback=_on_imputation_method_change, user_data=col_name)
+            custom_fill_input_tag = f"custom_fill_input_s4_{''.join(filter(str.isalnum, col_name))}"
+
+            is_numeric = pd.api.types.is_numeric_dtype(df[col_name].dtype)
+            current_col_options = imputation_options_base[:] 
             
-            # "특정 값으로 대체" 시 사용할 입력 필드
-            custom_fill_input_tag = f"custom_fill_input_{col_name}"
-            current_fill_value = _custom_fill_values.get(col_name, "")
-            dpg.add_input_text(tag=custom_fill_input_tag, default_value=current_fill_value, width=-1,
-                               show=(current_method == "특정 값으로 대체"), # 초기 표시 상태 설정
+            if not is_numeric:
+                if "Impute with Mean" in current_col_options: current_col_options.remove("Impute with Mean")
+                if "Impute with Median" in current_col_options: current_col_options.remove("Impute with Median")
+                if "Iterative Imputer (MICE)" in current_col_options: current_col_options.remove("Iterative Imputer (MICE)")
+            
+            # 결측치가 있는 컬럼이므로 항상 콤보박스 표시
+            dpg.add_combo(current_col_options, default_value=current_method, width=-1,
+                          callback=_on_imputation_method_change, 
+                          user_data={"col_name": col_name, "custom_value_input_tag": custom_fill_input_tag})
+            
+            current_custom_value = current_method_tuple[1] if current_method_tuple and current_method_tuple[1] is not None else ""
+            dpg.add_input_text(tag=custom_fill_input_tag, default_value=current_custom_value, width=-1,
+                               show=(current_method == "Impute with Custom Value"),
                                callback=_on_custom_fill_value_change, user_data=col_name)
 
+
 def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
-    """이 모듈의 전체 UI를 생성합니다."""
     global _main_app_callbacks, _util_funcs
     _main_app_callbacks = main_callbacks
-    # main_callbacks에서 get_util_funcs를 호출하여 _util_funcs를 가져옵니다.
     if 'get_util_funcs' in main_callbacks:
         _util_funcs = main_callbacks['get_util_funcs']()
 
     main_callbacks['register_step_group_tag'](step_name, TAG_MV_STEP_GROUP)
 
     with dpg.group(tag=TAG_MV_STEP_GROUP, parent=parent_container_tag, show=False):
-        dpg.add_text(f"--- {step_name} ---")
+        dpg.add_text(f"--- {step_name} ---") 
         dpg.add_separator()
 
-        # 1. 처리 전 결측치 현황
-        dpg.add_text("1. 현재 데이터 결측치 현황 (처리 전)", color=[255, 255, 0])
-        with dpg.table(tag=TAG_MV_INFO_TABLE_BEFORE, header_row=True, resizable=True, 
-                       policy=dpg.mvTable_SizingFixedFit, scrollY=True, height=180,
-                       borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
-            # 내용은 update_ui에서 채워짐
-            dpg.add_table_column(label="안내", parent=TAG_MV_INFO_TABLE_BEFORE)
-            with dpg.table_row(parent=TAG_MV_INFO_TABLE_BEFORE):
-                dpg.add_text("데이터를 불러오거나 이전 단계를 완료하면 여기에 현황이 표시됩니다.")
-        dpg.add_spacer(height=15)
+        dpg.add_text("1. Convert Predefined Strings to NaN (Optional)", color=[255, 255, 0])
+        dpg.add_text("Select common string representations to treat as missing values (affects current step only):")
+        with dpg.group(tag=TAG_MV_PREDEFINED_NAN_GROUP, horizontal=True, horizontal_spacing=15):
+            num_nans = len(PREDEFINED_NAN_STRINGS)
+            cols = 3 
+            items_per_col = (num_nans + cols - 1) // cols
+            for col_idx in range(cols):
+                with dpg.group():
+                    start_idx = col_idx * items_per_col
+                    end_idx = min((col_idx + 1) * items_per_col, num_nans)
+                    for i in range(start_idx, end_idx):
+                        nan_str = PREDEFINED_NAN_STRINGS[i]
+                        display_label = f"'{nan_str}'" if nan_str else "'Empty String'" 
+                        dpg.add_checkbox(label=display_label, tag=f"nan_cb_s4_{i}", 
+                                         default_value=_selected_predefined_nans[nan_str],
+                                         user_data=nan_str, callback=_on_predefined_nan_checkbox_change)
+        dpg.add_button(label="Convert Selected Strings to NaN (Current Step)", tag=TAG_MV_CONVERT_PREDEFINED_NANS_BUTTON,
+                       callback=_convert_selected_to_nans_logic, width=-1)
+        dpg.add_spacer(height=10)
 
-        # 2. 변수별 처리 방법 선택
-        dpg.add_text("2. 변수별 결측치 처리 방법 선택", color=[255, 255, 0])
+        dpg.add_text("2. Select Imputation Method & View Status", color=[255, 255, 0])
         with dpg.table(tag=TAG_MV_METHOD_SELECTION_TABLE, header_row=True, resizable=True, 
-                       policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=350,
+                       policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=350, scrollX=True, 
                        borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
-            # 내용은 update_ui에서 채워짐
-            dpg.add_table_column(label="안내", parent=TAG_MV_METHOD_SELECTION_TABLE)
+            dpg.add_table_column(label="Info", parent=TAG_MV_METHOD_SELECTION_TABLE)
             with dpg.table_row(parent=TAG_MV_METHOD_SELECTION_TABLE):
-                dpg.add_text("데이터를 불러오거나 이전 단계를 완료하면 여기에 변수 목록이 표시됩니다.")
-        dpg.add_spacer(height=15)
+                dpg.add_text("Data needed to select methods.")
+        dpg.add_spacer(height=10)
         
-        # 3. 처리 실행 버튼
-        dpg.add_button(label="결측치 처리 실행", tag=TAG_MV_EXECUTE_BUTTON, width=-1, height=30,
-                       callback=_execute_imputation_placeholder)
+        dpg.add_button(label="Apply Selected Imputations", tag=TAG_MV_EXECUTE_IMPUTATION_BUTTON, width=-1, height=30,
+                       callback=_execute_imputation_logic)
         dpg.add_spacer(height=15)
 
-        # 4. 결과 표시 그룹
-        with dpg.group(tag=TAG_MV_RESULTS_GROUP):
-            dpg.add_text("3. 결측치 처리 결과", color=[255, 255, 0])
+        with dpg.group(tag=TAG_MV_RESULTS_GROUP): 
+            dpg.add_text("3. Processing Log", color=[255, 255, 0])
             dpg.add_separator()
-            dpg.add_text("처리 로그:")
-            # 로그를 표시할 스크롤 가능한 자식 창
-            with dpg.child_window(tag=TAG_MV_LOG_TEXT_AREA, height=120, border=True):
-                 dpg.add_text("실행 버튼을 누르면 여기에 로그가 표시됩니다.", tag=TAG_MV_LOG_TEXT, wrap=-1)
-            
-            dpg.add_spacer(height=10)
-            dpg.add_text("처리 후 결측치 현황:")
-            with dpg.table(tag=TAG_MV_INFO_TABLE_AFTER, header_row=True, resizable=True, 
-                           policy=dpg.mvTable_SizingFixedFit, scrollY=True, height=180,
-                           borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
-                dpg.add_table_column(label="안내", parent=TAG_MV_INFO_TABLE_AFTER)
-                with dpg.table_row(parent=TAG_MV_INFO_TABLE_AFTER):
-                    dpg.add_text("실행 버튼을 누르면 여기에 처리 후 현황이 표시됩니다.")
+            with dpg.child_window(tag=TAG_MV_LOG_TEXT_AREA, height=150, border=True): 
+                 dpg.add_text("Press 'Convert Selected Strings' or 'Apply Imputations' to see logs.", tag=TAG_MV_LOG_TEXT, wrap=-1)
 
-    # 이 모듈의 UI를 업데이트하는 함수를 main_app에 등록
     main_callbacks['register_module_updater'](step_name, update_ui)
 
-
-def update_ui(df: Optional[pd.DataFrame], main_callbacks: dict):
-    """이 모듈의 UI를 현재 데이터프레임 기준으로 업데이트합니다."""
-    global _main_app_callbacks, _util_funcs, _current_df_for_this_step
+def update_ui(df_input_for_step: Optional[pd.DataFrame], main_callbacks: dict):
+    global _main_app_callbacks, _util_funcs, _current_df_for_this_step, _df_after_imputation
     
-    # 콜백 및 유틸 함수 최신화 (create_ui 이후에도 호출될 수 있으므로)
     if not _main_app_callbacks: _main_app_callbacks = main_callbacks
-    if not _util_funcs: 
-        if 'get_util_funcs' in main_callbacks:
-            _util_funcs = main_callbacks['get_util_funcs']()
+    if not _util_funcs and 'get_util_funcs' in _main_app_callbacks:
+        _util_funcs = _main_app_callbacks['get_util_funcs']()
 
-    _current_df_for_this_step = df # 현재 스텝에서 사용할 DataFrame 저장
+    _current_df_for_this_step = df_input_for_step 
+    
+    df_for_display_in_table = _current_df_for_this_step 
+    if _df_after_imputation is not None:
+        df_for_display_in_table = _df_after_imputation
+    elif _df_after_nan_conversion is not None:
+        df_for_display_in_table = _df_after_nan_conversion
 
     if not dpg.is_dearpygui_running() or not dpg.does_item_exist(TAG_MV_STEP_GROUP):
-        return # UI가 아직 준비되지 않았거나 DPG가 실행 중이 아님
-
-    # 1. "처리 전 결측치 현황" 테이블 업데이트
-    if dpg.does_item_exist(TAG_MV_INFO_TABLE_BEFORE):
-        dpg.delete_item(TAG_MV_INFO_TABLE_BEFORE, children_only=True) # 테이블 내용만 삭제
-        if df is not None and not df.empty:
-            if _util_funcs and 'create_table_with_data' in _util_funcs:
-                missing_summary_before = pd.DataFrame({
-                    '컬럼명': df.columns,
-                    '데이터 타입': df.dtypes.astype(str).values, # .astype(str) 추가
-                    '결측 수': df.isnull().sum().values,
-                    '결측 비율 (%)': (df.isnull().mean() * 100).round(2).values
-                })
-                _util_funcs['create_table_with_data'](TAG_MV_INFO_TABLE_BEFORE, missing_summary_before, parent_df_for_widths=missing_summary_before)
-            else: # 유틸 함수 사용 불가 시 대체 표시
-                dpg.add_table_column(label="오류", parent=TAG_MV_INFO_TABLE_BEFORE)
-                with dpg.table_row(parent=TAG_MV_INFO_TABLE_BEFORE):
-                    dpg.add_text("테이블 생성 유틸 함수를 찾을 수 없습니다.")
-        else: # df가 None이거나 비어있을 때
-            dpg.add_table_column(label="안내", parent=TAG_MV_INFO_TABLE_BEFORE)
-            with dpg.table_row(parent=TAG_MV_INFO_TABLE_BEFORE):
-                dpg.add_text("표시할 데이터가 없습니다. 파일을 로드하거나 이전 단계를 완료해주세요.")
+        return
     
-    # 2. "변수별 처리 방법 선택" 테이블 업데이트
-    if df is not None and not df.empty:
-        _populate_method_selection_table(df) # 이 함수가 내부적으로 테이블 내용을 지우고 다시 그림
+    if df_for_display_in_table is not None and not df_for_display_in_table.empty:
+        _populate_method_selection_table(df_for_display_in_table)
     else:
-        if dpg.does_item_exist(TAG_MV_METHOD_SELECTION_TABLE):
+        if dpg.does_item_exist(TAG_MV_METHOD_SELECTION_TABLE): 
             dpg.delete_item(TAG_MV_METHOD_SELECTION_TABLE, children_only=True)
-            dpg.add_table_column(label="안내", parent=TAG_MV_METHOD_SELECTION_TABLE)
+            dpg.add_table_column(label="Info", parent=TAG_MV_METHOD_SELECTION_TABLE)
             with dpg.table_row(parent=TAG_MV_METHOD_SELECTION_TABLE):
-                dpg.add_text("처리 방법을 선택할 데이터가 없습니다.")
+                dpg.add_text("No data to select methods for.")
 
-    # 3. 결과 영역 초기화 (로그 및 처리 후 테이블)
     if dpg.does_item_exist(TAG_MV_LOG_TEXT):
-        dpg.set_value(TAG_MV_LOG_TEXT, "처리 방법을 선택하고 '결측치 처리 실행' 버튼을 누르세요.")
+        current_log = dpg.get_value(TAG_MV_LOG_TEXT)
+        if not current_log or "Executing" not in current_log and "Converting" not in current_log :
+             dpg.set_value(TAG_MV_LOG_TEXT, "Select actions and execute to see logs.")
     
-    if dpg.does_item_exist(TAG_MV_INFO_TABLE_AFTER):
-        dpg.delete_item(TAG_MV_INFO_TABLE_AFTER, children_only=True)
-        dpg.add_table_column(label="안내", parent=TAG_MV_INFO_TABLE_AFTER)
-        with dpg.table_row(parent=TAG_MV_INFO_TABLE_AFTER):
-            dpg.add_text("실행 버튼을 누르면 여기에 처리 후 현황이 표시됩니다.")
-
-
 def reset_missing_values_state():
-    """이 모듈의 상태를 초기화합니다 (예: 새 파일 로드 시)."""
-    global _imputation_method_selections, _custom_fill_values, _current_df_for_this_step
+    global _imputation_method_selections, _current_df_for_this_step, _selected_predefined_nans, _df_after_nan_conversion, _df_after_imputation
     _imputation_method_selections.clear()
-    _custom_fill_values.clear()
     _current_df_for_this_step = None
-
-    # UI 자체는 update_ui가 다시 호출되면서 데이터 없음 상태로 갱신될 것이므로,
-    # 여기서는 주로 내부 상태 변수만 초기화합니다.
-    # 만약 특정 UI 요소의 값을 직접 초기화해야 한다면 여기서 처리합니다.
-    # (예: _populate_method_selection_table(None) 호출 등은 update_ui에서 df가 None일 때 처리됨)
+    _df_after_nan_conversion = None 
+    _df_after_imputation = None 
+    
+    for nan_str in PREDEFINED_NAN_STRINGS:
+        _selected_predefined_nans[nan_str] = False
+        if dpg.is_dearpygui_running():
+            for i, predefined_str_iter in enumerate(PREDEFINED_NAN_STRINGS):
+                if predefined_str_iter == nan_str:
+                    cb_tag = f"nan_cb_s4_{i}"
+                    if dpg.does_item_exist(cb_tag):
+                        dpg.set_value(cb_tag, False)
+                    break
+    
     if dpg.is_dearpygui_running():
         if dpg.does_item_exist(TAG_MV_LOG_TEXT):
-            dpg.set_value(TAG_MV_LOG_TEXT, "처리 방법을 선택하고 '결측치 처리 실행' 버튼을 누르세요.")
-        if dpg.does_item_exist(TAG_MV_INFO_TABLE_AFTER):
-            dpg.delete_item(TAG_MV_INFO_TABLE_AFTER, children_only=True)
-            dpg.add_table_column(label="안내", parent=TAG_MV_INFO_TABLE_AFTER)
-            with dpg.table_row(parent=TAG_MV_INFO_TABLE_AFTER):
-                dpg.add_text("실행 버튼을 누르면 여기에 처리 후 현황이 표시됩니다.")
-        # update_ui(None, _main_app_callbacks) # main_app에서 호출해 줄 것이므로 중복 호출 방지
+            dpg.set_value(TAG_MV_LOG_TEXT, "Select actions and execute to see logs.")
+        
+        if dpg.does_item_exist(TAG_MV_METHOD_SELECTION_TABLE):
+            dpg.delete_item(TAG_MV_METHOD_SELECTION_TABLE, children_only=True)
+            dpg.add_table_column(label="Info", parent=TAG_MV_METHOD_SELECTION_TABLE)
+            with dpg.table_row(parent=TAG_MV_METHOD_SELECTION_TABLE):
+                dpg.add_text("Load data to select methods.")
 
-    print("결측치 처리(Step 4) 상태 초기화 완료.")
+    print("Step 4: Missing Values state has been reset.")
+
+def get_missing_values_settings_for_saving() -> dict:
+    return {
+        "imputation_selections": _imputation_method_selections.copy(),
+        "selected_predefined_nans_for_step4": _selected_predefined_nans.copy() 
+    }
+
+def apply_missing_values_settings_and_process(df_input: pd.DataFrame, settings: dict, main_callbacks: dict):
+    global _imputation_method_selections, _selected_predefined_nans, _main_app_callbacks, _current_df_for_this_step, _df_after_nan_conversion, _df_after_imputation
+    
+    if not _main_app_callbacks: _main_app_callbacks = main_callbacks
+    
+    _current_df_for_this_step = df_input 
+    _df_after_nan_conversion = None 
+    _df_after_imputation = None 
+
+    loaded_imputation_selections = settings.get("imputation_selections", {})
+    _imputation_method_selections = loaded_imputation_selections.copy()
+
+    loaded_predefined_nans = settings.get("selected_predefined_nans_for_step4", {})
+    _selected_predefined_nans = loaded_predefined_nans.copy()
+
+    if dpg.is_dearpygui_running():
+        for i, nan_str_iter in enumerate(PREDEFINED_NAN_STRINGS):
+            cb_tag = f"nan_cb_s4_{i}"
+            if dpg.does_item_exist(cb_tag):
+                dpg.set_value(cb_tag, _selected_predefined_nans.get(nan_str_iter, False))
+    
+    update_ui(df_input, main_callbacks)
+    print("Step 4 Missing Values settings applied. UI updated. User needs to click 'Convert' or 'Apply' manually.")
+

@@ -309,7 +309,8 @@ def show_dpg_alert_modal(title: str, message: str,
             with dpg.group(horizontal=True):
                 btn_w = 100
                 # 버튼 중앙 정렬을 위한 spacer (근사치)
-                spacer_w = (modal_w - btn_w - dpg.get_style_item_spacing()[0] * 2 if dpg.is_dearpygui_running() else modal_w - btn_w - 16) / 2
+                default_item_spacing_x = 8.0
+                spacer_w = (modal_w - btn_w - (default_item_spacing_x * 2) if dpg.is_dearpygui_running() else modal_w - btn_w - 16) / 2
                 dpg.add_spacer(width=max(0, spacer_w))
                 dpg.add_button(label="OK", width=btn_w, user_data=modal_tag,
                                callback=lambda s, a, u: dpg.configure_item(u, show=False))
