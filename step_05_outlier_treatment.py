@@ -21,6 +21,9 @@ TAG_OT_LOG_TEXT = "step5_ot_log_text"
 # 이 태그들은 create_ui에서 생성됩니다.
 TAG_OT_DEFAULT_PLOT_TEXTURE_UNI = "step5_ot_default_plot_texture_uni"
 TAG_OT_DEFAULT_PLOT_TEXTURE_MVA = "step5_ot_default_plot_texture_mva"
+TAG_OT_MVA_SHAP_DEFAULT_TEXTURE = "step5_ot_mva_shap_default_texture" # SHAP용 기본 텍스처 태그
+TAG_OT_MVA_GROUP_DIST_DEFAULT_TEXTURE = "step5_ot_mva_group_dist_default_texture"
+TAG_OT_MVA_GROUP_FREQ_DEFAULT_TEXTURE = "step5_ot_mva_group_freq_default_texture"
 
 
 # --- Module State Variables (Parent) ---
@@ -103,37 +106,42 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
     if 'get_util_funcs' in main_callbacks:
         _util_funcs_parent = main_callbacks['get_util_funcs']()
 
-    # Step 5 하위 모듈에 전달할 공유 유틸리티 구성
+    # _step_05_shared_utilities 딕셔너리 구성 시 새로운 기본 텍스처 태그 추가
     _step_05_shared_utilities = {
         "main_app_callbacks": _main_app_callbacks_parent,
-        "util_funcs_common": _util_funcs_parent, # from utils.py via main_app
+        "util_funcs_common": _util_funcs_parent,
         "log_message_func": _log_message_parent,
         "plot_to_dpg_texture_func": _s5_plot_to_dpg_texture_parent,
-        "get_current_df_func": lambda: _current_df_for_this_step_parent, # 현재 스텝의 DF를 가져오는 함수
+        "get_current_df_func": lambda: _current_df_for_this_step_parent,
         "default_uni_plot_texture_tag": TAG_OT_DEFAULT_PLOT_TEXTURE_UNI,
-        "default_mva_plot_texture_tag": TAG_OT_DEFAULT_PLOT_TEXTURE_MVA,
+        "default_mva_plot_texture_tag": TAG_OT_DEFAULT_PLOT_TEXTURE_MVA, # 이전 UMAP용 기본 텍스처 (DPG 네이티브 플롯으로 대체됨)
+        "default_shap_plot_texture_tag": TAG_OT_MVA_SHAP_DEFAULT_TEXTURE,
+        "default_group_dist_plot_texture_tag": TAG_OT_MVA_GROUP_DIST_DEFAULT_TEXTURE, # <--- 추가
+        "default_group_freq_plot_texture_tag": TAG_OT_MVA_GROUP_FREQ_DEFAULT_TEXTURE, # <--- 추가
     }
 
     if not dpg.does_item_exist("texture_registry"):
         dpg.add_texture_registry(tag="texture_registry", show=False)
 
-    # 기본 텍스처 생성 (UNI & MVA) - 하위 모듈에서 참조
-    if not dpg.does_item_exist(TAG_OT_DEFAULT_PLOT_TEXTURE_UNI):
-        dpg.add_static_texture(width=100, height=30, default_value=[0.0]*100*30*4, tag=TAG_OT_DEFAULT_PLOT_TEXTURE_UNI, parent="texture_registry")
-    if not dpg.does_item_exist(TAG_OT_DEFAULT_PLOT_TEXTURE_MVA):
-        dpg.add_static_texture(width=100, height=30, default_value=[0.0]*100*30*4, tag=TAG_OT_DEFAULT_PLOT_TEXTURE_MVA, parent="texture_registry")
+    # 기본 텍스처 생성
+    default_textures_to_create = {
+        TAG_OT_DEFAULT_PLOT_TEXTURE_UNI: (10,10),
+        TAG_OT_DEFAULT_PLOT_TEXTURE_MVA: (10,10), # UMAP DPG 네이티브 플롯으로 대체되었지만, 혹시 다른 곳 참조 가능성
+        TAG_OT_MVA_SHAP_DEFAULT_TEXTURE: (10,10),
+        TAG_OT_MVA_GROUP_DIST_DEFAULT_TEXTURE: (10,10), # <--- 추가
+        TAG_OT_MVA_GROUP_FREQ_DEFAULT_TEXTURE: (10,10), # <--- 추가
+    }
+    for tag, (w, h) in default_textures_to_create.items():
+        if not dpg.does_item_exist(tag):
+            dpg.add_static_texture(width=w, height=h, default_value=[0.0]*(w*h*4), tag=tag, parent="texture_registry")
+            _log_message_parent(f"Created default texture: {tag}")
 
     main_callbacks['register_step_group_tag'](step_name, TAG_OT_STEP_GROUP)
     with dpg.group(tag=TAG_OT_STEP_GROUP, parent=parent_container_tag, show=False):
         dpg.add_text(f"--- {step_name} ---"); dpg.add_separator()
-
+        # ... (탭 바 및 하위 모듈 UI 생성 호출 등)
         with dpg.tab_bar(tag="step5_outlier_tab_bar"):
-            # --- Univariate Tab ---
-            # uni_module.create_ui가 TAG_OT_UNIVARIATE_TAB을 직접 생성하도록 변경
             uni_module.create_univariate_ui("step5_outlier_tab_bar", _step_05_shared_utilities)
-
-            # --- Multivariate Tab ---
-            # mva_module.create_ui가 TAG_OT_MULTIVARIATE_TAB을 직접 생성하도록 변경
             mva_module.create_multivariate_ui("step5_outlier_tab_bar", _step_05_shared_utilities)
 
         dpg.add_separator()
