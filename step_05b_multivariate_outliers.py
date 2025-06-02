@@ -2,961 +2,943 @@
 import dearpygui.dearpygui as dpg
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, Optional, List, Tuple, Union
-import traceback
-
-from sklearn.ensemble import IsolationForest
+from typing import Dict, Any, Optional, List, Tuple
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 
-try:
-    import shap
-except ImportError:
-    shap = None
+# 라이브러리 직접 임포트 (try-except 제거)
+from pyod.models.iforest import IForest as PyOD_IForest
+import umap
+import shap
 
-try:
-    from umap import UMAP
-except ImportError:
-    UMAP = None
 
-# --- DPG Tags ---
+# --- DPG Tags for Multivariate Tab ---
 TAG_OT_MULTIVARIATE_TAB = "step5_multivariate_outlier_tab"
-TAG_OT_MVA_VAR_METHOD_RADIO = "step5_ot_mva_var_method_radio"
-TAG_OT_MVA_CUSTOM_COLS_TABLE = "step5_ot_mva_custom_cols_table"
-TAG_OT_MVA_CUSTOM_COLS_TABLE_CHILD = TAG_OT_MVA_CUSTOM_COLS_TABLE + "_child"
-TAG_OT_MVA_CUSTOM_COLS_TABLE_LABEL = TAG_OT_MVA_CUSTOM_COLS_TABLE + "_label"
-TAG_OT_MVA_ISO_FOREST_CONTAM_INPUT = "step5_ot_mva_iso_forest_contam_input"
+
+# Left Panel - Top (Detection & UMAP/PCA)
+TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO = "step5_ot_mva_col_selection_mode_radio"
+TAG_OT_MVA_MANUAL_COLUMN_SELECTOR_GROUP = "step5_ot_mva_manual_col_selector_group"
+TAG_OT_MVA_COLUMN_SELECTOR_MULTI = "step5_ot_mva_col_selector_multi"
+TAG_OT_MVA_CONTAMINATION_INPUT = "step5_ot_mva_contamination_input"
 TAG_OT_MVA_DETECT_BUTTON = "step5_ot_mva_detect_button"
-TAG_OT_MVA_RESULTS_TEXT = "step5_ot_mva_results_text"
-TAG_OT_MVA_UMAP_PLOT_WINDOW = "step5_mva_umap_plot_window"
-TAG_OT_MVA_UMAP_PLOT = "step5_mva_umap_plot"
-TAG_OT_MVA_UMAP_X_AXIS = "step5_mva_umap_x_axis"
-TAG_OT_MVA_UMAP_Y_AXIS = "step5_mva_umap_y_axis"
-TAG_OT_MVA_UMAP_LEGEND = "step5_mva_umap_legend"
-TAG_OT_MVA_SCATTER_SERIES_NORMAL = "step5_mva_scatter_normal"
-TAG_OT_MVA_SCATTER_SERIES_OUTLIER = "step5_mva_scatter_outlier"
-TAG_OT_MVA_SCATTER_SERIES_SELECTED = "step5_mva_scatter_selected"
-TAG_OT_MVA_SELECTED_OUTLIER_INFO_GROUP = "step5_mva_selected_outlier_info_group"
-TAG_OT_MVA_SELECTED_OUTLIER_INDEX_TEXT = "step5_mva_selected_outlier_index_text"
-TAG_OT_MVA_SELECTED_OUTLIER_TABLE_CHILD = "step5_mva_selected_outlier_table_child"
-TAG_OT_MVA_SELECTED_OUTLIER_TABLE = "step5_mva_selected_outlier_table"
-TAG_OT_MVA_SHAP_PLOT_IMAGE = "step5_mva_shap_plot_image"
-TAG_OT_MVA_SHAP_PLOT_PLACEHOLDER_TEXT = TAG_OT_MVA_SHAP_PLOT_IMAGE + "_placeholder_text"
+TAG_OT_MVA_RECOMMEND_PARAMS_BUTTON = "step5_ot_mva_recommend_params_button"
 
-GLOBAL_MOUSE_HANDLER_REGISTRY_TAG = "global_mouse_event_handler_for_mva_plot"
+TAG_OT_MVA_VISUALIZATION_GROUP = "step5_ot_mva_visualization_group" # UMAP & PCA parent
+TAG_OT_MVA_UMAP_PLOT_IMAGE = "step5_ot_mva_umap_plot_image"
+TAG_OT_MVA_PCA_PLOT_IMAGE = "step5_ot_mva_pca_plot_image"
+# 기본 텍스처는 부모 모듈의 TAG_OT_DEFAULT_PLOT_TEXTURE_MVA 또는 TAG_OT_MVA_SHAP_DEFAULT_TEXTURE 등을 활용하거나,
+# 이 모듈에서 필요시 추가 정의하고 부모 모듈의 create_ui에서 생성 요청
+TAG_OT_MVA_UMAP_DEFAULT_TEXTURE = "step5_ot_mva_umap_default_texture" # UMAP용 기본 텍스처 태그 (부모에 추가 필요 가정)
+TAG_OT_MVA_PCA_DEFAULT_TEXTURE = "step5_ot_mva_pca_default_texture"   # PCA용 기본 텍스처 태그 (부모에 추가 필요 가정)
 
-# New Tags for Group Analysis
-TAG_OT_MVA_GROUP_ANALYSIS_COLLAPSING_HEADER = "step5_mva_group_analysis_collapsing_header"
-TAG_OT_MVA_RUN_GROUP_ANALYSIS_BUTTON = "step5_mva_run_group_analysis_button"
-TAG_OT_MVA_GROUP_STATS_TABLE = "step5_mva_group_stats_table"
-TAG_OT_MVA_GROUP_NUM_FEATURE_COMBO = "step5_mva_group_num_feature_combo"
-TAG_OT_MVA_GROUP_DIST_PLOT_IMAGE = "step5_mva_group_dist_plot_image"
-TAG_OT_MVA_GROUP_DIST_PLOT_PLACEHOLDER = TAG_OT_MVA_GROUP_DIST_PLOT_IMAGE + "_placeholder"
-TAG_OT_MVA_GROUP_CAT_FEATURE_COMBO = "step5_mva_group_cat_feature_combo"
-TAG_OT_MVA_GROUP_FREQ_PLOT_IMAGE = "step5_mva_group_freq_plot_image"
-TAG_OT_MVA_GROUP_FREQ_PLOT_PLACEHOLDER = TAG_OT_MVA_GROUP_FREQ_PLOT_IMAGE + "_placeholder"
+
+# Right Panel (Outlier Instances & SHAP)
+TAG_OT_MVA_OUTLIER_INSTANCES_TABLE = "step5_ot_mva_outlier_instances_table"
+TAG_OT_MVA_INSTANCE_STATS_TABLE = "step5_ot_mva_instance_stats_table"
+TAG_OT_MVA_SHAP_PLOT_IMAGE = "step5_ot_mva_shap_plot_image"
+# SHAP 기본 텍스처는 부모 모듈의 TAG_OT_MVA_SHAP_DEFAULT_TEXTURE 사용 가정
+
+# Left Panel - Bottom (Boxplots)
+TAG_OT_MVA_BOXPLOT_GROUP = "step5_ot_mva_boxplot_group"
+# Boxplot 이미지는 동적으로 생성하여 추가/삭제 관리 (개별 태그 필요시 동적 생성)
+
 
 # --- Constants ---
-DEFAULT_MVA_ISO_FOREST_CONTAMINATION = 'auto'
-UMAP_PLOT_WINDOW_HEIGHT = 380 # UMAP 플롯 창 높이 조정
-SELECTED_POINT_INFO_GROUP_WIDTH = 480 
-SHAP_PLOT_IMAGE_WIDTH = SELECTED_POINT_INFO_GROUP_WIDTH - 40
-SELECTED_POINT_TABLE_CHILD_HEIGHT = 220 # 선택된 포인트 테이블 높이 조정
-GROUP_ANALYSIS_PLOT_WIDTH = SELECTED_POINT_INFO_GROUP_WIDTH - 40 # 그룹 분석 플롯 너비
-GROUP_ANALYSIS_PLOT_HEIGHT = 300 # 그룹 분석 플롯 높이
+DEFAULT_MVA_CONTAMINATION = 0.1
+MAX_OUTLIER_INSTANCES_TO_SHOW = 30
+TOP_N_VARIABLES_FOR_BOXPLOT = 10
+MIN_SAMPLES_FOR_IFOREST = 5 # Isolation Forest 실행을 위한 최소 샘플 수
+MIN_FEATURES_FOR_IFOREST = 2 # Isolation Forest 실행을 위한 최소 특성 수
 
-# --- Module State Variables ---
+# --- Module State Variables (Multivariate) ---
 _shared_utils_mva: Optional[Dict[str, Any]] = None
-_s1_column_types_cache: Optional[Dict[str, str]] = None
-_mva_variable_selection_method: str = "All Numeric Columns"
-_mva_custom_selected_columns: List[str] = [] # <--- 이 변수가 여기서 초기화됩니다.
-_mva_custom_col_checkbox_tags: Dict[str, str] = {}
-_mva_iso_forest_contamination: Union[str, float] = DEFAULT_MVA_ISO_FOREST_CONTAMINATION
+_current_df_for_mva: Optional[pd.DataFrame] = None # 이 스텝에 입력된 DF
+_df_with_mva_outliers: Optional[pd.DataFrame] = None # 이상치 점수/플래그 추가된 DF
+_mva_model: Optional[Any] = None # 학습된 Isolation Forest 모델
+_mva_shap_explainer: Optional[Any] = None
+_mva_shap_values_for_selected: Optional[np.ndarray] = None
 
-# ... (기존 상태 변수들)
-_df_with_mva_outliers: Optional[pd.DataFrame] = None
-_mva_iso_forest_model: Optional[IsolationForest] = None
-_mva_cols_analyzed_for_if: List[str] = []
-_mva_umap_embedding: Optional[np.ndarray] = None
-_mva_umap_original_indices: Optional[np.ndarray] = None
-_mva_outlier_scores: Optional[np.ndarray] = None
-_mva_selected_point_original_index: Optional[Any] = None
-_mva_shap_plot_active_texture_id: Optional[str] = None
-
-# New State Variables for Group Analysis
-_mva_group_stats_df: Optional[pd.DataFrame] = None # 비교 통계량 저장
-_mva_group_numerical_cols_for_plot: List[str] = []
-_mva_group_categorical_cols_for_plot: List[str] = []
-_mva_group_dist_plot_texture_id: Optional[str] = None
-_mva_group_freq_plot_texture_id: Optional[str] = None
-_normal_group_df_cache: Optional[pd.DataFrame] = None # 그룹 분석용 정상 그룹 DF 캐시
-_outlier_group_df_cache: Optional[pd.DataFrame] = None # 그룹 분석용 이상치 그룹 DF 캐시
+_mva_eligible_numeric_cols: List[str] = []
+_mva_selected_columns_for_detection: List[str] = []
+_mva_column_selection_mode: str = "All Numeric" # "All Numeric", "Recommended", "Manual"
+_mva_contamination: float = DEFAULT_MVA_CONTAMINATION
+_mva_outlier_instances_summary: List[Dict[str, Any]] = [] # 우측 테이블 데이터
+_mva_active_umap_texture_id: Optional[str] = None
+_mva_active_pca_texture_id: Optional[str] = None
+_mva_active_shap_texture_id: Optional[str] = None
+_mva_selected_outlier_instance_idx: Optional[Any] = None # 원본 DF의 인덱스
+_mva_all_selectable_tags_in_instances_table: List[str] = []
+_mva_top_gap_vars_for_boxplot: List[str] = []
+_mva_boxplot_image_tags: List[str] = [] # 생성된 boxplot 이미지 태그들
 
 
-# --- Helper Functions ---
 def _log_mva(message: str):
+    if _shared_utils_mva and 'log_message_func' in _shared_utils_mva:
+        _shared_utils_mva['log_message_func'](f"[MVAOutlier] {message}")
 
-    try:
-        if _shared_utils_mva and 'log_message_func' in _shared_utils_mva and _shared_utils_mva['log_message_func'] is not None:
-            # 원래 로깅 함수 호출 (여전히 호출합니다)
-            _shared_utils_mva['log_message_func'](f"[MVAOutlier] {message}")
-            
-            # --- 추가된 부분: 콘솔에도 강제 출력 ---
-            print(f"FORCED_CONSOLE_LOG: [MVAOutlier] {message}")
-            # --- 여기까지 ---
-        else:
-            print(f"FALLBACK_LOG: [MVAOutlier] {message} (_shared_utils_mva: {_shared_utils_mva is not None}, log_func_present: {'log_message_func' in (_shared_utils_mva or {}) and _shared_utils_mva.get('log_message_func') is not None})")
-    except Exception as e:
-        print(f"EXCEPTION_IN_LOG_MVA: Error trying to log '{message}'. Exception: {e}")
-        import traceback
-        print(traceback.format_exc())
-
-
-def _show_simple_modal_mva(title: str, message: str, width: int = 450, height: int = 200): # ... (이전과 동일)
+def _show_simple_modal_mva(title: str, message: str, width: int = 450, height: int = 200):
     if _shared_utils_mva and 'util_funcs_common' in _shared_utils_mva and \
        '_show_simple_modal_message' in _shared_utils_mva['util_funcs_common']:
         _shared_utils_mva['util_funcs_common']['_show_simple_modal_message'](title, message, width, height)
+    else:
+        _log_mva(f"Modal display function not available. Title: {title}, Msg: {message}")
 
-def _get_s1_column_types() -> Dict[str, str]: # ... (이전과 동일)
-    global _s1_column_types_cache
-    if _s1_column_types_cache is None: 
-        if _shared_utils_mva and 'main_app_callbacks' in _shared_utils_mva and \
-           'get_column_analysis_types' in _shared_utils_mva['main_app_callbacks']:
-            _s1_column_types_cache = _shared_utils_mva['main_app_callbacks']['get_column_analysis_types']()
-        else: _s1_column_types_cache = {}
-    return _s1_column_types_cache
+def _s5_plot_to_dpg_texture_mva(fig: 'plt.Figure', desired_dpi: int = 90) -> Tuple[Optional[str], int, int]:
+    if _shared_utils_mva and 'plot_to_dpg_texture_func' in _shared_utils_mva:
+        return _shared_utils_mva['plot_to_dpg_texture_func'](fig, desired_dpi)
+    _log_mva("Error: Plot to DPG texture function not available from shared utils.")
+    return None, 0, 0
 
-def _get_feature_type(feature_name: str, df: pd.DataFrame) -> str: # ... (이전과 동일)
-    s1_types = _get_s1_column_types()
-    if feature_name in s1_types:
-        s1_type = s1_types[feature_name]
-        if "Numeric" in s1_type and "Binary" not in s1_type: return "Numeric"
-        if "Categorical" in s1_type or "Text" in s1_type or "Binary" in s1_type: return "Categorical"
-    if feature_name in df.columns:
-        dtype = df[feature_name].dtype
-        if pd.api.types.is_numeric_dtype(dtype): return "Numeric"
-        if pd.api.types.is_string_dtype(dtype) or pd.api.types.is_object_dtype(dtype) or pd.api.types.is_categorical_dtype(dtype) or pd.api.types.is_bool_dtype(dtype): return "Categorical"
-    return "Other"
 
-# --- Multivariate Callbacks and Logic ---
-# _update_mva_custom_cols_ui_visibility, _on_mva_var_method_change, ... _detect_outliers_mva_iso_forest,
-# _run_mva_outlier_detection_logic, _perform_umap_and_update_dpg_plot, _clear_dpg_umap_plot_series,
-# _update_dpg_umap_plot_series, _on_mva_umap_plot_click 등은 이전 답변 내용과 거의 동일하게 유지.
-# (이전 답변의 최종본을 사용한다고 가정)
-# ... (이전 함수들 붙여넣기 - 공간 절약을 위해 생략) ...
-def _update_mva_custom_cols_ui_visibility(): # 이전과 동일
+def _update_mva_param_visibility():
     if not dpg.is_dearpygui_running(): return
-    show_custom_table = (_mva_variable_selection_method == "Select Custom Columns")
-    if dpg.does_item_exist(TAG_OT_MVA_CUSTOM_COLS_TABLE_CHILD):
-        dpg.configure_item(TAG_OT_MVA_CUSTOM_COLS_TABLE_CHILD, show=show_custom_table)
-    if dpg.does_item_exist(TAG_OT_MVA_CUSTOM_COLS_TABLE_LABEL):
-        dpg.configure_item(TAG_OT_MVA_CUSTOM_COLS_TABLE_LABEL, show=show_custom_table)
+    is_manual_mode = _mva_column_selection_mode == "Manual"
+    if dpg.does_item_exist(TAG_OT_MVA_MANUAL_COLUMN_SELECTOR_GROUP):
+        dpg.configure_item(TAG_OT_MVA_MANUAL_COLUMN_SELECTOR_GROUP, show=is_manual_mode)
 
-def _on_mva_var_method_change(sender, app_data: str, user_data): # 이전과 동일
-    global _mva_variable_selection_method
-    _mva_variable_selection_method = app_data
-    _log_mva(f"Multivariate variable selection method: {_mva_variable_selection_method}")
-    _update_mva_custom_cols_ui_visibility()
-    if _mva_variable_selection_method == "Select Custom Columns":
-        current_df = _shared_utils_mva['get_current_df_func']() if _shared_utils_mva else None
-        if current_df is not None: _populate_mva_custom_cols_table(current_df)
+def _on_mva_col_selection_mode_change(sender, app_data: str, user_data):
+    global _mva_column_selection_mode
+    _mva_column_selection_mode = app_data
+    _log_mva(f"Multivariate column selection mode changed to: {_mva_column_selection_mode}")
+    _update_mva_param_visibility()
+    # 모드 변경 시 선택된 컬럼 목록 업데이트 필요
+    _update_selected_columns_for_mva_detection()
 
-def _on_mva_custom_col_checkbox_change(sender, app_data_is_checked: bool, user_data_col_name: str): # 이전과 동일
-    global _mva_custom_selected_columns
-    if app_data_is_checked:
-        if user_data_col_name not in _mva_custom_selected_columns: _mva_custom_selected_columns.append(user_data_col_name)
+def _on_mva_manual_cols_selected(sender, app_data: List[str], user_data):
+    global _mva_selected_columns_for_detection
+    _mva_selected_columns_for_detection = app_data
+    _log_mva(f"Manually selected columns for MVA: {app_data}")
+
+def _on_mva_contamination_change(sender, app_data: float, user_data):
+    global _mva_contamination
+    if 0.0 < app_data <= 0.5:
+        _mva_contamination = app_data
+        _log_mva(f"Multivariate contamination set to: {_mva_contamination:.4f}")
     else:
-        if user_data_col_name in _mva_custom_selected_columns: _mva_custom_selected_columns.remove(user_data_col_name)
-    _log_mva(f"MVA custom columns updated: {_mva_custom_selected_columns}")
+        dpg.set_value(sender, _mva_contamination) # 이전 값으로 복원
+        err_msg = "Contamination must be between 0 (exclusive) and 0.5 (inclusive)."
+        _log_mva(f"Invalid input for contamination: {app_data}. {err_msg}")
+        _show_simple_modal_mva("Input Error", err_msg)
 
-def _populate_mva_custom_cols_table(df: Optional[pd.DataFrame]): # 이전과 동일
-    global _mva_custom_col_checkbox_tags
-    if not dpg.is_dearpygui_running() or not dpg.does_item_exist(TAG_OT_MVA_CUSTOM_COLS_TABLE): return
-    dpg.delete_item(TAG_OT_MVA_CUSTOM_COLS_TABLE, children_only=True)
-    _mva_custom_col_checkbox_tags.clear()
-    if df is None:
-        with dpg.table_row(parent=TAG_OT_MVA_CUSTOM_COLS_TABLE): dpg.add_text("No data.")
-        return
-    s1_col_types = _get_s1_column_types()
-    numeric_cols_for_mva = [col for col in df.columns if _get_feature_type(col, df) == "Numeric"]
-    if not numeric_cols_for_mva:
-        with dpg.table_row(parent=TAG_OT_MVA_CUSTOM_COLS_TABLE): dpg.add_text("No suitable numeric columns.")
-        return
-    for col_name in numeric_cols_for_mva:
-        with dpg.table_row(parent=TAG_OT_MVA_CUSTOM_COLS_TABLE):
-            checkbox_tag = f"mva_cb_{''.join(filter(str.isalnum, col_name))}"
-            _mva_custom_col_checkbox_tags[col_name] = checkbox_tag
-            dpg.add_checkbox(tag=checkbox_tag, default_value=(col_name in _mva_custom_selected_columns), user_data=col_name, callback=_on_mva_custom_col_checkbox_change)
-            dpg.add_text(col_name)
+def _set_mva_recommended_parameters(sender, app_data, user_data):
+    global _mva_contamination, _mva_column_selection_mode
+    _mva_contamination = DEFAULT_MVA_CONTAMINATION
+    _mva_column_selection_mode = "Recommended" # 추천 모드로 변경
 
-def _on_mva_iso_forest_contam_change(sender, app_data_str: str, user_data):
-    global _mva_iso_forest_contamination
-    
-    # app_data_str은 input_text 위젯에서 현재 입력된 문자열 값입니다.
-    cleaned_user_input = app_data_str.strip()
-    
-    new_contamination_state = _mva_iso_forest_contamination # 현재 상태를 기본값으로 가정
-    ui_should_be_updated_to = cleaned_user_input # UI는 일단 사용자 입력대로 두되, 필요시 수정
+    if dpg.does_item_exist(TAG_OT_MVA_CONTAMINATION_INPUT):
+        dpg.set_value(TAG_OT_MVA_CONTAMINATION_INPUT, _mva_contamination)
+    if dpg.does_item_exist(TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO):
+        dpg.set_value(TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO, _mva_column_selection_mode)
 
-    if not cleaned_user_input: # 사용자가 모든 글자를 지워 입력창이 비었을 경우
-        new_contamination_state = 'auto'
-        # UI를 'auto'로 되돌릴지, 아니면 빈칸으로 둘지는 선택사항입니다.
-        # 여기서는 'auto'로 상태를 변경하고, UI는 사용자가 지운 상태(빈칸)를 잠시 유지하도록 합니다.
-        # 사용자가 다른 곳을 클릭하거나 Enter를 치면 최종적으로 'auto'로 설정될 수 있도록 유도.
-        # 다만, 즉시 'auto'로 복원하는 것이 일관성 있을 수 있습니다.
-        ui_should_be_updated_to = 'auto' 
-    elif cleaned_user_input.lower() == 'auto':
-        new_contamination_state = 'auto'
-        ui_should_be_updated_to = 'auto' # 대소문자 구분 없이 'auto'로 통일
-    else:
-        try:
-            val = float(cleaned_user_input)
-            if 0.0001 <= val <= 0.5:
-                new_contamination_state = val
-                # 유효한 숫자 범위이므로 UI는 사용자 입력값 그대로 둠 (또는 포맷팅 된 값으로 변경)
-                # ui_should_be_updated_to = f"{val:.4f}" # 예: 소수점 4자리 포맷팅
-            else: # 숫자이지만 범위 밖
-                new_contamination_state = 'auto' # 또는 이전 유효값으로 복원
-                ui_should_be_updated_to = 'auto'
-                _show_simple_modal_mva("Input Error", f"Contamination value {val} is out of range (0.0001-0.5). Reverted to 'auto'.")
-        except ValueError: # 숫자로 변환 불가 (그리고 'auto'도 아님)
-            new_contamination_state = 'auto' # 또는 이전 유효값으로 복원
-            ui_should_be_updated_to = 'auto'
-            _show_simple_modal_mva("Input Error", f"Invalid input '{cleaned_user_input}'. Please use 'auto' or a number between 0.0001 and 0.5.")
+    _update_mva_param_visibility()
+    _update_selected_columns_for_mva_detection() # 추천 컬럼으로 업데이트
+    _log_mva(f"Recommended MVA parameters set: Contamination={_mva_contamination}, Mode='Recommended'")
+    _show_simple_modal_mva("Info", "Recommended multivariate detection parameters have been applied.")
 
-    # 실제 상태 변수 업데이트 (변경되었을 경우에만)
-    if _mva_iso_forest_contamination != new_contamination_state:
-        _mva_iso_forest_contamination = new_contamination_state
-        _log_mva(f"MVA Isolation Forest contamination state updated to: '{_mva_iso_forest_contamination}'")
+def _get_eligible_numeric_cols_for_mva(df: pd.DataFrame) -> List[str]:
+    if df is None: return []
+    numeric_cols = []
+    if _shared_utils_mva and 'util_funcs_common' in _shared_utils_mva and \
+       '_get_numeric_cols' in _shared_utils_mva['util_funcs_common']:
+        # utils._get_numeric_cols는 모든 수치형을 반환. 여기서는 추가 필터링 가능.
+        # 예를 들어, 분산이 매우 작거나 고유값이 거의 없는 수치형 컬럼 제외.
+        # 현재는 utils에서 반환하는 모든 numeric cols를 사용.
+        # 좀 더 정교하게 하려면 step_01_data_loading의 분석 타입을 참조하여 'Numeric'이면서 'Binary'가 아닌 것만.
+        
+        s1_col_types = {}
+        if 'main_app_callbacks' in _shared_utils_mva and \
+        'get_column_analysis_types' in _shared_utils_mva['main_app_callbacks']:
+            s1_col_types = _shared_utils_mva['main_app_callbacks']['get_column_analysis_types']()
 
-    # UI 값 업데이트 (콜백이 반환된 후 DPG가 자동으로 UI를 업데이트하지만, 강제 동기화가 필요할 경우)
-    # 사용자의 현재 타이핑을 방해하지 않도록, 최종적으로 UI에 반영되어야 하는 값이 현재 UI 값과 다를 때만 설정
-    current_dpg_value = dpg.get_value(sender)
-    if current_dpg_value != ui_should_be_updated_to:
-        dpg.set_value(sender, ui_should_be_updated_to)
-
-def _get_mva_columns_to_analyze(current_df: pd.DataFrame) -> List[str]: # 이전과 동일
-    global _mva_cols_analyzed_for_if
-    _mva_cols_analyzed_for_if = []
-    if current_df is None: return []
-    all_suitable_numeric_cols = [col for col in current_df.columns if _get_feature_type(col, current_df) == "Numeric"]
-    if not all_suitable_numeric_cols: _log_mva("No suitable numeric columns for MVA."); return []
-    if _mva_variable_selection_method == "All Numeric Columns": _mva_cols_analyzed_for_if = all_suitable_numeric_cols[:]
-    elif _mva_variable_selection_method == "Recommended Columns (TODO)": _mva_cols_analyzed_for_if = all_suitable_numeric_cols[:]
-    elif _mva_variable_selection_method == "Select Custom Columns":
-        valid_custom_cols = [col for col in _mva_custom_selected_columns if col in all_suitable_numeric_cols]
-        _mva_cols_analyzed_for_if = valid_custom_cols[:] if valid_custom_cols else all_suitable_numeric_cols[:]
-    _log_mva(f"MVA using {len(_mva_cols_analyzed_for_if)} columns: {_mva_cols_analyzed_for_if}")
-    return _mva_cols_analyzed_for_if
-
-def _detect_outliers_mva_iso_forest(df_subset: pd.DataFrame, contamination_val: Union[str, float]) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]: # 이전과 동일
-    global _mva_outlier_scores, _mva_iso_forest_model
-    _mva_outlier_scores = None; _mva_iso_forest_model = None
-    if df_subset.empty or df_subset.shape[1] == 0: _log_mva("MVA IF: Input empty."); return None, None
-    df_numeric_imputed = df_subset.copy()
-    for col in df_numeric_imputed.columns:
-        if pd.api.types.is_numeric_dtype(df_numeric_imputed[col]) and df_numeric_imputed[col].isnull().any():
-            df_numeric_imputed[col].fillna(df_numeric_imputed[col].median(), inplace=True)
-    if df_numeric_imputed.shape[0] < 2: _log_mva("MVA IF: Not enough samples."); return None, None
-    valid_contamination = contamination_val
-    _mva_iso_forest_model = IsolationForest(contamination=valid_contamination, random_state=42, n_estimators=100)
-    try:
-        _mva_iso_forest_model.fit(df_numeric_imputed)
-        predictions = _mva_iso_forest_model.predict(df_numeric_imputed)
-        scores = _mva_iso_forest_model.decision_function(df_numeric_imputed)
-        _mva_outlier_scores = scores
-    except Exception as e:
-        _log_mva(f"MVA IF error with contam '{valid_contamination}': {e}. Trying 'auto'.")
-        try:
-            _mva_iso_forest_model = IsolationForest(contamination='auto', random_state=42, n_estimators=100)
-            _mva_iso_forest_model.fit(df_numeric_imputed)
-            predictions = _mva_iso_forest_model.predict(df_numeric_imputed)
-            scores = _mva_iso_forest_model.decision_function(df_numeric_imputed)
-            _mva_outlier_scores = scores
-        except Exception as e_auto:
-            _log_mva(f"MVA IF with 'auto' also failed: {e_auto}"); _mva_iso_forest_model=None; return None, None
-    return df_numeric_imputed.index[predictions == -1].to_numpy(), scores
-
-def _run_mva_outlier_detection_logic(sender, app_data, user_data): # 이전과 동일
-    global _df_with_mva_outliers, _mva_outlier_row_indices, _mva_outlier_scores
-    _log_mva("Run MVA Detection button clicked.")
-    current_df = _shared_utils_mva['get_current_df_func']()
-    if current_df is None: _log_mva("Error: No data for MVA."); _show_simple_modal_mva("Error", "No data for MVA."); return
-    cols_to_analyze = _get_mva_columns_to_analyze(current_df)
-    if not cols_to_analyze or len(cols_to_analyze) < 2:
-         _log_mva("MVA Error: Min 2 numeric cols required."); _show_simple_modal_mva("Error", "Min 2 numeric cols for MVA."); return
-    df_subset_for_mva = current_df[cols_to_analyze].copy()
-    _log_mva(f"--- Starting MVA Detection (IF) on {len(_mva_cols_analyzed_for_if)} columns ---")
-    _log_mva(f"  Contamination: '{_mva_iso_forest_contamination}'")
-    detected_indices, _ = _detect_outliers_mva_iso_forest(df_subset_for_mva, _mva_iso_forest_contamination)
-    _mva_outlier_row_indices = detected_indices
-    if _mva_iso_forest_model is None or _mva_outlier_row_indices is None:
-        _log_mva("MVA Detection or IF model training failed."); _show_simple_modal_mva("Failed", "MVA Detection failed. Check logs."); return
-    num_outliers = len(_mva_outlier_row_indices)
-    total_rows = len(current_df)
-    percentage = (num_outliers / total_rows * 100) if total_rows > 0 else 0
-    summary = f"MVA Detection (IF):\n- Cols: {len(_mva_cols_analyzed_for_if)}\n- Outliers: {num_outliers} ({percentage:.2f}%)\n- Contam: '{_mva_iso_forest_contamination}'"
-    _log_mva(summary)
-    if dpg.does_item_exist(TAG_OT_MVA_RESULTS_TEXT): dpg.set_value(TAG_OT_MVA_RESULTS_TEXT, summary)
-    _df_with_mva_outliers = current_df.copy()
-    _df_with_mva_outliers['is_mva_outlier'] = False
-    if num_outliers > 0: _df_with_mva_outliers.loc[_mva_outlier_row_indices, 'is_mva_outlier'] = True
-    _perform_umap_and_update_dpg_plot(df_subset_for_mva)
-    _show_simple_modal_mva("MVA Detection Complete", f"Found {num_outliers} outlier rows.")
-    _clear_selected_point_info()
-    _clear_group_analysis_ui_elements() # 그룹 분석 UI도 초기화
-
-def _perform_umap_and_update_dpg_plot(df_for_umap_input: pd.DataFrame): # 이전과 동일
-    global _mva_umap_embedding, _mva_umap_original_indices
-    _log_mva("Performing UMAP for DPG plot...")
-    if UMAP is None: _log_mva("UMAP lib not found."); _show_simple_modal_mva("Lib Missing", "Install 'umap-learn'."); _clear_dpg_umap_plot_series(); return
-    if df_for_umap_input.empty: _log_mva("UMAP input empty."); _clear_dpg_umap_plot_series(); return
-    df_for_umap = df_for_umap_input.copy()
-    for col in df_for_umap.columns:
-        if df_for_umap[col].isnull().any(): df_for_umap[col].fillna(df_for_umap[col].median(), inplace=True)
-    if df_for_umap.shape[0] < 2: _log_mva("Not enough samples for UMAP."); _clear_dpg_umap_plot_series(); return
-    n_neighbors_umap = min(15, df_for_umap.shape[0] - 1 if df_for_umap.shape[0] > 1 else 1)
-    if n_neighbors_umap <= 0: n_neighbors_umap = 1
-    try:
-        reducer = UMAP(n_neighbors=n_neighbors_umap, n_components=2, min_dist=0.1, random_state=42, n_jobs=1)
-        _mva_umap_embedding = reducer.fit_transform(df_for_umap)
-        _mva_umap_original_indices = df_for_umap.index.to_numpy()
-        _update_dpg_umap_plot_series()
-        _log_mva("UMAP embedding calculated & DPG plot updated.")
-    except Exception as e: _log_mva(f"UMAP calc/plot error: {e}"); _clear_dpg_umap_plot_series()
-
-def _clear_dpg_umap_plot_series(): # 이전과 동일
-    tags_to_delete = [TAG_OT_MVA_SCATTER_SERIES_NORMAL, TAG_OT_MVA_SCATTER_SERIES_OUTLIER, TAG_OT_MVA_SCATTER_SERIES_SELECTED]
-    for tag in tags_to_delete:
-        if dpg.does_item_exist(tag): dpg.delete_item(tag)
-
-def _update_dpg_umap_plot_series(selected_embedding_idx: Optional[int] = None): # 이전과 동일
-    _clear_dpg_umap_plot_series()
-    if _mva_umap_embedding is None or _df_with_mva_outliers is None or _mva_umap_original_indices is None:
-        _log_mva("Cannot update UMAP: embedding or outlier/original index data missing."); return
-    outlier_flags_for_embedding = _df_with_mva_outliers.loc[_mva_umap_original_indices, 'is_mva_outlier'].to_numpy()
-    normal_indices_in_embedding = np.where(outlier_flags_for_embedding == False)[0]
-    outlier_indices_in_embedding = np.where(outlier_flags_for_embedding == True)[0]
-    if len(normal_indices_in_embedding) > 0:
-        dpg.add_scatter_series(x=_mva_umap_embedding[normal_indices_in_embedding, 0].tolist(), y=_mva_umap_embedding[normal_indices_in_embedding, 1].tolist(), label="Normal", parent=TAG_OT_MVA_UMAP_Y_AXIS, tag=TAG_OT_MVA_SCATTER_SERIES_NORMAL)
-    if len(outlier_indices_in_embedding) > 0:
-        dpg.add_scatter_series(x=_mva_umap_embedding[outlier_indices_in_embedding, 0].tolist(), y=_mva_umap_embedding[outlier_indices_in_embedding, 1].tolist(), label="Outlier", parent=TAG_OT_MVA_UMAP_Y_AXIS, tag=TAG_OT_MVA_SCATTER_SERIES_OUTLIER)
-    if selected_embedding_idx is not None and 0 <= selected_embedding_idx < len(_mva_umap_embedding):
-        dpg.add_scatter_series(x=[_mva_umap_embedding[selected_embedding_idx, 0]], y=[_mva_umap_embedding[selected_embedding_idx, 1]], label="Selected", parent=TAG_OT_MVA_UMAP_Y_AXIS, tag=TAG_OT_MVA_SCATTER_SERIES_SELECTED)
-    dpg.fit_axis_data(TAG_OT_MVA_UMAP_X_AXIS); dpg.fit_axis_data(TAG_OT_MVA_UMAP_Y_AXIS)
-    if dpg.does_item_exist(TAG_OT_MVA_UMAP_LEGEND):
-        dpg.configure_item(TAG_OT_MVA_UMAP_LEGEND, show=(len(normal_indices_in_embedding) > 0 or len(outlier_indices_in_embedding) > 0 or selected_embedding_idx is not None))
-
-def _on_mva_umap_plot_click(sender, app_data, user_data): # 이전과 동일
-    global _mva_selected_point_original_index
-    _log_mva("--- Debug: _on_mva_umap_plot_click CALLED ---") # 함수 호출 로그
-    if not dpg.is_item_hovered(TAG_OT_MVA_UMAP_PLOT):
-        _log_mva("Debug: UMAP plot not hovered. Returning.")
-        return
-    _log_mva(f"UMAP Plot area clicked (via global handler). Sender: {sender}, Clicked Button: {app_data}")
-    if _mva_umap_embedding is None or _df_with_mva_outliers is None or _mva_umap_original_indices is None:
-         _log_mva("UMAP data not ready.")
-         return
-    plot_mouse_pos = dpg.get_plot_mouse_pos()
-    if plot_mouse_pos is None or len(plot_mouse_pos) < 2: _log_mva("Could not get plot mouse pos."); return # 선택 해제 로직 추가 가능
-    clicked_x, clicked_y = plot_mouse_pos[0], plot_mouse_pos[1]
-    _log_mva(f"Plot click data coordinates: x={clicked_x:.2f}, y={clicked_y:.2f}")
-    distances = np.sqrt(np.sum((_mva_umap_embedding - np.array([clicked_x, clicked_y]))**2, axis=1))
-    if len(distances) == 0: _log_mva("No points in UMAP embedding."); return
-    nearest_point_idx_in_embedding = np.argmin(distances)
-    x_axis_tag_to_query = TAG_OT_MVA_UMAP_X_AXIS
-    if not dpg.does_item_exist(x_axis_tag_to_query): _log_mva(f"X-axis '{x_axis_tag_to_query}' does not exist."); return
-    x_limits = dpg.get_axis_limits(x_axis_tag_to_query)
-    data_dist_threshold = (x_limits[1] - x_limits[0]) * 0.05 if x_limits[0] != x_limits[1] else 0.1
-    if x_limits[0] == 0.0 and x_limits[1] == 0.0 and len(_mva_umap_embedding) > 0: # 축 초기화 상태 보정
-        min_x_emb, max_x_emb = np.min(_mva_umap_embedding[:,0]), np.max(_mva_umap_embedding[:,0])
-        data_dist_threshold = (max_x_emb - min_x_emb) * 0.05 if min_x_emb != max_x_emb else 0.1
-    if distances[nearest_point_idx_in_embedding] > data_dist_threshold :
-        _log_mva(f"No point selected, click too far (dist: {distances[nearest_point_idx_in_embedding]:.2f} > thres: {data_dist_threshold:.2f}).")
-        if _mva_selected_point_original_index is not None: _clear_selected_point_info(); _update_dpg_umap_plot_series()
-        return
-    newly_selected_original_index = _mva_umap_original_indices[nearest_point_idx_in_embedding]
-    if newly_selected_original_index == _mva_selected_point_original_index:
-        _log_mva(f"Point {newly_selected_original_index} re-clicked. Deselecting.")
-        _clear_selected_point_info(); _update_dpg_umap_plot_series()
-        return
-    _mva_selected_point_original_index = newly_selected_original_index
-    _log_mva(f"UMAP point selected. OriginalDF Index: {_mva_selected_point_original_index}, Embedding Index: {nearest_point_idx_in_embedding}")
-    _update_selected_point_info_ui()
-    _update_dpg_umap_plot_series(selected_embedding_idx=nearest_point_idx_in_embedding)
-    _log_mva("--- Debug: _on_mva_umap_plot_click COMPLETED processing new selection ---")
-
-def _clear_selected_point_info(): # "Original Values" 테이블 헤더 유지하도록 수정
-    global _mva_selected_point_original_index, _mva_shap_plot_active_texture_id
-    _mva_selected_point_original_index = None
-    if dpg.does_item_exist(TAG_OT_MVA_SELECTED_OUTLIER_INDEX_TEXT):
-        dpg.set_value(TAG_OT_MVA_SELECTED_OUTLIER_INDEX_TEXT, "Selected Point: (None - Click a point on UMAP)")
-    if dpg.does_item_exist(TAG_OT_MVA_SELECTED_OUTLIER_TABLE):
-        dpg.delete_item(TAG_OT_MVA_SELECTED_OUTLIER_TABLE, children_only=True)
-        with dpg.table_row(parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE): # Placeholder
-            for i in range(5): dpg.add_text("...") # 컬럼 수에 맞게
+        all_cols = df.columns
+        for col in all_cols:
+            s1_type = s1_col_types.get(col, "")
+            is_numeric_s1 = "Numeric" in s1_type and "Binary" not in s1_type
+            is_numeric_pandas = pd.api.types.is_numeric_dtype(df[col].dtype) and df[col].nunique() > 5 # 고유값 많은 수치형
             
-    default_shap_texture = _shared_utils_mva.get("default_shap_plot_texture_tag", "") if _shared_utils_mva else ""
-    if _mva_shap_plot_active_texture_id and _mva_shap_plot_active_texture_id != default_shap_texture and dpg.does_item_exist(_mva_shap_plot_active_texture_id):
-        try: dpg.delete_item(_mva_shap_plot_active_texture_id)
-        except Exception as e: _log_mva(f"Error deleting active SHAP texture: {e}")
-    _mva_shap_plot_active_texture_id = default_shap_texture
-    if dpg.does_item_exist(TAG_OT_MVA_SHAP_PLOT_IMAGE):
-        dpg.configure_item(TAG_OT_MVA_SHAP_PLOT_IMAGE, texture_tag=default_shap_texture or "", show=False)
-    if dpg.does_item_exist(TAG_OT_MVA_SHAP_PLOT_PLACEHOLDER_TEXT):
-        dpg.configure_item(TAG_OT_MVA_SHAP_PLOT_PLACEHOLDER_TEXT, show=True)
-        dpg.set_value(TAG_OT_MVA_SHAP_PLOT_PLACEHOLDER_TEXT, "SHAP plot will appear here.")
+            if is_numeric_s1 or is_numeric_pandas:
+                # 추가 조건: 결측치가 너무 많거나, 분산이 0에 가까운 컬럼은 제외 가능
+                if df[col].isnull().sum() / len(df) < 0.8 and df[col].dropna().var() > 1e-6:
+                    numeric_cols.append(col)
+        return numeric_cols
+    return df.select_dtypes(include=np.number).columns.tolist()
 
 
-def _update_selected_point_info_ui(): # 이전 답변의 강화된 버전 사용
-    _log_mva("--- Debug: _update_selected_point_info_ui CALLED ---") # 함수 호출 로그
-    if _mva_selected_point_original_index is None or _df_with_mva_outliers is None:
-        _log_mva(f"Debug: _update_selected_point_info_ui - Condition not met. Index: {_mva_selected_point_original_index}, DF is None: {_df_with_mva_outliers is None}")
-        _clear_selected_point_info(); return
-
-    _log_mva(f"Debug: Selected Original Index: {_mva_selected_point_original_index}")
-    _log_mva(f"Debug: _df_with_mva_outliers shape: {_df_with_mva_outliers.shape if _df_with_mva_outliers is not None else 'None'}")
-
-    current_df_for_context = _df_with_mva_outliers # 이상치 플래그가 포함된 DF 사용
-    normal_df = current_df_for_context[current_df_for_context['is_mva_outlier'] == False]
-    _log_mva(f"Debug: normal_df shape: {normal_df.shape if normal_df is not None else 'None'}")
-
-    if dpg.does_item_exist(TAG_OT_MVA_SELECTED_OUTLIER_INDEX_TEXT):
-        status = "Outlier" if current_df_for_context.loc[_mva_selected_point_original_index, 'is_mva_outlier'] else "Normal"
-        score_text = ""
-        if _mva_outlier_scores is not None and _mva_umap_original_indices is not None:
-            # _mva_umap_original_indices 에서 _mva_selected_point_original_index 와 같은 값을 가지는 요소의 인덱스를 찾음
-            # 이 인덱스는 _mva_outlier_scores 에서 해당 포인트의 점수를 찾는데 사용됨
-            emb_idx_list = np.where(_mva_umap_original_indices == _mva_selected_point_original_index)[0]
-            if len(emb_idx_list) > 0 :
-                score_idx_in_scores_array = emb_idx_list[0] # 첫번째 매칭 인덱스
-                if 0 <= score_idx_in_scores_array < len(_mva_outlier_scores): # 점수 배열 범위 확인
-                     score_text = f"(Score: {_mva_outlier_scores[score_idx_in_scores_array]:.3f})"
-                else:
-                    _log_mva(f"Debug: Score index {score_idx_in_scores_array} out of bounds for _mva_outlier_scores (len: {len(_mva_outlier_scores)}).")
-            else:
-                _log_mva(f"Debug: Original index {_mva_selected_point_original_index} not found in _mva_umap_original_indices.")
-
-        dpg.set_value(TAG_OT_MVA_SELECTED_OUTLIER_INDEX_TEXT, f"Selected Point Index: {_mva_selected_point_original_index} (Status: {status}) {score_text}")
-        _log_mva(f"Debug: Set index text: Selected Point Index: {_mva_selected_point_original_index} (Status: {status}) {score_text}")
-
-    if dpg.does_item_exist(TAG_OT_MVA_SELECTED_OUTLIER_TABLE):
-        dpg.delete_item(TAG_OT_MVA_SELECTED_OUTLIER_TABLE, children_only=True)
-        dpg.delete_item(TAG_OT_MVA_SELECTED_OUTLIER_TABLE, children_only=True)
-
-        with dpg.table_row(parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE):
-            dpg.add_text("Test Feature")
-            dpg.add_text("Test Value")
-            dpg.add_text("Test Range")
-            dpg.add_text("Test Z")
-            dpg.add_text("Test Freq")
-        _log_mva("Debug: Added a single test row to selected point table.")
-
-        # selected_data_series = current_df_for_context.loc[_mva_selected_point_original_index]
-        # _log_mva(f"Debug: Selected data series for index {_mva_selected_point_original_index}:\n{selected_data_series.head()}") # 일부 값만 로그
-
-        # for feature, value in selected_data_series.items():
-        #     if feature == 'is_mva_outlier': continue
-        #     _log_mva(f"Debug: Processing feature '{feature}', Value: '{value}'")
-        #     feature_type = _get_feature_type(feature, current_df_for_context)
-        #     _log_mva(f"Debug:   Feature type: '{feature_type}'")
-        #     norm_range_txt, z_score_txt, norm_freq_txt, val_color = "N/A", "N/A", "N/A", (255,255,255,255)
-
-        #     if feature_type == "Numeric" and feature in normal_df.columns and not normal_df[feature].empty:
-        #         norm_series = normal_df[feature].dropna()
-        #         if len(norm_series) > 1:
-        #             p05, p95 = norm_series.quantile(0.05), norm_series.quantile(0.95)
-        #             mean, std = norm_series.mean(), norm_series.std()
-        #             norm_range_txt = f"{p05:.3f}~{p95:.3f}"
-        #             if pd.notna(value) and std > 1e-9 : # std가 0에 매우 가까운 경우 z-score 계산 회피 (이전 1e-6 보다 조금 더 작은 값)
-        #                 z = (value - mean) / std; z_score_txt = f"{z:.2f}"
-        #                 if abs(z) > 3: val_color = (255,0,0,255) # Red
-        #                 elif abs(z) > 2: val_color = (255,165,0,255) # Orange
-        #             elif pd.notna(value) and (value < p05 or value > p95) and val_color == (255,255,255,255): # z-score 계산 안될때도 범위로 색상
-        #                 val_color = (255,255,0,255) # Yellow
-        #         _log_mva(f"Debug:   Numeric stats for '{feature}': Range='{norm_range_txt}', Z='{z_score_txt}'")
-        #     elif feature_type == "Categorical" and feature in normal_df.columns and not normal_df[feature].empty:
-        #         norm_series_cat = normal_df[feature].dropna()
-        #         if not norm_series_cat.empty:
-        #             freq = norm_series_cat.value_counts(normalize=True).get(value,0)*100
-        #             norm_freq_txt = f"{freq:.1f}%"
-        #             if freq < 1: val_color = (255,100,100,255)
-        #             elif freq < 5: val_color = (255,200,0,255)
-        #         _log_mva(f"Debug:   Categorical stats for '{feature}': Freq='{norm_freq_txt}'")
-
-        #     with dpg.table_row(parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE):
-        #         dpg.add_text(str(feature))
-        #         dpg.add_text(f"{value:.4f}" if isinstance(value, (float,np.floating)) else str(value), color=val_color)
-        #         dpg.add_text(norm_range_txt); dpg.add_text(z_score_txt); dpg.add_text(norm_freq_txt)
-        # _log_mva("Debug: Finished populating selected point table.")
-    else:
-        _log_mva("Debug: Selected outlier table TAG does not exist.")
-
-    _calculate_and_display_shap_values()
-    _log_mva("--- Debug: _update_selected_point_info_ui COMPLETED ---")
-
-def _calculate_and_display_shap_values(): # 이전 답변의 최종본 사용 (거의 동일)
-    global _mva_shap_plot_active_texture_id
-    # ... (이전 코드와 동일, 로깅 메시지 등 약간의 톤 다운 가능)
-    placeholder_tag = TAG_OT_MVA_SHAP_PLOT_PLACEHOLDER_TEXT
-    image_tag = TAG_OT_MVA_SHAP_PLOT_IMAGE
-    if _mva_selected_point_original_index is None or _mva_iso_forest_model is None or not _mva_cols_analyzed_for_if:
-        if dpg.does_item_exist(placeholder_tag): dpg.configure_item(placeholder_tag, show=True); dpg.set_value(placeholder_tag, "Select point for SHAP.")
-        if dpg.does_item_exist(image_tag): dpg.configure_item(image_tag, show=False)
+def _update_selected_columns_for_mva_detection():
+    global _mva_selected_columns_for_detection, _mva_eligible_numeric_cols
+    
+    current_df = _shared_utils_mva['get_current_df_func']() if _shared_utils_mva and 'get_current_df_func' in _shared_utils_mva else None
+    if current_df is None:
+        _mva_eligible_numeric_cols = []
+        _mva_selected_columns_for_detection = []
+        if dpg.is_dearpygui_running() and dpg.does_item_exist(TAG_OT_MVA_COLUMN_SELECTOR_MULTI):
+            dpg.configure_item(TAG_OT_MVA_COLUMN_SELECTOR_MULTI, items=[])
         return
-    if shap is None:
-        if dpg.does_item_exist(placeholder_tag): dpg.configure_item(placeholder_tag, show=True); dpg.set_value(placeholder_tag, "SHAP library not installed.")
-        if dpg.does_item_exist(image_tag): dpg.configure_item(image_tag, show=False); return
-    current_df_for_shap = _df_with_mva_outliers
-    if current_df_for_shap is None: _log_mva("SHAP: current_df (with flags) is None."); return
-    data_for_shap_series = current_df_for_shap.loc[_mva_selected_point_original_index, _mva_cols_analyzed_for_if]
-    data_for_shap_df_imputed = pd.DataFrame([data_for_shap_series])
-    for col in data_for_shap_df_imputed.columns:
-        if data_for_shap_df_imputed[col].isnull().any():
-            col_median_for_shap = current_df_for_shap[col].median() 
-            data_for_shap_df_imputed[col].fillna(col_median_for_shap, inplace=True)
-    if data_for_shap_df_imputed.isnull().any().any(): _log_mva("SHAP Error: Data has NaNs after imputation."); return
+
+    _mva_eligible_numeric_cols = _get_eligible_numeric_cols_for_mva(current_df)
+
+    if _mva_column_selection_mode == "All Numeric":
+        _mva_selected_columns_for_detection = _mva_eligible_numeric_cols[:]
+    elif _mva_column_selection_mode == "Recommended":
+        # 추천 컬럼 로직: 예시로 상관계수 높은 컬럼 (타겟 변수 필요)
+        # 현재 스텝에서는 타겟 변수 개념이 명확하지 않으므로, 모든 수치형을 사용하거나,
+        # 분산이 큰 상위 N개 컬럼 등으로 대체 가능. 우선은 모든 수치형 사용.
+        # 또는, Step 1의 결과 등을 활용할 수 있다면 더욱 정교한 추천 가능.
+        # 여기서는 "All Numeric"과 동일하게 처리하고, 필요시 로직 확장.
+        _mva_selected_columns_for_detection = _mva_eligible_numeric_cols[:]
+        _log_mva("Recommended columns for MVA currently defaults to all eligible numeric columns.")
+    elif _mva_column_selection_mode == "Manual":
+        # 수동 선택은 _on_mva_manual_cols_selected 콜백에서 업데이트됨. 여기서는 현재 값 유지.
+        # 단, eligible_cols에 없는 컬럼은 제거
+        _mva_selected_columns_for_detection = [col for col in _mva_selected_columns_for_detection if col in _mva_eligible_numeric_cols]
+    
+    if dpg.is_dearpygui_running() and dpg.does_item_exist(TAG_OT_MVA_COLUMN_SELECTOR_MULTI):
+        dpg.configure_item(TAG_OT_MVA_COLUMN_SELECTOR_MULTI, items=_mva_eligible_numeric_cols)
+        # 수동 모드일 때, 저장된 선택값으로 복원 (단, eligible 목록 내에 있는 것만)
+        if _mva_column_selection_mode == "Manual":
+             dpg.set_value(TAG_OT_MVA_COLUMN_SELECTOR_MULTI, _mva_selected_columns_for_detection)
+        # 다른 모드에서는 자동으로 목록이 설정되므로 set_value 불필요하거나, 해당 목록으로 강제 설정 가능.
+        # 여기서는 Manual일 때만 명시적으로 set_value.
+
+    _log_mva(f"Columns for MVA detection updated ({_mva_column_selection_mode}): {_mva_selected_columns_for_detection}")
+
+def _update_mva_boxplots_for_comparison():
+    print("[DEBUG] Called: _update_mva_boxplots_for_comparison")
+    if not dpg.is_dearpygui_running():
+        print("[DEBUG] _update_mva_boxplots_for_comparison: DPG not running. Skipping.")
+        return
+
+    if _df_with_mva_outliers is None:
+        print("[DEBUG] _update_mva_boxplots_for_comparison: No MVA outlier data. Clearing boxplots.")
+        _clear_mva_boxplots()
+        if dpg.does_item_exist(TAG_OT_MVA_BOXPLOT_GROUP):
+             # 기존 자식들을 먼저 지우고 텍스트 추가
+            dpg.delete_item(TAG_OT_MVA_BOXPLOT_GROUP, children_only=True)
+            dpg.add_text("Run detection to see boxplots.", parent=TAG_OT_MVA_BOXPLOT_GROUP)
+        return
+
+    print("[DEBUG] _update_mva_boxplots_for_comparison: Generating MVA boxplots...")
+    _generate_mva_boxplots_for_comparison()
+
+
+def _run_mva_outlier_detection_logic(sender, app_data, user_data):
+    global _df_with_mva_outliers, _mva_model, _mva_shap_explainer, _mva_outlier_instances_summary
+    
+    print("[DEBUG] Called: _run_mva_outlier_detection_logic")
+    current_df = _shared_utils_mva['get_current_df_func']()
+
+    if current_df is None:
+        print("[DEBUG] _run_mva_outlier_detection_logic: current_df is None. Aborting.")
+        _show_simple_modal_mva("Error", "No data for multivariate outlier detection.")
+        return
+
+    _update_selected_columns_for_mva_detection() 
+    print(f"[DEBUG] _run_mva_outlier_detection_logic: Selected columns for detection: {_mva_selected_columns_for_detection}")
+    
+    if not _mva_selected_columns_for_detection or len(_mva_selected_columns_for_detection) < MIN_FEATURES_FOR_IFOREST:
+        print(f"[DEBUG] _run_mva_outlier_detection_logic: Not enough features. Selected: {len(_mva_selected_columns_for_detection)}")
+        _show_simple_modal_mva("Error", f"Please select at least {MIN_FEATURES_FOR_IFOREST} numeric features.")
+        return
+
+    df_for_detection_raw = current_df[_mva_selected_columns_for_detection].copy()
+    df_for_detection = df_for_detection_raw.dropna()
+    print(f"[DEBUG] _run_mva_outlier_detection_logic: Shape of df_for_detection (after dropna): {df_for_detection.shape}")
+    
+    if len(df_for_detection) < MIN_SAMPLES_FOR_IFOREST:
+        print(f"[DEBUG] _run_mva_outlier_detection_logic: Not enough samples after dropna. Samples: {len(df_for_detection)}")
+        _show_simple_modal_mva("Error", f"Not enough data rows (after NaN removal) to run detection. Min required: {MIN_SAMPLES_FOR_IFOREST}.")
+        return
+        
+    print(f"[DEBUG] _run_mva_outlier_detection_logic: Starting IForest with Contam={_mva_contamination}")
+
     try:
-        explainer = shap.TreeExplainer(_mva_iso_forest_model)
-        shap_values_for_point = explainer.shap_values(data_for_shap_df_imputed.iloc[0])
-        shap_values_to_plot = shap_values_for_point[1] if isinstance(shap_values_for_point, list) and len(shap_values_for_point)==2 else shap_values_for_point
-        fig_height = max(4, len(_mva_cols_analyzed_for_if) * 0.35 + 1.5)
-        fig_width_inches = (SHAP_PLOT_IMAGE_WIDTH - 20) / 80 
-        fig, ax = plt.subplots(figsize=(fig_width_inches , fig_height ))
-        shap_series = pd.Series(shap_values_to_plot, index=_mva_cols_analyzed_for_if).sort_values(ascending=True)
-        colors = ['#d62728' if x > 0 else '#1f77b4' for x in shap_series.values]
-        shap_series.plot(kind='barh', ax=ax, color=colors)
-        ax.set_xlabel("SHAP Value (Contribution to Anomaly Score)"); ax.set_title(f"SHAP Values for Point: {str(_mva_selected_point_original_index)[:30]}", fontsize=10)
-        ax.tick_params(axis='both', which='major', labelsize=8); plt.tight_layout()
-        plot_texture_func = _shared_utils_mva['plot_to_dpg_texture_func']
-        texture_tag_new, tex_w, tex_h = plot_texture_func(fig); plt.close(fig)
-        default_shap_texture = _shared_utils_mva.get("default_shap_plot_texture_tag", "")
-        if _mva_shap_plot_active_texture_id and _mva_shap_plot_active_texture_id != default_shap_texture and dpg.does_item_exist(_mva_shap_plot_active_texture_id):
-            dpg.delete_item(_mva_shap_plot_active_texture_id)
-        if texture_tag_new and tex_w > 0 and tex_h > 0:
-            _mva_shap_plot_active_texture_id = texture_tag_new
-            disp_h = int(tex_h * (SHAP_PLOT_IMAGE_WIDTH / tex_w)) if tex_w > 0 else tex_h
-            dpg.configure_item(image_tag, texture_tag=_mva_shap_plot_active_texture_id, width=SHAP_PLOT_IMAGE_WIDTH, height=disp_h, show=True)
-            if dpg.does_item_exist(placeholder_tag): dpg.configure_item(placeholder_tag, show=False)
+        scaler = StandardScaler()
+        scaled_data_for_reduction = scaler.fit_transform(df_for_detection.values)
+
+        _mva_model = PyOD_IForest(contamination=_mva_contamination, random_state=42, n_jobs=-1)
+        _mva_model.fit(df_for_detection.values) 
+
+        outlier_scores = _mva_model.decision_scores_
+        outlier_labels = _mva_model.labels_
+
+        _df_with_mva_outliers = current_df.copy()
+        _df_with_mva_outliers.loc[df_for_detection.index, 'mva_outlier_score'] = outlier_scores
+        _df_with_mva_outliers.loc[df_for_detection.index, 'mva_is_outlier'] = outlier_labels.astype(bool)
+        
+        _df_with_mva_outliers['mva_is_outlier'] = _df_with_mva_outliers['mva_is_outlier'].fillna(False)
+        min_score_val = np.min(outlier_scores) if len(outlier_scores) > 0 else 0
+        _df_with_mva_outliers['mva_outlier_score'] = _df_with_mva_outliers['mva_outlier_score'].fillna(min_score_val - 1)
+
+        print(f"[DEBUG] _run_mva_outlier_detection_logic: _df_with_mva_outliers shape: {_df_with_mva_outliers.shape}")
+        if 'mva_is_outlier' in _df_with_mva_outliers.columns:
+            print(f"[DEBUG] _run_mva_outlier_detection_logic: mva_is_outlier value counts:\n{_df_with_mva_outliers['mva_is_outlier'].value_counts(dropna=False)}")
+        if 'mva_outlier_score' in _df_with_mva_outliers.columns:
+            print(f"[DEBUG] _run_mva_outlier_detection_logic: mva_outlier_score (non-NaN) describe:\n{_df_with_mva_outliers['mva_outlier_score'].dropna().describe()}")
+        
+        if 'shap' in globals() and shap is not None:
+            try:
+                _mva_shap_explainer = shap.TreeExplainer(_mva_model.detector_, data=df_for_detection) # Pass data to explainer for background
+                print("[DEBUG] _run_mva_outlier_detection_logic: SHAP TreeExplainer initialized.")
+            except Exception as e_shap_init:
+                print(f"[DEBUG] _run_mva_outlier_detection_logic: Error initializing SHAP explainer: {e_shap_init}")
+                _mva_shap_explainer = None
         else:
-            if dpg.does_item_exist(placeholder_tag): dpg.set_value(placeholder_tag, "Error generating SHAP plot."); dpg.configure_item(placeholder_tag, show=True)
-            if dpg.does_item_exist(image_tag): dpg.configure_item(image_tag, show=False)
+            _mva_shap_explainer = None
+            print("[DEBUG] _run_mva_outlier_detection_logic: SHAP library not available.")
+
+        _mva_outlier_instances_summary = []
+        # NaN이 아닌 'mva_is_outlier' 값만 필터링 (이미 fillna(False) 처리됨)
+        detected_outliers_df = _df_with_mva_outliers[_df_with_mva_outliers['mva_is_outlier'] == True]
+        
+        if not detected_outliers_df.empty and 'mva_outlier_score' in detected_outliers_df.columns:
+            detected_outliers_df = detected_outliers_df.sort_values(by='mva_outlier_score', ascending=False)
+        
+        print(f"[DEBUG] _run_mva_outlier_detection_logic: Number of actual detected outliers: {len(detected_outliers_df)}")
+
+        for original_idx, row in detected_outliers_df.head(MAX_OUTLIER_INSTANCES_TO_SHOW).iterrows():
+            _mva_outlier_instances_summary.append({
+                "Original Index": original_idx,
+                "MVA Outlier Score": f"{row['mva_outlier_score']:.4f}"
+            })
+        
+        print(f"[DEBUG] _run_mva_outlier_detection_logic: _mva_outlier_instances_summary length: {len(_mva_outlier_instances_summary)}")
+        if _mva_outlier_instances_summary:
+            print(f"[DEBUG] _run_mva_outlier_detection_logic: First item in summary: {_mva_outlier_instances_summary[0]}")
+
+        _populate_mva_outlier_instances_table()
+        _generate_mva_umap_pca_plots(scaled_data_for_reduction, df_for_detection.index, outlier_labels) # outlier_labels은 df_for_detection에 해당
+        _update_mva_boxplots_for_comparison()
+
+        print("[DEBUG] _run_mva_outlier_detection_logic: Multivariate Outlier Detection Finished Successfully.")
+        _show_simple_modal_mva("Detection Complete", "Multivariate outlier detection finished.")
+        
     except Exception as e:
-        _log_mva(f"Error in SHAP calculation/plot: {e}\n{traceback.format_exc()}")
-        if dpg.does_item_exist(placeholder_tag): dpg.set_value(placeholder_tag, f"SHAP Error: {e}"); dpg.configure_item(placeholder_tag, show=True)
-        if dpg.does_item_exist(image_tag): dpg.configure_item(image_tag, show=False)
+        print(f"[DEBUG] _run_mva_outlier_detection_logic: Error during MVA detection: {e}")
+        import traceback
+        print(f"[DEBUG] _run_mva_outlier_detection_logic: Traceback: {traceback.format_exc()}")
+        _show_simple_modal_mva("Detection Error", f"An error occurred during multivariate detection: {e}")
+        _df_with_mva_outliers = None
+        _mva_model = None
+        _mva_shap_explainer = None
+        _clear_all_mva_visualizations()
+        _populate_mva_outlier_instances_table()
 
-# --- 이상치 그룹 분석 관련 함수 ---
-def _run_group_analysis(sender, app_data, user_data):
-    global _mva_group_stats_df, _mva_group_numerical_cols_for_plot, _mva_group_categorical_cols_for_plot
-    global _normal_group_df_cache, _outlier_group_df_cache
+def _populate_mva_outlier_instances_table():
+    global _mva_all_selectable_tags_in_instances_table
+    print("[DEBUG] Called: _populate_mva_outlier_instances_table")
+    dpg.add_table_column(label="Test Col 1", parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE)
+    dpg.add_table_column(label="Test Col 2", parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE)
+    with dpg.table_row(parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE):
+        dpg.add_text("Test Data 1")
+        dpg.add_text("Test Data 2")
+    if not dpg.is_dearpygui_running() or not dpg.does_item_exist(TAG_OT_MVA_OUTLIER_INSTANCES_TABLE):
+        print("[DEBUG] _populate_mva_outlier_instances_table: DPG not running or table tag not found.")
+        return
+    dpg.delete_item(TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, children_only=True)
+    _mva_all_selectable_tags_in_instances_table.clear()
 
-    _log_mva("--- Debug: _run_group_analysis CALLED ---")
-    if _df_with_mva_outliers is None or 'is_mva_outlier' not in _df_with_mva_outliers.columns:
-        _log_mva("Debug: _run_group_analysis - MVA detection not run yet or 'is_mva_outlier' column missing.")
-        _show_simple_modal_mva("Error", "Please run MVA detection first to define outlier groups.")
+    if not _mva_outlier_instances_summary:
+        print("[DEBUG] _populate_mva_outlier_instances_table: No outlier instances to show.")
+        dpg.add_table_column(label="Info", parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE)
+        with dpg.table_row(parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE):
+            dpg.add_text("No multivariate outliers detected or detection not run.")
+        _clear_mva_instance_details()
         return
 
-    _log_mva(f"Debug: _df_with_mva_outliers shape before group split: {_df_with_mva_outliers.shape}")
-    _normal_group_df_cache = _df_with_mva_outliers[_df_with_mva_outliers['is_mva_outlier'] == False].copy()
-    _outlier_group_df_cache = _df_with_mva_outliers[_df_with_mva_outliers['is_mva_outlier'] == True].copy()
-    _log_mva(f"Debug: _normal_group_df_cache shape: {_normal_group_df_cache.shape}")
-    _log_mva(f"Debug: _outlier_group_df_cache shape: {_outlier_group_df_cache.shape}")
+    headers = ["Original Index", "MVA Outlier Score (Higher is more outlier)"]
+    dpg.add_table_column(label=headers[0], parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, init_width_or_weight=0.4)
+    dpg.add_table_column(label=headers[1], parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, init_width_or_weight=0.6)
 
-    if _outlier_group_df_cache.empty:
-        _log_mva("Debug: No outliers detected, cannot perform group analysis.")
-        _show_simple_modal_mva("Info", "No outliers detected in the dataset to perform group analysis.")
-        _clear_group_analysis_ui_elements()
+    print(f"[DEBUG] _populate_mva_outlier_instances_table: Populating table with {len(_mva_outlier_instances_summary)} items.")
+    for i, item_data in enumerate(_mva_outlier_instances_summary):
+        original_idx = item_data["Original Index"]
+        score_str = item_data["MVA Outlier Score"]
+        
+        tag = f"mva_instance_selectable_{i}_{original_idx}_{dpg.generate_uuid()}"
+        _mva_all_selectable_tags_in_instances_table.append(tag)
+        
+        with dpg.table_row(parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE):
+            dpg.add_selectable(label=str(original_idx), tag=tag, user_data=original_idx,
+                               callback=_on_mva_outlier_instance_selected, span_columns=False)
+            dpg.add_text(score_str)
+            # print(f"[DEBUG] _populate_mva_outlier_instances_table: Added row for index {original_idx}")
+
+
+def _on_mva_outlier_instance_selected(sender, app_data_is_selected: bool, user_data_original_idx: Any):
+    global _mva_selected_outlier_instance_idx
+    if app_data_is_selected:
+        for tag_iter in _mva_all_selectable_tags_in_instances_table:
+            if tag_iter != sender and dpg.does_item_exist(tag_iter) and dpg.get_value(tag_iter):
+                dpg.set_value(tag_iter, False) # 다른 선택 해제
+        
+        _mva_selected_outlier_instance_idx = user_data_original_idx
+        _log_mva(f"MVA Outlier instance selected: Index {user_data_original_idx}")
+        _display_mva_instance_statistics(user_data_original_idx)
+        _generate_mva_shap_plot_for_instance(user_data_original_idx)
+    else: # 선택 해제 시 (다시 클릭)
+        if _mva_selected_outlier_instance_idx == user_data_original_idx: # 현재 선택된 것을 다시 클릭하여 해제
+             _mva_selected_outlier_instance_idx = None
+             _clear_mva_instance_details()
+
+
+def _display_mva_instance_statistics(original_idx: Any):
+    if not dpg.is_dearpygui_running() or not dpg.does_item_exist(TAG_OT_MVA_INSTANCE_STATS_TABLE): return
+    dpg.delete_item(TAG_OT_MVA_INSTANCE_STATS_TABLE, children_only=True)
+
+    if _df_with_mva_outliers is None or original_idx not in _df_with_mva_outliers.index:
+        dpg.add_table_column(label="Info", parent=TAG_OT_MVA_INSTANCE_STATS_TABLE)
+        with dpg.table_row(parent=TAG_OT_MVA_INSTANCE_STATS_TABLE):
+            dpg.add_text("Selected instance data not available.")
         return
-    if _normal_group_df_cache.empty:
-        _log_mva("Debug: No normal data points found, cannot perform group analysis.")
-        _show_simple_modal_mva("Info", "No normal data points found to perform group analysis (all points are outliers?).")
-        _clear_group_analysis_ui_elements()
-        return
 
-    current_df_context = _df_with_mva_outliers
-    cols_for_group_analysis = _mva_cols_analyzed_for_if if _mva_cols_analyzed_for_if else \
-                              [col for col in current_df_context.columns if col != 'is_mva_outlier']
-    _log_mva(f"Debug: cols_for_group_analysis: {cols_for_group_analysis}")
-
-
-    _mva_group_numerical_cols_for_plot = [col for col in cols_for_group_analysis if _get_feature_type(col, current_df_context) == "Numeric"]
-    _mva_group_categorical_cols_for_plot = [col for col in cols_for_group_analysis if _get_feature_type(col, current_df_context) == "Categorical"]
-    _log_mva(f"Debug: _mva_group_numerical_cols_for_plot: {_mva_group_numerical_cols_for_plot}")
-    _log_mva(f"Debug: _mva_group_categorical_cols_for_plot: {_mva_group_categorical_cols_for_plot}")
-
-    _log_mva("Debug: Calling _populate_group_stats_table...")
-    _populate_group_stats_table(_normal_group_df_cache, _outlier_group_df_cache, _mva_group_numerical_cols_for_plot)
-
-    if dpg.does_item_exist(TAG_OT_MVA_GROUP_NUM_FEATURE_COMBO):
-        dpg.configure_item(TAG_OT_MVA_GROUP_NUM_FEATURE_COMBO, items=_mva_group_numerical_cols_for_plot, default_value="")
-    if dpg.does_item_exist(TAG_OT_MVA_GROUP_CAT_FEATURE_COMBO):
-        dpg.configure_item(TAG_OT_MVA_GROUP_CAT_FEATURE_COMBO, items=_mva_group_categorical_cols_for_plot, default_value="")
-    _log_mva("Debug: Group feature selectors populated.")
+    instance_data = _df_with_mva_outliers.loc[original_idx]
+    # 표시할 컬럼은 MVA 탐지에 사용된 컬럼들 + 이상치 점수
+    cols_to_display = _mva_selected_columns_for_detection + ['mva_outlier_score']
     
-    _clear_group_dist_plot()
-    _clear_group_freq_plot()
-    _log_mva("--- Debug: _run_group_analysis COMPLETED ---")
+    dpg.add_table_column(label="Feature", parent=TAG_OT_MVA_INSTANCE_STATS_TABLE, init_width_or_weight=0.5)
+    dpg.add_table_column(label="Value", parent=TAG_OT_MVA_INSTANCE_STATS_TABLE, init_width_or_weight=0.5)
 
-def _populate_group_stats_table(normal_df: pd.DataFrame, outlier_df: pd.DataFrame, num_cols: List[str]):
-    _log_mva("--- Debug: _populate_group_stats_table CALLED ---")
-    if not dpg.does_item_exist(TAG_OT_MVA_GROUP_STATS_TABLE):
-        _log_mva("Debug: Group stats table TAG does not exist. Returning.")
-        return
-    dpg.delete_item(TAG_OT_MVA_GROUP_STATS_TABLE, children_only=True) # 기존 내용만 지움 (컬럼은 유지)
+    for feature_name in cols_to_display:
+        if feature_name in instance_data:
+            with dpg.table_row(parent=TAG_OT_MVA_INSTANCE_STATS_TABLE):
+                dpg.add_text(str(feature_name))
+                value = instance_data[feature_name]
+                dpg.add_text(f"{value:.4f}" if isinstance(value, (float, np.floating)) else str(value))
 
-    _log_mva(f"Debug: normal_df shape for stats: {normal_df.shape if normal_df is not None else 'None'}")
-    _log_mva(f"Debug: outlier_df shape for stats: {outlier_df.shape if outlier_df is not None else 'None'}")
-    _log_mva(f"Debug: num_cols for stats: {num_cols}")
-
-    if not num_cols:
-        _log_mva("Debug: No numerical features to compare in group stats table.")
-        with dpg.table_row(parent=TAG_OT_MVA_GROUP_STATS_TABLE):
-            dpg.add_text("No numerical features to compare.")
-            dpg.add_text("")
-            dpg.add_text("")
-            dpg.add_text("")
-        return
-    num_defined_columns = 4 # 테이블 컬럼이 4개로 고정되어 있다고 가정
-    _log_mva(f"Debug: Assuming {num_defined_columns} defined columns in stats table.")
-
-    stats_to_calc = ['count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max']
+def _clear_mva_instance_details():
+    if not dpg.is_dearpygui_running(): return
+    # 통계량 테이블 클리어
+    if dpg.does_item_exist(TAG_OT_MVA_INSTANCE_STATS_TABLE):
+        dpg.delete_item(TAG_OT_MVA_INSTANCE_STATS_TABLE, children_only=True)
+        dpg.add_table_column(label="Info", parent=TAG_OT_MVA_INSTANCE_STATS_TABLE)
+        with dpg.table_row(parent=TAG_OT_MVA_INSTANCE_STATS_TABLE):
+            dpg.add_text("Select an outlier instance from the table above.")
+    # SHAP 플롯 클리어
+    _clear_mva_shap_plot()
 
 
-    for col_name in num_cols:
-        _log_mva(f"Debug: Calculating stats for column: '{col_name}'")
-        if col_name not in normal_df.columns:
-            _log_mva(f"Warning: Column '{col_name}' not in normal_df. Skipping for normal_stats.")
-            normal_stats = pd.Series(index=stats_to_calc, dtype=float) # Empty series with NaN
-        else:
-            normal_stats = normal_df[col_name].describe().reindex(stats_to_calc)
+# --- Visualization Functions (UMAP, PCA, SHAP, Boxplots) ---
 
-        if col_name not in outlier_df.columns:
-            _log_mva(f"Warning: Column '{col_name}' not in outlier_df. Skipping for outlier_stats.")
-            outlier_stats = pd.Series(index=stats_to_calc, dtype=float) # Empty series with NaN
-        else:
-            outlier_stats = outlier_df[col_name].describe().reindex(stats_to_calc)
-
-        _log_mva(f"Debug:   Normal stats for '{col_name}': {normal_stats.to_dict()}")
-        _log_mva(f"Debug:   Outlier stats for '{col_name}': {outlier_stats.to_dict()}")
-
-        for i, stat_name in enumerate(stats_to_calc):
-            with dpg.table_row(parent=TAG_OT_MVA_GROUP_STATS_TABLE):
-                if i == 0:
-                    dpg.add_text(col_name, color=(200,200,0))
-                else:
-                    dpg.add_text("")
-                dpg.add_text(stat_name)
-                dpg.add_text(f"{normal_stats.get(stat_name, np.nan):.3f}")
-                dpg.add_text(f"{outlier_stats.get(stat_name, np.nan):.3f}")
-
-        if num_cols.index(col_name) < len(num_cols) - 1:
-            with dpg.table_row(parent=TAG_OT_MVA_GROUP_STATS_TABLE):
-                for _ in range(num_defined_columns): # Should match number of columns
-                    dpg.add_separator()
-    _log_mva("--- Debug: _populate_group_stats_table COMPLETED ---")
-
-def _on_group_num_feature_select(sender, selected_feature: str, user_data):
-    global _mva_group_dist_plot_texture_id
-    if not selected_feature or _normal_group_df_cache is None or _outlier_group_df_cache is None:
-        _clear_group_dist_plot(); return
-    _log_mva(f"Numerical feature selected for group dist plot: {selected_feature}")
-
-    fig, ax = plt.subplots(figsize=( (GROUP_ANALYSIS_PLOT_WIDTH-20)/80 , GROUP_ANALYSIS_PLOT_HEIGHT/100 )) # DPI 고려
-    sns.boxplot(data=[_normal_group_df_cache[selected_feature].dropna(), 
-                       _outlier_group_df_cache[selected_feature].dropna()], 
-                ax=ax, notch=True, showmeans=True, meanline=True,
-                palette=['#1f77b4', '#d62728'], flierprops={'markerfacecolor':'gray', 'markeredgecolor':'gray', 'markersize':3, 'alpha':0.5}) # 이상치 마커 스타일
-    ax.set_xticklabels(['Normal', 'Outlier'])
-    ax.set_title(f"Distribution: {selected_feature}", fontsize=10)
-    ax.set_ylabel("Value", fontsize=9)
-    ax.tick_params(axis='both', which='major', labelsize=8)
-    plt.tight_layout()
-
-    plot_texture_func = _shared_utils_mva['plot_to_dpg_texture_func']
-    texture_tag_new, tex_w, tex_h = plot_texture_func(fig); plt.close(fig)
-
-    default_texture = _shared_utils_mva.get("default_group_dist_plot_texture_tag", "")
-    if _mva_group_dist_plot_texture_id and _mva_group_dist_plot_texture_id != default_texture and dpg.does_item_exist(_mva_group_dist_plot_texture_id):
-        dpg.delete_item(_mva_group_dist_plot_texture_id)
+def _generate_mva_umap_pca_plots(data_for_reduction: np.ndarray, original_indices: pd.Index, outlier_labels: np.ndarray):
+    global _mva_active_umap_texture_id, _mva_active_pca_texture_id
     
-    if texture_tag_new and tex_w > 0 and tex_h > 0:
-        _mva_group_dist_plot_texture_id = texture_tag_new
-        disp_h = int(tex_h * (GROUP_ANALYSIS_PLOT_WIDTH / tex_w)) if tex_w > 0 else tex_h
-        dpg.configure_item(TAG_OT_MVA_GROUP_DIST_PLOT_IMAGE, texture_tag=_mva_group_dist_plot_texture_id, width=GROUP_ANALYSIS_PLOT_WIDTH, height=disp_h, show=True)
-        if dpg.does_item_exist(TAG_OT_MVA_GROUP_DIST_PLOT_PLACEHOLDER): dpg.configure_item(TAG_OT_MVA_GROUP_DIST_PLOT_PLACEHOLDER, show=False)
-    else: _clear_group_dist_plot()
+    _clear_mva_umap_plot()
+    _clear_mva_pca_plot()
 
+    if data_for_reduction is None or len(data_for_reduction) < 2 or data_for_reduction.shape[1] < 2:
+        _log_mva("Not enough data for UMAP/PCA. Skipping visualization.")
+        return
 
-def _on_group_cat_feature_select(sender, selected_feature: str, user_data):
-    global _mva_group_freq_plot_texture_id
-    if not selected_feature or _normal_group_df_cache is None or _outlier_group_df_cache is None:
-        _clear_group_freq_plot(); return
-    _log_mva(f"Categorical feature selected for group freq plot: {selected_feature}")
+    if len(data_for_reduction) != len(outlier_labels) or len(data_for_reduction) != len(original_indices):
+        _log_mva("Data length mismatch for UMAP/PCA. Skipping visualization.")
+        return
 
-    normal_counts = _normal_group_df_cache[selected_feature].value_counts(normalize=True, dropna=False) * 100
-    outlier_counts = _outlier_group_df_cache[selected_feature].value_counts(normalize=True, dropna=False) * 100
-    
-    df_plot = pd.DataFrame({'Normal (%)': normal_counts, 'Outlier (%)': outlier_counts}).fillna(0).sort_index()
+    # UMAP
+    if umap:
+        try:
+            _log_mva("Generating UMAP plot...")
+            reducer_umap = umap.UMAP(n_neighbors=15, min_dist=0.1, n_components=2, random_state=42)
+            embedding_umap = reducer_umap.fit_transform(data_for_reduction) # 스케일링/NaN제거된 데이터 사용
+            
+            fig_umap, ax_umap = plt.subplots(figsize=(7, 5)) # 가로 배치 고려하여 적절한 크기
+            scatter_umap = ax_umap.scatter(embedding_umap[:, 0], embedding_umap[:, 1], c=outlier_labels, cmap='coolwarm', s=15, alpha=0.7)
+            ax_umap.set_title("UMAP Projection of Outliers", fontsize=10)
+            ax_umap.set_xlabel("UMAP 1", fontsize=8); ax_umap.set_ylabel("UMAP 2", fontsize=8)
+            ax_umap.tick_params(axis='both', which='major', labelsize=7)
+            legend_elements = [plt.Line2D([0], [0], marker='o', color='w', label='Normal', markerfacecolor='blue', markersize=5),
+                               plt.Line2D([0], [0], marker='o', color='w', label='Outlier', markerfacecolor='red', markersize=5)]
+            ax_umap.legend(handles=legend_elements, loc='best', fontsize=7)
+            plt.tight_layout()
+            
+            tex_tag_umap, w_umap, h_umap = _s5_plot_to_dpg_texture_mva(fig_umap)
+            plt.close(fig_umap)
 
-    fig, ax = plt.subplots(figsize=( (GROUP_ANALYSIS_PLOT_WIDTH-20)/80 , GROUP_ANALYSIS_PLOT_HEIGHT/100 ))
-    df_plot.plot(kind='bar', ax=ax, color=['#1f77b4', '#d62728'], width=0.8)
-    ax.set_title(f"Frequency: {selected_feature}", fontsize=10)
-    ax.set_ylabel("Percentage (%)", fontsize=9)
-    ax.set_xlabel("Category", fontsize=9)
-    ax.tick_params(axis='x', rotation=45, labelsize=8, ha='right')
-    ax.tick_params(axis='y', labelsize=8)
-    ax.legend(fontsize=8)
-    plt.tight_layout()
-
-    plot_texture_func = _shared_utils_mva['plot_to_dpg_texture_func']
-    texture_tag_new, tex_w, tex_h = plot_texture_func(fig); plt.close(fig)
-
-    default_texture = _shared_utils_mva.get("default_group_freq_plot_texture_tag", "")
-    if _mva_group_freq_plot_texture_id and _mva_group_freq_plot_texture_id != default_texture and dpg.does_item_exist(_mva_group_freq_plot_texture_id):
-        dpg.delete_item(_mva_group_freq_plot_texture_id)
-
-    if texture_tag_new and tex_w > 0 and tex_h > 0:
-        _mva_group_freq_plot_texture_id = texture_tag_new
-        disp_h = int(tex_h * (GROUP_ANALYSIS_PLOT_WIDTH / tex_w)) if tex_w > 0 else tex_h
-        dpg.configure_item(TAG_OT_MVA_GROUP_FREQ_PLOT_IMAGE, texture_tag=_mva_group_freq_plot_texture_id, width=GROUP_ANALYSIS_PLOT_WIDTH, height=disp_h, show=True)
-        if dpg.does_item_exist(TAG_OT_MVA_GROUP_FREQ_PLOT_PLACEHOLDER): dpg.configure_item(TAG_OT_MVA_GROUP_FREQ_PLOT_PLACEHOLDER, show=False)
-    else: _clear_group_freq_plot()
-
-def _clear_group_dist_plot():
-    global _mva_group_dist_plot_texture_id
-    default_tag = _shared_utils_mva.get("default_group_dist_plot_texture_tag", "") if _shared_utils_mva else ""
-    if _mva_group_dist_plot_texture_id and _mva_group_dist_plot_texture_id != default_tag and dpg.does_item_exist(_mva_group_dist_plot_texture_id):
-        dpg.delete_item(_mva_group_dist_plot_texture_id)
-    _mva_group_dist_plot_texture_id = default_tag
-    if dpg.does_item_exist(TAG_OT_MVA_GROUP_DIST_PLOT_IMAGE):
-        dpg.configure_item(TAG_OT_MVA_GROUP_DIST_PLOT_IMAGE, texture_tag=default_tag or "", show=False)
-    if dpg.does_item_exist(TAG_OT_MVA_GROUP_DIST_PLOT_PLACEHOLDER):
-        dpg.configure_item(TAG_OT_MVA_GROUP_DIST_PLOT_PLACEHOLDER, show=True)
-        dpg.set_value(TAG_OT_MVA_GROUP_DIST_PLOT_PLACEHOLDER, "Select a numerical feature.")
-
-def _clear_group_freq_plot():
-    global _mva_group_freq_plot_texture_id
-    default_tag = _shared_utils_mva.get("default_group_freq_plot_texture_tag", "") if _shared_utils_mva else ""
-    if _mva_group_freq_plot_texture_id and _mva_group_freq_plot_texture_id != default_tag and dpg.does_item_exist(_mva_group_freq_plot_texture_id):
-        dpg.delete_item(_mva_group_freq_plot_texture_id)
-    _mva_group_freq_plot_texture_id = default_tag
-    if dpg.does_item_exist(TAG_OT_MVA_GROUP_FREQ_PLOT_IMAGE):
-        dpg.configure_item(TAG_OT_MVA_GROUP_FREQ_PLOT_IMAGE, texture_tag=default_tag or "", show=False)
-    if dpg.does_item_exist(TAG_OT_MVA_GROUP_FREQ_PLOT_PLACEHOLDER):
-        dpg.configure_item(TAG_OT_MVA_GROUP_FREQ_PLOT_PLACEHOLDER, show=True)
-        dpg.set_value(TAG_OT_MVA_GROUP_FREQ_PLOT_PLACEHOLDER, "Select a categorical feature.")
-
-def _clear_group_analysis_ui_elements():
-    if dpg.does_item_exist(TAG_OT_MVA_GROUP_STATS_TABLE):
-        dpg.delete_item(TAG_OT_MVA_GROUP_STATS_TABLE, children_only=True)
-        with dpg.table_row(parent=TAG_OT_MVA_GROUP_STATS_TABLE): # Placeholder
-             for i in range(4): dpg.add_text("...")
-    if dpg.does_item_exist(TAG_OT_MVA_GROUP_NUM_FEATURE_COMBO): dpg.configure_item(TAG_OT_MVA_GROUP_NUM_FEATURE_COMBO, items=[], default_value="")
-    if dpg.does_item_exist(TAG_OT_MVA_GROUP_CAT_FEATURE_COMBO): dpg.configure_item(TAG_OT_MVA_GROUP_CAT_FEATURE_COMBO, items=[], default_value="")
-    _clear_group_dist_plot()
-    _clear_group_freq_plot()
-
-
-# --- Main UI Creation and Update Functions for Multivariate ---
-def create_multivariate_ui(parent_tab_bar_tag: str, shared_utilities: dict):
-    global _shared_utils_mva, _mva_shap_plot_active_texture_id
-    global _mva_group_dist_plot_texture_id, _mva_group_freq_plot_texture_id # 전역변수 선언
-    _shared_utils_mva = shared_utilities
-    print(f"DEBUG_PRINT: _shared_utils_mva in create_multivariate_ui: {_shared_utils_mva}")
-    if _shared_utils_mva and 'log_message_func' in _shared_utils_mva:
-        print(f"DEBUG_PRINT: log_message_func IS PRESENT: {_shared_utils_mva['log_message_func']}")
+            if tex_tag_umap and w_umap > 0 and h_umap > 0:
+                _mva_active_umap_texture_id = tex_tag_umap
+                if dpg.does_item_exist(TAG_OT_MVA_UMAP_PLOT_IMAGE):
+                    dpg.configure_item(TAG_OT_MVA_UMAP_PLOT_IMAGE, texture_tag=_mva_active_umap_texture_id, width=w_umap, height=h_umap)
+            _log_mva("UMAP plot generated." if tex_tag_umap else "UMAP plot generation failed.")
+        except Exception as e_umap:
+            _log_mva(f"Error generating UMAP plot: {e_umap}")
     else:
-        print("DEBUG_PRINT: log_message_func IS MISSING or _shared_utils_mva is None")
-    # --- 여기까지 직접 print ---
+        _log_mva("UMAP library not available. Skipping UMAP plot.")
 
-    _mva_shap_plot_active_texture_id = _shared_utils_mva.get("default_shap_plot_texture_tag", "")
-    _mva_group_dist_plot_texture_id = _shared_utils_mva.get("default_group_dist_plot_texture_tag", "")
-    _mva_group_freq_plot_texture_id = _shared_utils_mva.get("default_group_freq_plot_texture_tag", "")
+    # PCA
+    try:
+        _log_mva("Generating PCA plot...")
+        pca = PCA(n_components=2, random_state=42)
+        embedding_pca = pca.fit_transform(data_for_reduction) # 스케일링/NaN제거된 데이터 사용
+        
+        fig_pca, ax_pca = plt.subplots(figsize=(7, 5)) # 가로 배치 고려
+        scatter_pca = ax_pca.scatter(embedding_pca[:, 0], embedding_pca[:, 1], c=outlier_labels, cmap='viridis', s=15, alpha=0.7)
+        ax_pca.set_title("PCA Projection of Outliers", fontsize=10)
+        ax_pca.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)", fontsize=8)
+        ax_pca.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)", fontsize=8)
+        ax_pca.tick_params(axis='both', which='major', labelsize=7)
+        # PCA는 UMAP과 다른 색상맵 및 범례 사용 가능
+        legend_elements_pca = [plt.Line2D([0], [0], marker='o', color='w', label='Normal', markerfacecolor=plt.cm.viridis(0.2), markersize=5),
+                               plt.Line2D([0], [0], marker='o', color='w', label='Outlier', markerfacecolor=plt.cm.viridis(0.8), markersize=5)]
+        ax_pca.legend(handles=legend_elements_pca, loc='best', fontsize=7)
 
-    # ... (shap, umap import checks) ...
+        plt.tight_layout()
+
+        tex_tag_pca, w_pca, h_pca = _s5_plot_to_dpg_texture_mva(fig_pca)
+        plt.close(fig_pca)
+
+        if tex_tag_pca and w_pca > 0 and h_pca > 0:
+            _mva_active_pca_texture_id = tex_tag_pca
+            if dpg.does_item_exist(TAG_OT_MVA_PCA_PLOT_IMAGE):
+                dpg.configure_item(TAG_OT_MVA_PCA_PLOT_IMAGE, texture_tag=_mva_active_pca_texture_id, width=w_pca, height=h_pca)
+        _log_mva("PCA plot generated." if tex_tag_pca else "PCA plot generation failed.")
+    except Exception as e_pca:
+        _log_mva(f"Error generating PCA plot: {e_pca}")
+
+
+def _generate_mva_shap_plot_for_instance(original_idx: Any):
+    global _mva_active_shap_texture_id, _mva_shap_values_for_selected
+    _clear_mva_shap_plot()
+
+    if _df_with_mva_outliers is None or original_idx not in _df_with_mva_outliers.index:
+        _log_mva("SHAP: Selected instance data not available.")
+        return
+    if _mva_shap_explainer is None or not _mva_selected_columns_for_detection:
+        _log_mva("SHAP: Explainer not ready or no columns selected for detection.")
+        return
+
+    try:
+        instance_series = _df_with_mva_outliers.loc[original_idx, _mva_selected_columns_for_detection] 
+        instance_df_for_shap = pd.DataFrame([instance_series.values], columns=_mva_selected_columns_for_detection)
+        
+        # SHAP explainer가 IForest의 detector_ (list of trees)를 사용하므로,
+        # SHAP 값은 각 트리에 대한 기여도의 평균 등으로 계산됨.
+        # PyOD IForest 모델에 대한 SHAP 직접 적용은 shap.TreeExplainer(model.detector_)로 가능.
+        shap_values_instance = _mva_shap_explainer.shap_values(instance_df_for_shap) # DataFrame으로 전달
+        _mva_shap_values_for_selected = shap_values_instance[0] # 단일 인스턴스이므로 첫번째 결과
+
+        _log_mva(f"SHAP values calculated for instance {original_idx}.")
+
+        # SHAP Waterfall plot 생성
+        fig_shap, ax_shap = plt.subplots(figsize=(8, 4.5)) # 크기 조절
+        # shap.waterfall_plot(shap.Explanation(values=shap_values_instance[0], base_values=_mva_shap_explainer.expected_value, data=instance_df_for_shap.iloc[0], feature_names=_mva_selected_columns_for_detection), max_display=15, show=False)
+        # 또는 bar plot (summary_plot과 유사)
+        shap.summary_plot(shap_values_instance, features=instance_df_for_shap, plot_type="bar", show=False, max_display=15, class_names=["Outlier Score Contribution"])
+        ax_shap = plt.gca() # summary_plot이 현재 axes를 사용하도록 유도
+        ax_shap.set_title(f"SHAP Values for Instance {original_idx}", fontsize=10)
+        ax_shap.tick_params(axis='both', which='major', labelsize=8)
+        plt.tight_layout()
+
+        tex_tag_shap, w_shap, h_shap = _s5_plot_to_dpg_texture_mva(fig_shap)
+        plt.close(fig_shap)
+
+        if tex_tag_shap and w_shap > 0 and h_shap > 0:
+            _mva_active_shap_texture_id = tex_tag_shap
+            if dpg.does_item_exist(TAG_OT_MVA_SHAP_PLOT_IMAGE):
+                dpg.configure_item(TAG_OT_MVA_SHAP_PLOT_IMAGE, texture_tag=_mva_active_shap_texture_id, width=w_shap, height=h_shap)
+        _log_mva("SHAP plot generated." if tex_tag_shap else "SHAP plot generation failed.")
+
+    except Exception as e_shap:
+        _log_mva(f"Error generating SHAP plot: {e_shap}")
+        import traceback
+        _log_mva(traceback.format_exc())
+
+
+def _find_top_gap_variables_for_boxplot() -> List[str]:
+    global _mva_top_gap_vars_for_boxplot
+    print("[DEBUG] Called: _find_top_gap_variables_for_boxplot")
+    _mva_top_gap_vars_for_boxplot = []
+    if _df_with_mva_outliers is None or 'mva_is_outlier' not in _df_with_mva_outliers.columns:
+        print("[DEBUG] _find_top_gap_variables_for_boxplot: _df_with_mva_outliers is None or 'mva_is_outlier' column missing.")
+        return []
+
+    eligible_cols = _get_eligible_numeric_cols_for_mva(_df_with_mva_outliers)
+    print(f"[DEBUG] _find_top_gap_variables_for_boxplot: Eligible columns for boxplot comparison: {eligible_cols}")
+    if not eligible_cols:
+        print("[DEBUG] _find_top_gap_variables_for_boxplot: No eligible columns found.")
+        return []
+
+    gaps = []
+    for col in eligible_cols:
+        if col in ['mva_outlier_score', 'mva_is_outlier']: continue
+
+        # 정확한 인덱싱을 위해 .loc 사용 및 boolean Series 직접 전달
+        normal_data = _df_with_mva_outliers.loc[_df_with_mva_outliers['mva_is_outlier'] == False, col].dropna()
+        outlier_data = _df_with_mva_outliers.loc[_df_with_mva_outliers['mva_is_outlier'] == True, col].dropna()
+        
+        # print(f"[DEBUG] _find_top_gap_variables_for_boxplot: Processing column '{col}'. Normal data points: {len(normal_data)}, Outlier data points: {len(outlier_data)}")
+
+        if len(normal_data) < 2 or len(outlier_data) < 2:
+            # print(f"[DEBUG] _find_top_gap_variables_for_boxplot: Not enough data for column '{col}'. Skipping.")
+            continue
+        
+        median_normal = normal_data.median()
+        median_outlier = outlier_data.median()
+        gap = abs(median_normal - median_outlier)
+        # print(f"[DEBUG] _find_top_gap_variables_for_boxplot: Column '{col}' -> Normal Median: {median_normal:.2f}, Outlier Median: {median_outlier:.2f}, Gap: {gap:.2f}")
+        
+        if pd.notna(gap) and gap > 1e-6 : # 유의미한 차이
+            gaps.append((col, gap))
+
+    gaps.sort(key=lambda x: x[1], reverse=True)
+    _mva_top_gap_vars_for_boxplot = [var for var, score in gaps[:TOP_N_VARIABLES_FOR_BOXPLOT]]
+    print(f"[DEBUG] _find_top_gap_variables_for_boxplot: Top variables selected: {_mva_top_gap_vars_for_boxplot}")
+    return _mva_top_gap_vars_for_boxplot
+
+
+def _generate_mva_boxplots_for_comparison():
+    global _mva_boxplot_image_tags
+    print("[DEBUG] Called: _generate_mva_boxplots_for_comparison")
+    
+    _clear_mva_boxplots() # 이전 이미지 및 텍스처 태그 리스트 클리어
+    # top_vars는 _find_top_gap_variables_for_boxplot() 호출로 이미 _mva_top_gap_vars_for_boxplot에 채워져 있어야 함
+    # 여기서 다시 호출하지 않고, _mva_top_gap_vars_for_boxplot 변수를 사용합니다.
+    # _update_mva_boxplots_for_comparison 내에서 _find_top_gap_variables_for_boxplot가 먼저 호출되어
+    # _mva_top_gap_vars_for_boxplot가 업데이트 되었다고 가정합니다.
+    # 만약 _find_top_gap_variables_for_boxplot()를 여기서 다시 호출해야 한다면, _update_mva_boxplots_for_comparison의 역할을 재고해야 합니다.
+    # 현재 구조상 _update_mva_boxplots_for_comparison이 _generate_mva_boxplots_for_comparison를 호출하므로,
+    # top_vars 선정은 _update_mva_boxplots_for_comparison 또는 그 전에 이루어져야 합니다.
+    # 여기서는 _find_top_gap_variables_for_boxplot()를 호출하여 최신 상태를 반영하도록 합니다.
+    top_vars = _find_top_gap_variables_for_boxplot() # 이 함수가 _mva_top_gap_vars_for_boxplot를 업데이트함
+
+    if not top_vars or _df_with_mva_outliers is None:
+        print("[DEBUG] _generate_mva_boxplots_for_comparison: No top variables or no outlier data. Nothing to plot.")
+        if dpg.is_dearpygui_running() and dpg.does_item_exist(TAG_OT_MVA_BOXPLOT_GROUP):
+            # dpg.delete_item(TAG_OT_MVA_BOXPLOT_GROUP, children_only=True) # 이미 _clear_mva_boxplots에서 처리
+            dpg.add_text("Run detection to see boxplots or no significant gaps found.", parent=TAG_OT_MVA_BOXPLOT_GROUP)
+        return
+
+    num_plots_actual = len(top_vars)
+    cols_per_row = 2 
+    
+    parent_group_for_boxplots = TAG_OT_MVA_BOXPLOT_GROUP
+    if not dpg.does_item_exist(parent_group_for_boxplots):
+        print(f"[DEBUG] _generate_mva_boxplots_for_comparison: Error - Boxplot parent group '{parent_group_for_boxplots}' does not exist.")
+        return
+    
+    print(f"[DEBUG] _generate_mva_boxplots_for_comparison: Generating {num_plots_actual} boxplots in group '{parent_group_for_boxplots}'.")
+
+    for i in range(0, num_plots_actual, cols_per_row):
+        with dpg.group(horizontal=True, parent=parent_group_for_boxplots) as row_group: # 각 행의 가로 그룹
+            for j in range(cols_per_row):
+                if i + j < num_plots_actual:
+                    var_name = top_vars[i+j]
+                    print(f"[DEBUG] _generate_mva_boxplots_for_comparison: Plotting for variable '{var_name}'.")
+                    try:
+                        fig, ax = plt.subplots(figsize=(5, 4)) # 개별 boxplot 크기
+                        
+                        normal_series = _df_with_mva_outliers.loc[_df_with_mva_outliers['mva_is_outlier'] == False, var_name].dropna()
+                        outlier_series = _df_with_mva_outliers.loc[_df_with_mva_outliers['mva_is_outlier'] == True, var_name].dropna()
+                        
+                        data_to_plot, labels = [], []
+                        if not normal_series.empty: data_to_plot.append(normal_series); labels.append("Normal")
+                        if not outlier_series.empty: data_to_plot.append(outlier_series); labels.append("Outlier")
+
+                        if data_to_plot:
+                            bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True, vert=True,
+                                            medianprops={'color': '#FF0000', 'linewidth':1.5})
+                            colors = ['lightblue', 'lightcoral'][:len(data_to_plot)]
+                            for patch, color_val in zip(bp['boxes'], colors): patch.set_facecolor(color_val)
+
+                            ax.set_title(f"{var_name}", fontsize=9)
+                            ax.tick_params(axis='both', which='major', labelsize=7)
+                            ax.grid(True, linestyle='--', alpha=0.6)
+                            plt.tight_layout()
+
+                            tex_tag, w, h = _s5_plot_to_dpg_texture_mva(fig)
+                            plt.close(fig)
+
+                            if tex_tag and w > 0 and h > 0:
+                                dpg.add_image(tex_tag, width=w, height=h, parent=row_group) # 현재 행 그룹에 이미지 추가
+                                _mva_boxplot_image_tags.append(tex_tag) 
+                                print(f"[DEBUG] _generate_mva_boxplots_for_comparison: Added boxplot image for '{var_name}' with tex_tag '{tex_tag}'.")
+                            else:
+                                dpg.add_text(f"Error generating boxplot for {var_name}", parent=row_group)
+                                print(f"[DEBUG] _generate_mva_boxplots_for_comparison: Failed to generate texture for '{var_name}'.")
+                        else:
+                             dpg.add_text(f"No data for boxplot: {var_name}", parent=row_group)
+                             print(f"[DEBUG] _generate_mva_boxplots_for_comparison: No data to plot for '{var_name}'.")
+                    except Exception as e_box:
+                        print(f"[DEBUG] _generate_mva_boxplots_for_comparison: Error generating boxplot for {var_name}: {e_box}")
+                        dpg.add_text(f"Plot error: {var_name}", parent=row_group)
+
+
+
+def _clear_mva_umap_plot():
+    global _mva_active_umap_texture_id
+    if not dpg.is_dearpygui_running(): return
+    default_tex = _shared_utils_mva.get('default_mva_plot_texture_tag') or _shared_utils_mva.get('default_umap_texture_tag', TAG_OT_MVA_UMAP_DEFAULT_TEXTURE) # 부모의 기본 태그 또는 이 파일 내 정의
+    
+    if dpg.does_item_exist(TAG_OT_MVA_UMAP_PLOT_IMAGE) and dpg.does_item_exist(default_tex):
+        cfg = dpg.get_item_configuration(default_tex); w,h = (cfg.get('width',100), cfg.get('height',30))
+        dpg.configure_item(TAG_OT_MVA_UMAP_PLOT_IMAGE, texture_tag=default_tex, width=w, height=h)
+    
+    if _mva_active_umap_texture_id and _mva_active_umap_texture_id != default_tex and dpg.does_item_exist(_mva_active_umap_texture_id):
+        try: dpg.delete_item(_mva_active_umap_texture_id)
+        except Exception as e: _log_mva(f"Error deleting active UMAP texture: {e}")
+    _mva_active_umap_texture_id = default_tex
+
+
+def _clear_mva_pca_plot():
+    global _mva_active_pca_texture_id
+    if not dpg.is_dearpygui_running(): return
+    default_tex = _shared_utils_mva.get('default_mva_plot_texture_tag') or _shared_utils_mva.get('default_pca_texture_tag', TAG_OT_MVA_PCA_DEFAULT_TEXTURE)
+
+    if dpg.does_item_exist(TAG_OT_MVA_PCA_PLOT_IMAGE) and dpg.does_item_exist(default_tex):
+        cfg = dpg.get_item_configuration(default_tex); w,h = (cfg.get('width',100), cfg.get('height',30))
+        dpg.configure_item(TAG_OT_MVA_PCA_PLOT_IMAGE, texture_tag=default_tex, width=w, height=h)
+
+    if _mva_active_pca_texture_id and _mva_active_pca_texture_id != default_tex and dpg.does_item_exist(_mva_active_pca_texture_id):
+        try: dpg.delete_item(_mva_active_pca_texture_id)
+        except Exception as e: _log_mva(f"Error deleting active PCA texture: {e}")
+    _mva_active_pca_texture_id = default_tex
+
+def _clear_mva_shap_plot():
+    global _mva_active_shap_texture_id
+    if not dpg.is_dearpygui_running(): return
+    default_tex = _shared_utils_mva.get('default_shap_plot_texture_tag') # 부모에서 전달된 SHAP 기본 텍스처
+
+    if dpg.does_item_exist(TAG_OT_MVA_SHAP_PLOT_IMAGE) and default_tex and dpg.does_item_exist(default_tex):
+        cfg = dpg.get_item_configuration(default_tex); w,h = (cfg.get('width',100), cfg.get('height',30))
+        dpg.configure_item(TAG_OT_MVA_SHAP_PLOT_IMAGE, texture_tag=default_tex, width=w, height=h)
+    
+    if _mva_active_shap_texture_id and _mva_active_shap_texture_id != default_tex and dpg.does_item_exist(_mva_active_shap_texture_id):
+        try: dpg.delete_item(_mva_active_shap_texture_id)
+        except Exception as e: _log_mva(f"Error deleting active SHAP texture: {e}")
+    _mva_active_shap_texture_id = default_tex
+
+
+def _clear_mva_boxplots():
+    global _mva_boxplot_image_tags
+    if not dpg.is_dearpygui_running(): return
+    if dpg.does_item_exist(TAG_OT_MVA_BOXPLOT_GROUP):
+        dpg.delete_item(TAG_OT_MVA_BOXPLOT_GROUP, children_only=True) # 그룹 내 모든 자식 (이미지들) 삭제
+    
+    # 생성된 텍스처들도 삭제 (메모리 관리)
+    for tex_tag in _mva_boxplot_image_tags:
+        if dpg.does_item_exist(tex_tag):
+            try: dpg.delete_item(tex_tag)
+            except Exception as e: _log_mva(f"Error deleting boxplot texture {tex_tag}: {e}")
+    _mva_boxplot_image_tags.clear()
+
+
+def _clear_all_mva_visualizations():
+    _clear_mva_umap_plot()
+    _clear_mva_pca_plot()
+    _clear_mva_shap_plot()
+    _clear_mva_boxplots()
+    _mva_selected_outlier_instance_idx = None # 선택된 인스턴스도 초기화
+
+# --- Main UI Creation and Update ---
+def create_multivariate_ui(parent_tab_bar_tag: str, shared_utilities: dict):
+    global _shared_utils_mva
+    _shared_utils_mva = shared_utilities
+
+    default_umap_tex = _shared_utils_mva.get('default_umap_texture_tag')
+    default_pca_tex = _shared_utils_mva.get('default_pca_texture_tag')
+    default_shap_tex = _shared_utils_mva.get('default_shap_plot_texture_tag')
 
     with dpg.tab(label="Multivariate Outlier Detection", tag=TAG_OT_MULTIVARIATE_TAB, parent=parent_tab_bar_tag):
-        with dpg.group(horizontal=True): 
-            left_panel_width = - (SELECTED_POINT_INFO_GROUP_WIDTH + 20) 
-            with dpg.child_window(width=left_panel_width, border=False, tag="mva_left_panel_outer_child"):
-                # ... (왼쪽 패널 상단 UI: 설정, UMAP 플롯 등) ...
-                dpg.add_text("1. Configure & Run Multivariate Outlier Detection", color=[255, 255, 0])
-                dpg.add_text("Detection Method: Isolation Forest (on selected numeric columns)")
+        with dpg.group(horizontal=True): # 전체 레이아웃: 좌측 | 우측
+            # --- 좌측 패널 ---
+            with dpg.group(width=-0.67): # 좌측 패널 너비 (전체의 약 2/3)
+                # ... (좌측 패널 상단: 설정 및 실행 버튼, UMAP/PCA 이미지) ...
+                dpg.add_text("1. Configure & Run Multivariate Detection (Isolation Forest)", color=[255, 255, 0])
                 with dpg.group(horizontal=True):
-                    dpg.add_text("Contamination ('auto' or 0.0001-0.5):", tag=TAG_OT_MVA_ISO_FOREST_CONTAM_INPUT + "_label")
-                    dpg.add_input_text(tag=TAG_OT_MVA_ISO_FOREST_CONTAM_INPUT, width=120, default_value=str(_mva_iso_forest_contamination), hint="e.g., 0.1 or auto", callback=_on_mva_iso_forest_contam_change,
-                                       on_enter=True)
-                dpg.add_text("Select Variables for Multivariate Analysis:")
-                dpg.add_radio_button(items=["All Numeric Columns", "Recommended Columns (TODO)", "Select Custom Columns"], tag=TAG_OT_MVA_VAR_METHOD_RADIO, default_value=_mva_variable_selection_method, horizontal=True, callback=_on_mva_var_method_change)
-                dpg.add_text("Custom Numeric Columns (if selected):", tag=TAG_OT_MVA_CUSTOM_COLS_TABLE_LABEL, show=False)
-                with dpg.child_window(tag=TAG_OT_MVA_CUSTOM_COLS_TABLE_CHILD, show=False, height=100, border=True): 
-                    with dpg.table(tag=TAG_OT_MVA_CUSTOM_COLS_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True, borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
-                        dpg.add_table_column(label="Select", parent=TAG_OT_MVA_CUSTOM_COLS_TABLE, width_fixed=True, init_width_or_weight=70)
-                        dpg.add_table_column(label="Column Name", parent=TAG_OT_MVA_CUSTOM_COLS_TABLE, width_stretch=True)
-                dpg.add_button(label="Run Multivariate Detection", tag=TAG_OT_MVA_DETECT_BUTTON, width=-1, height=30, callback=_run_mva_outlier_detection_logic)
-                dpg.add_spacer(height=5)
-                dpg.add_text("2. Multivariate Detection Summary & Visualization", color=[255, 255, 0])
-                dpg.add_text("Summary will appear here.", tag=TAG_OT_MVA_RESULTS_TEXT, wrap=-1)
-                dpg.add_spacer(height=5)
-                dpg.add_text("UMAP Visualization (Click a point to see details):")
-                with dpg.child_window(tag=TAG_OT_MVA_UMAP_PLOT_WINDOW, height=UMAP_PLOT_WINDOW_HEIGHT, border=True):
-                    with dpg.plot(tag=TAG_OT_MVA_UMAP_PLOT, label="UMAP Projection", height=-1, width=-1, no_title=True): 
-                        dpg.add_plot_legend(tag=TAG_OT_MVA_UMAP_LEGEND, show=False)
-                        dpg.add_plot_axis(dpg.mvXAxis, label="UMAP 1", tag=TAG_OT_MVA_UMAP_X_AXIS)
-                        dpg.add_plot_axis(dpg.mvYAxis, label="UMAP 2", tag=TAG_OT_MVA_UMAP_Y_AXIS)
-                _clear_dpg_umap_plot_series()
-
-                # --- Outlier Group Analysis Section ---
-                dpg.add_spacer(height=10)
-                dpg.add_text("4. Outlier Group vs. Normal Group Analysis", color=[255, 255, 0]) # 제목 추가
-                # dpg.collapsing_header 대신 직접 UI 요소들을 배치합니다.
-                # 또는 dpg.group으로 묶을 수 있습니다.
-                # with dpg.group(tag=TAG_OT_MVA_GROUP_ANALYSIS_COLLAPSING_HEADER): # 태그는 유지하거나 필요 없으면 제거
+                    dpg.add_text("Column Selection Mode:")
+                    dpg.add_radio_button(["All Numeric", "Recommended", "Manual"], tag=TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO, default_value=_mva_column_selection_mode, horizontal=True, callback=_on_mva_col_selection_mode_change)
                 
-                dpg.add_button(label="Run Group Analysis", tag=TAG_OT_MVA_RUN_GROUP_ANALYSIS_BUTTON, callback=_run_group_analysis, width=-1)
-                dpg.add_text("Comparative Descriptive Statistics (Numerical Features):")
-                with dpg.child_window(height=180, border=True): # 테이블 높이
-                    # with dpg.table(...) 부분입니다.
-                    with dpg.table(tag=TAG_OT_MVA_GROUP_STATS_TABLE, header_row=True, resizable=True,
-                                policy=dpg.mvTable_SizingStretchProp, scrollY=True,
-                                borders_outerH=True, borders_innerV=True): # borders_innerH=True, borders_outerV=True 추가 가능
-
-                        # /// 이 부분이 중요합니다! 컬럼 정의가 되어 있어야 합니다. ///
-                        dpg.add_table_column(label="Feature", parent=TAG_OT_MVA_GROUP_STATS_TABLE, init_width_or_weight=0.3)
-                        dpg.add_table_column(label="Statistic", parent=TAG_OT_MVA_GROUP_STATS_TABLE, init_width_or_weight=0.2)
-                        dpg.add_table_column(label="Normal Group", parent=TAG_OT_MVA_GROUP_STATS_TABLE, init_width_or_weight=0.25)
-                        dpg.add_table_column(label="Outlier Group", parent=TAG_OT_MVA_GROUP_STATS_TABLE, init_width_or_weight=0.25)
-
-                dpg.add_spacer(height=5)
-                dpg.add_text("Numerical Feature Distribution Comparison (Box Plot):")
-                dpg.add_combo(items=[], tag=TAG_OT_MVA_GROUP_NUM_FEATURE_COMBO, width=-1, callback=_on_group_num_feature_select, default_value="", no_preview=True)
-                dpg.add_text("Select a numerical feature.", tag=TAG_OT_MVA_GROUP_DIST_PLOT_PLACEHOLDER)
-                dpg.add_image(texture_tag=_shared_utils_mva.get("default_group_dist_plot_texture_tag",""), tag=TAG_OT_MVA_GROUP_DIST_PLOT_IMAGE, show=False, width=GROUP_ANALYSIS_PLOT_WIDTH)
-
-                dpg.add_spacer(height=5)
-                dpg.add_text("Categorical Feature Frequency Comparison (Bar Chart):")
-                dpg.add_combo(items=[], tag=TAG_OT_MVA_GROUP_CAT_FEATURE_COMBO, width=-1, callback=_on_group_cat_feature_select, default_value="", no_preview=True)
-                dpg.add_text("Select a categorical feature.", tag=TAG_OT_MVA_GROUP_FREQ_PLOT_PLACEHOLDER)
-                dpg.add_image(texture_tag=_shared_utils_mva.get("default_group_freq_plot_texture_tag",""), tag=TAG_OT_MVA_GROUP_FREQ_PLOT_IMAGE, show=False, width=GROUP_ANALYSIS_PLOT_WIDTH)
-
-            with dpg.child_window(width=SELECTED_POINT_INFO_GROUP_WIDTH, border=False, tag=TAG_OT_MVA_SELECTED_OUTLIER_INFO_GROUP):
-                dpg.add_text("3. Selected Point Details & Feature Contributions", color=[255, 255, 0])
-                dpg.add_text("Selected Point: (None - Click a point on UMAP)", tag=TAG_OT_MVA_SELECTED_OUTLIER_INDEX_TEXT, wrap=-1)
-                dpg.add_text("Original Values & Context:")
-                with dpg.child_window(tag=TAG_OT_MVA_SELECTED_OUTLIER_TABLE_CHILD, height=SELECTED_POINT_TABLE_CHILD_HEIGHT, border=True): 
-                    with dpg.table(tag=TAG_OT_MVA_SELECTED_OUTLIER_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True, borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
-                        dpg.add_table_column(label="Feature", parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE, init_width_or_weight=0.30)
-                        print("test : Adding a row to selected_outlier_table")
-                        dpg.add_table_column(label="Value", parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE, init_width_or_weight=0.15)
-                        dpg.add_table_column(label="Normal Range (5-95%)", parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE, init_width_or_weight=0.25)
-                        dpg.add_table_column(label="Z-Score", parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE, init_width_or_weight=0.15)
-                        dpg.add_table_column(label="Normal Freq. (%)", parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE, init_width_or_weight=0.15)
+                with dpg.group(tag=TAG_OT_MVA_MANUAL_COLUMN_SELECTOR_GROUP, show=False):
+                    dpg.add_text("Select Columns (click to toggle):")
+                    dpg.add_listbox([], tag=TAG_OT_MVA_COLUMN_SELECTOR_MULTI, num_items=6, callback=_on_mva_manual_cols_selected, width=-1)
                 
-                dpg.add_spacer(height=10)
-                dpg.add_text("SHAP Value Contributions (to anomaly score):")
-                # ... (SHAP 이미지 및 플레이스홀더 UI는 이전과 동일) ...
-                default_shap_texture_tag_val = _shared_utils_mva.get("default_shap_plot_texture_tag", "")
-                init_w_shap, init_h_shap = 10,10 
-                if default_shap_texture_tag_val and dpg.does_item_exist(default_shap_texture_tag_val):
-                    cfg = dpg.get_item_configuration(default_shap_texture_tag_val)
-                    init_w_shap = cfg.get('width', init_w_shap); init_h_shap = cfg.get('height', init_h_shap)
-                dpg.add_text("SHAP plot will appear here.", tag=TAG_OT_MVA_SHAP_PLOT_PLACEHOLDER_TEXT)
-                dpg.add_image(texture_tag=default_shap_texture_tag_val, tag=TAG_OT_MVA_SHAP_PLOT_IMAGE, show=False, width=SHAP_PLOT_IMAGE_WIDTH)
+                dpg.add_spacer(height=5)
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Contamination (0.0-0.5):")
+                    dpg.add_input_float(tag=TAG_OT_MVA_CONTAMINATION_INPUT, width=120, default_value=_mva_contamination, min_value=0.0001, max_value=0.5, step=0.01, format="%.4f", callback=_on_mva_contamination_change)
+                
+                with dpg.group(horizontal=True):
+                    enable_detection_button = 'PyOD_IForest' in globals() and PyOD_IForest is not None
+                    dpg.add_button(label="Run Multivariate Detection", tag=TAG_OT_MVA_DETECT_BUTTON, width=-1, height=30, callback=_run_mva_outlier_detection_logic, enabled=enable_detection_button)
+                    if not enable_detection_button:
+                        dpg.add_text(" (PyOD N/A)", color=[255,100,100], parent=dpg.last_item())
+                    dpg.add_button(label="Set Recommended MVA Params", tag=TAG_OT_MVA_RECOMMEND_PARAMS_BUTTON, width=-1, height=30, callback=_set_mva_recommended_parameters)
+                dpg.add_separator()
 
-        _clear_selected_point_info()
-        _clear_group_analysis_ui_elements() # 그룹 분석 UI도 초기화
+                dpg.add_text("2. UMAP & PCA Projection (Outliers Highlighted)", color=[255, 255, 0])
+                with dpg.group(tag=TAG_OT_MVA_VISUALIZATION_GROUP, horizontal=True):
+                    init_w, init_h = 220, 180 # 이미지 초기 크기 조정
+                    
+                    texture_to_use_for_umap = default_umap_tex if default_umap_tex and dpg.does_item_exist(default_umap_tex) else ""
+                    show_umap_image = 'umap' in globals() and umap is not None
+                    if texture_to_use_for_umap and show_umap_image :
+                        cfg_umap = dpg.get_item_configuration(texture_to_use_for_umap)
+                        init_w_u, init_h_u = cfg_umap.get('width', init_w), cfg_umap.get('height', init_h)
+                        dpg.add_image(texture_tag=texture_to_use_for_umap, tag=TAG_OT_MVA_UMAP_PLOT_IMAGE, width=init_w_u, height=init_h_u)
+                    elif show_umap_image: # 텍스처는 없지만 라이브러리는 있을 때
+                        dpg.add_text("UMAP texture missing.", color=[255,0,0])
+                    else: # 라이브러리도 없을 때
+                        dpg.add_text("UMAP N/A (library missing)", color=[255,100,100])
+                        if dpg.does_item_exist(TAG_OT_MVA_UMAP_PLOT_IMAGE): dpg.configure_item(TAG_OT_MVA_UMAP_PLOT_IMAGE, show=False)
 
-    if not dpg.does_item_exist(GLOBAL_MOUSE_HANDLER_REGISTRY_TAG):
-        with dpg.handler_registry(tag=GLOBAL_MOUSE_HANDLER_REGISTRY_TAG):
-            dpg.add_mouse_click_handler(button=dpg.mvMouseButton_Left, callback=_on_mva_umap_plot_click)
-            _log_mva(f"Global mouse click handler registry '{GLOBAL_MOUSE_HANDLER_REGISTRY_TAG}' created.")
 
+                    texture_to_use_for_pca = default_pca_tex if default_pca_tex and dpg.does_item_exist(default_pca_tex) else ""
+                    if texture_to_use_for_pca :
+                        cfg_pca = dpg.get_item_configuration(texture_to_use_for_pca)
+                        init_w_p, init_h_p = cfg_pca.get('width', init_w), cfg_pca.get('height', init_h)
+                        dpg.add_image(texture_tag=texture_to_use_for_pca, tag=TAG_OT_MVA_PCA_PLOT_IMAGE, width=init_w_p, height=init_h_p)
+                    else:
+                        dpg.add_text("PCA texture missing.", color=[255,0,0])
+                dpg.add_separator()
+
+                dpg.add_text("3. Variable Comparison: Outlier vs. Normal (Top 10 by Median Gap)", color=[255, 255, 0])
+                with dpg.child_window(tag=TAG_OT_MVA_BOXPLOT_GROUP, height=300, border=True): # 스크롤 가능하도록
+                    dpg.add_text("Run detection to see boxplots.") # 초기 메시지
+            
+            # --- 우측 패널 ---
+            with dpg.group(width=550): # 우측 패널 너비 명시적 지정 (테스트용, 필요시 -0.33 등으로 변경)
+                dpg.add_text("4. Detected Multivariate Outlier Instances (Max 30, by Score)", color=[255, 255, 0])
+                with dpg.table(tag=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=220, borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
+                    # 초기 컬럼 헤더 및 안내 메시지 추가
+                    dpg.add_table_column(label="Original Index", parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, init_width_or_weight=0.4)
+                    dpg.add_table_column(label="MVA Outlier Score", parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, init_width_or_weight=0.6)
+                    with dpg.table_row(parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE):
+                        dpg.add_text("Run MVA detection.") # 초기 안내 메시지
+                        dpg.add_text("") # 점수 컬럼은 비워둠
+                
+                dpg.add_text("5. Statistics for Selected Instance", color=[255, 255, 0])
+                with dpg.table(tag=TAG_OT_MVA_INSTANCE_STATS_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=180, borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
+                    # 초기 컬럼 헤더 및 안내 메시지 추가
+                    dpg.add_table_column(label="Feature", parent=TAG_OT_MVA_INSTANCE_STATS_TABLE, init_width_or_weight=0.5)
+                    dpg.add_table_column(label="Value", parent=TAG_OT_MVA_INSTANCE_STATS_TABLE, init_width_or_weight=0.5)
+                    with dpg.table_row(parent=TAG_OT_MVA_INSTANCE_STATS_TABLE):
+                        dpg.add_text("Select an instance.") # 초기 안내 메시지
+                        dpg.add_text("")
+
+                dpg.add_text("6. SHAP Values for Selected Instance", color=[255, 255, 0])
+                init_w_shap, init_h_shap = 300, 220 # SHAP 이미지 크기
+                texture_to_use_for_shap = default_shap_tex if default_shap_tex and dpg.does_item_exist(default_shap_tex) else ""
+                show_shap_image = 'shap' in globals() and shap is not None
+                
+                shap_image_parent_group = dpg.add_group() # SHAP 이미지와 메시지를 담을 그룹
+
+                if texture_to_use_for_shap and show_shap_image:
+                    cfg_shap = dpg.get_item_configuration(texture_to_use_for_shap)
+                    init_w_s, init_h_s = cfg_shap.get('width', init_w_shap), cfg_shap.get('height', init_h_shap)
+                    dpg.add_image(texture_tag=texture_to_use_for_shap, tag=TAG_OT_MVA_SHAP_PLOT_IMAGE, width=init_w_s, height=init_h_s, parent=shap_image_parent_group)
+                elif show_shap_image: # 텍스처는 없지만 라이브러리는 있을 때
+                     dpg.add_text("SHAP plot texture missing.", color=[255,0,0], parent=shap_image_parent_group)
+                else: # 라이브러리도 없을 때
+                     dpg.add_text("SHAP N/A (library missing)", color=[255,100,100], parent=shap_image_parent_group)
+                     if dpg.does_item_exist(TAG_OT_MVA_SHAP_PLOT_IMAGE): # 이미지 위젯이 이미 있다면 숨김
+                         dpg.configure_item(TAG_OT_MVA_SHAP_PLOT_IMAGE, show=False)
+
+
+    _update_mva_param_visibility()
 
 def update_multivariate_ui(df_input: Optional[pd.DataFrame], shared_utilities: dict, is_new_data: bool):
-    global _shared_utils_mva, _s1_column_types_cache # 캐시 사용 명시
+    global _shared_utils_mva, _current_df_for_mva
     if not dpg.is_dearpygui_running(): return
     _shared_utils_mva = shared_utilities
+    
+    # 부모로부터 전달된 default texture tag 업데이트 (필요시)
+    # _mva_active_umap_texture_id = _shared_utils_mva.get('default_umap_texture_tag', TAG_OT_MVA_UMAP_DEFAULT_TEXTURE)
+    # ... 등등
+
     if not dpg.does_item_exist(TAG_OT_MULTIVARIATE_TAB): return
-    current_df_for_mva = df_input
-    if current_df_for_mva is None or is_new_data:
-        _s1_column_types_cache = None # 새 데이터 시 S1 타입 캐시 초기화
+
+    _current_df_for_mva = df_input
+
+    if _current_df_for_mva is None or is_new_data:
+        _log_mva("New data or no data for MVA. Resetting MVA state.")
         reset_multivariate_state_internal(called_from_parent_reset=False)
-        if current_df_for_mva is not None:
-            _log_mva("New data for MVA. Re-configure & run detection.")
-            _populate_mva_custom_cols_table(current_df_for_mva)
-    _update_mva_custom_cols_ui_visibility()
+        if _current_df_for_mva is not None:
+            _update_selected_columns_for_mva_detection() # 새 데이터에 대한 eligible 컬럼 업데이트
+    
+    # UI 요소 값 업데이트 (예: listbox 아이템)
+    if _current_df_for_mva is not None and dpg.does_item_exist(TAG_OT_MVA_COLUMN_SELECTOR_MULTI):
+        if is_new_data: # 새 데이터일 때만 명시적으로 listbox 아이템 업데이트
+            _update_selected_columns_for_mva_detection()
 
 
 def reset_multivariate_state_internal(called_from_parent_reset=True):
-    global _mva_variable_selection_method, _mva_custom_selected_columns, _mva_custom_col_checkbox_tags
-    global _mva_iso_forest_contamination, _df_with_mva_outliers, _mva_outlier_row_indices
-    global _mva_iso_forest_model, _mva_cols_analyzed_for_if, _mva_umap_embedding, _mva_outlier_scores
-    global _mva_selected_point_original_index, _mva_shap_plot_active_texture_id, _mva_umap_original_indices
-    global _s1_column_types_cache # S1 타입 캐시 초기화
-    global _mva_group_stats_df, _mva_group_numerical_cols_for_plot, _mva_group_categorical_cols_for_plot
-    global _mva_group_dist_plot_texture_id, _mva_group_freq_plot_texture_id
-    global _normal_group_df_cache, _outlier_group_df_cache
+    global _current_df_for_mva, _df_with_mva_outliers, _mva_model, _mva_shap_explainer
+    global _mva_eligible_numeric_cols, _mva_selected_columns_for_detection, _mva_column_selection_mode, _mva_contamination
+    global _mva_outlier_instances_summary, _mva_selected_outlier_instance_idx, _mva_all_selectable_tags_in_instances_table
+    global _mva_top_gap_vars_for_boxplot
 
-
-    _s1_column_types_cache = None # S1 타입 캐시 초기화
-    _mva_variable_selection_method = "All Numeric Columns"
-    # ... (기존 상태 변수 초기화)
-    _mva_custom_selected_columns.clear(); _mva_custom_col_checkbox_tags.clear()
-    _mva_iso_forest_contamination = DEFAULT_MVA_ISO_FOREST_CONTAMINATION
-    _df_with_mva_outliers = None; _mva_outlier_row_indices = None
-    _mva_iso_forest_model = None; _mva_cols_analyzed_for_if = []
-    _mva_umap_embedding = None; _mva_outlier_scores = None; _mva_umap_original_indices = None
-    
-    if _shared_utils_mva: # shared_utils가 있을 때만 default tag 접근
-        _mva_shap_plot_active_texture_id = _shared_utils_mva.get("default_shap_plot_texture_tag", "")
-        _mva_group_dist_plot_texture_id = _shared_utils_mva.get("default_group_dist_plot_texture_tag", "")
-        _mva_group_freq_plot_texture_id = _shared_utils_mva.get("default_group_freq_plot_texture_tag", "")
-    else:
-        _mva_shap_plot_active_texture_id = ""
-        _mva_group_dist_plot_texture_id = ""
-        _mva_group_freq_plot_texture_id = ""
-
-
-    # 그룹 분석 관련 상태 초기화
-    _mva_group_stats_df = None
-    _mva_group_numerical_cols_for_plot = []
-    _mva_group_categorical_cols_for_plot = []
-    _normal_group_df_cache = None
-    _outlier_group_df_cache = None
-
+    # _current_df_for_mva는 update_multivariate_ui에서 관리. 여기서는 detection 결과물 위주로 리셋.
+    _df_with_mva_outliers = None
+    _mva_model = None
+    _mva_shap_explainer = None
+    _mva_eligible_numeric_cols = []
+    _mva_selected_columns_for_detection = []
+    _mva_column_selection_mode = "All Numeric"
+    _mva_contamination = DEFAULT_MVA_CONTAMINATION
+    _mva_outlier_instances_summary = []
+    _mva_selected_outlier_instance_idx = None
+    _mva_all_selectable_tags_in_instances_table.clear()
+    _mva_top_gap_vars_for_boxplot = []
 
     if dpg.is_dearpygui_running():
-        # ... (기존 UI 초기화)
-        if dpg.does_item_exist(TAG_OT_MVA_VAR_METHOD_RADIO): dpg.set_value(TAG_OT_MVA_VAR_METHOD_RADIO, _mva_variable_selection_method)
-        if dpg.does_item_exist(TAG_OT_MVA_CUSTOM_COLS_TABLE): _populate_mva_custom_cols_table(None)
-        _update_mva_custom_cols_ui_visibility()
-        if dpg.does_item_exist(TAG_OT_MVA_ISO_FOREST_CONTAM_INPUT): dpg.set_value(TAG_OT_MVA_ISO_FOREST_CONTAM_INPUT, str(_mva_iso_forest_contamination))
-        if dpg.does_item_exist(TAG_OT_MVA_RESULTS_TEXT): dpg.set_value(TAG_OT_MVA_RESULTS_TEXT, "Run multivariate detection.")
-        _clear_dpg_umap_plot_series()
-        _clear_selected_point_info() 
-        _clear_group_analysis_ui_elements() # 그룹 분석 UI 요소들 초기화
+        if dpg.does_item_exist(TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO):
+            dpg.set_value(TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO, _mva_column_selection_mode)
+        if dpg.does_item_exist(TAG_OT_MVA_CONTAMINATION_INPUT):
+            dpg.set_value(TAG_OT_MVA_CONTAMINATION_INPUT, _mva_contamination)
+        if dpg.does_item_exist(TAG_OT_MVA_COLUMN_SELECTOR_MULTI):
+            dpg.configure_item(TAG_OT_MVA_COLUMN_SELECTOR_MULTI, items=[]) # eligible 목록 비우기
+            dpg.set_value(TAG_OT_MVA_COLUMN_SELECTOR_MULTI, []) # 선택값도 비우기
         
-    if not called_from_parent_reset: _log_mva("MVA state reset due to data change.")
+        _update_mva_param_visibility()
+        _populate_mva_outlier_instances_table() # 빈 테이블
+        _clear_all_mva_visualizations()
+
+    if not called_from_parent_reset:
+        _log_mva("Multivariate outlier state reset (internal).")
 
 
-# reset_multivariate_state, get_multivariate_settings, apply_multivariate_settings 함수는 이전과 동일
-def reset_multivariate_state(): reset_multivariate_state_internal(True); _log_mva("MVA state reset by parent.")
+def reset_multivariate_state(): # 부모 모듈에서 호출
+    reset_multivariate_state_internal(called_from_parent_reset=True)
+    _log_mva("Multivariate outlier state has been reset by parent.")
+
+
 def get_multivariate_settings() -> dict:
-    return {"mva_variable_selection_method": _mva_variable_selection_method, "mva_custom_selected_columns": _mva_custom_selected_columns[:], "mva_iso_forest_contamination": _mva_iso_forest_contamination}
+    return {
+        "mva_column_selection_mode": _mva_column_selection_mode,
+        "mva_selected_columns_for_detection": _mva_selected_columns_for_detection[:], # 복사본
+        "mva_contamination": _mva_contamination,
+        # 탐지 결과나 모델은 저장하지 않음 (런타임에 재계산)
+    }
+
 def apply_multivariate_settings(df_input: Optional[pd.DataFrame], settings: dict, shared_utilities: dict):
-    global _mva_variable_selection_method, _mva_custom_selected_columns, _mva_iso_forest_contamination, _shared_utils_mva, _s1_column_types_cache
+    global _shared_utils_mva, _current_df_for_mva
+    global _mva_column_selection_mode, _mva_selected_columns_for_detection, _mva_contamination
+    
     _shared_utils_mva = shared_utilities
-    _s1_column_types_cache = None # 설정 적용 시 S1 타입 캐시도 초기화 (새 데이터 로드 가정)
-    _mva_variable_selection_method = settings.get("mva_variable_selection_method", "All Numeric Columns")
-    _mva_custom_selected_columns = settings.get("mva_custom_selected_columns", [])[:]
-    _mva_iso_forest_contamination = settings.get("mva_iso_forest_contamination", DEFAULT_MVA_ISO_FOREST_CONTAMINATION)
+    _current_df_for_mva = df_input # 현재 DF 설정
+
+    _mva_column_selection_mode = settings.get("mva_column_selection_mode", "All Numeric")
+    _mva_selected_columns_for_detection = settings.get("mva_selected_columns_for_detection", [])[:]
+    _mva_contamination = settings.get("mva_contamination", DEFAULT_MVA_CONTAMINATION)
+
     if dpg.is_dearpygui_running():
-        if dpg.does_item_exist(TAG_OT_MVA_VAR_METHOD_RADIO): dpg.set_value(TAG_OT_MVA_VAR_METHOD_RADIO, _mva_variable_selection_method)
-        if dpg.does_item_exist(TAG_OT_MVA_ISO_FOREST_CONTAM_INPUT): dpg.set_value(TAG_OT_MVA_ISO_FOREST_CONTAM_INPUT, str(_mva_iso_forest_contamination))
-        if df_input is not None: _populate_mva_custom_cols_table(df_input)
-        else: _populate_mva_custom_cols_table(None)
-        _update_mva_custom_cols_ui_visibility()
-        if dpg.does_item_exist(TAG_OT_MVA_RESULTS_TEXT): dpg.set_value(TAG_OT_MVA_RESULTS_TEXT, "Settings applied. Run detection.")
-        _clear_dpg_umap_plot_series(); _clear_selected_point_info(); _clear_group_analysis_ui_elements()
-    _log_mva("MVA settings applied from saved state.")
+        if dpg.does_item_exist(TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO):
+            dpg.set_value(TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO, _mva_column_selection_mode)
+        if dpg.does_item_exist(TAG_OT_MVA_CONTAMINATION_INPUT):
+            dpg.set_value(TAG_OT_MVA_CONTAMINATION_INPUT, _mva_contamination)
+        
+        _update_mva_param_visibility()
+        if _current_df_for_mva is not None: # DF가 있어야 eligible cols 업데이트 가능
+            _update_selected_columns_for_mva_detection() # listbox 아이템 및 선택값 업데이트
+        else: # DF가 없으면 listbox 비우기
+             if dpg.does_item_exist(TAG_OT_MVA_COLUMN_SELECTOR_MULTI):
+                dpg.configure_item(TAG_OT_MVA_COLUMN_SELECTOR_MULTI, items=[])
+                dpg.set_value(TAG_OT_MVA_COLUMN_SELECTOR_MULTI, [])
+
+
+        # 이전 탐지 결과는 복원하지 않으므로, 테이블과 플롯은 초기 상태로.
+        _populate_mva_outlier_instances_table()
+        _clear_all_mva_visualizations()
+
+    _log_mva("Multivariate outlier settings applied from saved state. Please re-run detection if needed.")
+    # update_multivariate_ui(df_input, shared_utilities, True) # is_new_data=True로 간주하여 UI 전체 갱신

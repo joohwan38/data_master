@@ -24,6 +24,9 @@ TAG_OT_DEFAULT_PLOT_TEXTURE_MVA = "step5_ot_default_plot_texture_mva"
 TAG_OT_MVA_SHAP_DEFAULT_TEXTURE = "step5_ot_mva_shap_default_texture" # SHAP용 기본 텍스처 태그
 TAG_OT_MVA_GROUP_DIST_DEFAULT_TEXTURE = "step5_ot_mva_group_dist_default_texture"
 TAG_OT_MVA_GROUP_FREQ_DEFAULT_TEXTURE = "step5_ot_mva_group_freq_default_texture"
+TAG_OT_MVA_UMAP_DEFAULT_TEXTURE = "step5_ot_mva_umap_default_texture"
+TAG_OT_MVA_PCA_DEFAULT_TEXTURE = "step5_ot_mva_pca_default_texture"
+TAG_OT_DEFAULT_PLOT_TEXTURE_UNI = "step5_ot_default_plot_texture_uni"
 
 
 # --- Module State Variables (Parent) ---
@@ -113,9 +116,11 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
         "log_message_func": _log_message_parent,
         "plot_to_dpg_texture_func": _s5_plot_to_dpg_texture_parent,
         "get_current_df_func": lambda: _current_df_for_this_step_parent,
-        "default_uni_plot_texture_tag": TAG_OT_DEFAULT_PLOT_TEXTURE_UNI,
-        "default_mva_plot_texture_tag": TAG_OT_DEFAULT_PLOT_TEXTURE_MVA, # 이전 UMAP용 기본 텍스처 (DPG 네이티브 플롯으로 대체됨)
+        "default_uni_plot_texture_tag": TAG_OT_DEFAULT_PLOT_TEXTURE_UNI, # 이 부분이 중요!
+        "default_umap_texture_tag": TAG_OT_MVA_UMAP_DEFAULT_TEXTURE,
+        "default_pca_texture_tag": TAG_OT_MVA_PCA_DEFAULT_TEXTURE,
         "default_shap_plot_texture_tag": TAG_OT_MVA_SHAP_DEFAULT_TEXTURE,
+        "default_mva_plot_texture_tag": TAG_OT_DEFAULT_PLOT_TEXTURE_MVA,
         "default_group_dist_plot_texture_tag": TAG_OT_MVA_GROUP_DIST_DEFAULT_TEXTURE, # <--- 추가
         "default_group_freq_plot_texture_tag": TAG_OT_MVA_GROUP_FREQ_DEFAULT_TEXTURE, # <--- 추가
     }
@@ -127,7 +132,9 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
     default_textures_to_create = {
         TAG_OT_DEFAULT_PLOT_TEXTURE_UNI: (10,10),
         TAG_OT_DEFAULT_PLOT_TEXTURE_MVA: (10,10), # UMAP DPG 네이티브 플롯으로 대체되었지만, 혹시 다른 곳 참조 가능성
-        TAG_OT_MVA_SHAP_DEFAULT_TEXTURE: (10,10),
+        TAG_OT_MVA_UMAP_DEFAULT_TEXTURE: (10,10), # 예시 크기
+        TAG_OT_MVA_PCA_DEFAULT_TEXTURE: (10,10),   # 예시 크기
+        TAG_OT_MVA_SHAP_DEFAULT_TEXTURE: (10,10), # 이미 존재할 수 있음
         TAG_OT_MVA_GROUP_DIST_DEFAULT_TEXTURE: (10,10), # <--- 추가
         TAG_OT_MVA_GROUP_FREQ_DEFAULT_TEXTURE: (10,10), # <--- 추가
     }
@@ -146,8 +153,9 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
 
         dpg.add_separator()
         dpg.add_text("Processing Log (Common for Step 5)", color=[255, 255, 0])
-        with dpg.child_window(tag=TAG_OT_LOG_TEXT_AREA, height=80, border=True):
-            dpg.add_text("Logs will appear here...", tag=TAG_OT_LOG_TEXT, wrap=-1)
+        with dpg.child_window(tag=TAG_OT_LOG_TEXT_AREA, height=200, border=True):
+            # dpg.add_text("Logs will appear here...", tag=TAG_OT_LOG_TEXT, wrap=-1)
+            dpg.add_input_text(tag=TAG_OT_LOG_TEXT, default_value="Logs will appear here...", multiline=True, readonly=True, width=-1, height=-1) # 변경
 
     main_callbacks['register_module_updater'](step_name, update_ui)
 
