@@ -94,9 +94,23 @@ _outlier_group_df_cache: Optional[pd.DataFrame] = None # 그룹 분석용 이상
 
 
 # --- Helper Functions ---
-def _log_mva(message: str): # ... (이전과 동일)
-    if _shared_utils_mva and 'log_message_func' in _shared_utils_mva:
-        _shared_utils_mva['log_message_func'](f"[MVAOutlier] {message}")
+def _log_mva(message: str):
+
+    try:
+        if _shared_utils_mva and 'log_message_func' in _shared_utils_mva and _shared_utils_mva['log_message_func'] is not None:
+            # 원래 로깅 함수 호출 (여전히 호출합니다)
+            _shared_utils_mva['log_message_func'](f"[MVAOutlier] {message}")
+            
+            # --- 추가된 부분: 콘솔에도 강제 출력 ---
+            print(f"FORCED_CONSOLE_LOG: [MVAOutlier] {message}")
+            # --- 여기까지 ---
+        else:
+            print(f"FALLBACK_LOG: [MVAOutlier] {message} (_shared_utils_mva: {_shared_utils_mva is not None}, log_func_present: {'log_message_func' in (_shared_utils_mva or {}) and _shared_utils_mva.get('log_message_func') is not None})")
+    except Exception as e:
+        print(f"EXCEPTION_IN_LOG_MVA: Error trying to log '{message}'. Exception: {e}")
+        import traceback
+        print(traceback.format_exc())
+
 
 def _show_simple_modal_mva(title: str, message: str, width: int = 450, height: int = 200): # ... (이전과 동일)
     if _shared_utils_mva and 'util_funcs_common' in _shared_utils_mva and \
@@ -335,9 +349,14 @@ def _update_dpg_umap_plot_series(selected_embedding_idx: Optional[int] = None): 
 
 def _on_mva_umap_plot_click(sender, app_data, user_data): # 이전과 동일
     global _mva_selected_point_original_index
-    if not dpg.is_item_hovered(TAG_OT_MVA_UMAP_PLOT): return
+    _log_mva("--- Debug: _on_mva_umap_plot_click CALLED ---") # 함수 호출 로그
+    if not dpg.is_item_hovered(TAG_OT_MVA_UMAP_PLOT):
+        _log_mva("Debug: UMAP plot not hovered. Returning.")
+        return
     _log_mva(f"UMAP Plot area clicked (via global handler). Sender: {sender}, Clicked Button: {app_data}")
-    if _mva_umap_embedding is None or _df_with_mva_outliers is None or _mva_umap_original_indices is None: _log_mva("UMAP data not ready."); return
+    if _mva_umap_embedding is None or _df_with_mva_outliers is None or _mva_umap_original_indices is None:
+         _log_mva("UMAP data not ready.")
+         return
     plot_mouse_pos = dpg.get_plot_mouse_pos()
     if plot_mouse_pos is None or len(plot_mouse_pos) < 2: _log_mva("Could not get plot mouse pos."); return # 선택 해제 로직 추가 가능
     clicked_x, clicked_y = plot_mouse_pos[0], plot_mouse_pos[1]
@@ -365,6 +384,7 @@ def _on_mva_umap_plot_click(sender, app_data, user_data): # 이전과 동일
     _log_mva(f"UMAP point selected. OriginalDF Index: {_mva_selected_point_original_index}, Embedding Index: {nearest_point_idx_in_embedding}")
     _update_selected_point_info_ui()
     _update_dpg_umap_plot_series(selected_embedding_idx=nearest_point_idx_in_embedding)
+    _log_mva("--- Debug: _on_mva_umap_plot_click COMPLETED processing new selection ---")
 
 def _clear_selected_point_info(): # "Original Values" 테이블 헤더 유지하도록 수정
     global _mva_selected_point_original_index, _mva_shap_plot_active_texture_id
@@ -389,48 +409,91 @@ def _clear_selected_point_info(): # "Original Values" 테이블 헤더 유지하
 
 
 def _update_selected_point_info_ui(): # 이전 답변의 강화된 버전 사용
-    if _mva_selected_point_original_index is None or _df_with_mva_outliers is None: _clear_selected_point_info(); return
+    _log_mva("--- Debug: _update_selected_point_info_ui CALLED ---") # 함수 호출 로그
+    if _mva_selected_point_original_index is None or _df_with_mva_outliers is None:
+        _log_mva(f"Debug: _update_selected_point_info_ui - Condition not met. Index: {_mva_selected_point_original_index}, DF is None: {_df_with_mva_outliers is None}")
+        _clear_selected_point_info(); return
+
+    _log_mva(f"Debug: Selected Original Index: {_mva_selected_point_original_index}")
+    _log_mva(f"Debug: _df_with_mva_outliers shape: {_df_with_mva_outliers.shape if _df_with_mva_outliers is not None else 'None'}")
+
     current_df_for_context = _df_with_mva_outliers # 이상치 플래그가 포함된 DF 사용
     normal_df = current_df_for_context[current_df_for_context['is_mva_outlier'] == False]
+    _log_mva(f"Debug: normal_df shape: {normal_df.shape if normal_df is not None else 'None'}")
+
     if dpg.does_item_exist(TAG_OT_MVA_SELECTED_OUTLIER_INDEX_TEXT):
         status = "Outlier" if current_df_for_context.loc[_mva_selected_point_original_index, 'is_mva_outlier'] else "Normal"
         score_text = ""
         if _mva_outlier_scores is not None and _mva_umap_original_indices is not None:
+            # _mva_umap_original_indices 에서 _mva_selected_point_original_index 와 같은 값을 가지는 요소의 인덱스를 찾음
+            # 이 인덱스는 _mva_outlier_scores 에서 해당 포인트의 점수를 찾는데 사용됨
             emb_idx_list = np.where(_mva_umap_original_indices == _mva_selected_point_original_index)[0]
-            if len(emb_idx_list) > 0 and 0 <= emb_idx_list[0] < len(_mva_outlier_scores):
-                score_text = f"(Score: {_mva_outlier_scores[emb_idx_list[0]]:.3f})"
+            if len(emb_idx_list) > 0 :
+                score_idx_in_scores_array = emb_idx_list[0] # 첫번째 매칭 인덱스
+                if 0 <= score_idx_in_scores_array < len(_mva_outlier_scores): # 점수 배열 범위 확인
+                     score_text = f"(Score: {_mva_outlier_scores[score_idx_in_scores_array]:.3f})"
+                else:
+                    _log_mva(f"Debug: Score index {score_idx_in_scores_array} out of bounds for _mva_outlier_scores (len: {len(_mva_outlier_scores)}).")
+            else:
+                _log_mva(f"Debug: Original index {_mva_selected_point_original_index} not found in _mva_umap_original_indices.")
+
         dpg.set_value(TAG_OT_MVA_SELECTED_OUTLIER_INDEX_TEXT, f"Selected Point Index: {_mva_selected_point_original_index} (Status: {status}) {score_text}")
+        _log_mva(f"Debug: Set index text: Selected Point Index: {_mva_selected_point_original_index} (Status: {status}) {score_text}")
+
     if dpg.does_item_exist(TAG_OT_MVA_SELECTED_OUTLIER_TABLE):
         dpg.delete_item(TAG_OT_MVA_SELECTED_OUTLIER_TABLE, children_only=True)
-        selected_data_series = current_df_for_context.loc[_mva_selected_point_original_index]
-        for feature, value in selected_data_series.items():
-            if feature == 'is_mva_outlier': continue
-            feature_type = _get_feature_type(feature, current_df_for_context)
-            norm_range_txt, z_score_txt, norm_freq_txt, val_color = "N/A", "N/A", "N/A", (255,255,255,255)
-            if feature_type == "Numeric" and feature in normal_df.columns and not normal_df[feature].empty:
-                norm_series = normal_df[feature].dropna()
-                if len(norm_series) > 1:
-                    p05, p95 = norm_series.quantile(0.05), norm_series.quantile(0.95)
-                    mean, std = norm_series.mean(), norm_series.std()
-                    norm_range_txt = f"{p05:.3f}~{p95:.3f}"
-                    if pd.notna(value) and std > 1e-6 :
-                        z = (value - mean) / std; z_score_txt = f"{z:.2f}"
-                        if abs(z) > 3: val_color = (255,0,0,255) # Red
-                        elif abs(z) > 2: val_color = (255,165,0,255) # Orange
-                    elif pd.notna(value) and (value < p05 or value > p95) and val_color == (255,255,255,255):
-                        val_color = (255,255,0,255) # Yellow
-            elif feature_type == "Categorical" and feature in normal_df.columns and not normal_df[feature].empty:
-                norm_series_cat = normal_df[feature].dropna()
-                if not norm_series_cat.empty:
-                    freq = norm_series_cat.value_counts(normalize=True).get(value,0)*100
-                    norm_freq_txt = f"{freq:.1f}%"
-                    if freq < 1: val_color = (255,100,100,255)
-                    elif freq < 5: val_color = (255,200,0,255)
-            with dpg.table_row(parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE):
-                dpg.add_text(str(feature))
-                dpg.add_text(f"{value:.4f}" if isinstance(value, (float,np.floating)) else str(value), color=val_color)
-                dpg.add_text(norm_range_txt); dpg.add_text(z_score_txt); dpg.add_text(norm_freq_txt)
+        dpg.delete_item(TAG_OT_MVA_SELECTED_OUTLIER_TABLE, children_only=True)
+
+        with dpg.table_row(parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE):
+            dpg.add_text("Test Feature")
+            dpg.add_text("Test Value")
+            dpg.add_text("Test Range")
+            dpg.add_text("Test Z")
+            dpg.add_text("Test Freq")
+        _log_mva("Debug: Added a single test row to selected point table.")
+
+        # selected_data_series = current_df_for_context.loc[_mva_selected_point_original_index]
+        # _log_mva(f"Debug: Selected data series for index {_mva_selected_point_original_index}:\n{selected_data_series.head()}") # 일부 값만 로그
+
+        # for feature, value in selected_data_series.items():
+        #     if feature == 'is_mva_outlier': continue
+        #     _log_mva(f"Debug: Processing feature '{feature}', Value: '{value}'")
+        #     feature_type = _get_feature_type(feature, current_df_for_context)
+        #     _log_mva(f"Debug:   Feature type: '{feature_type}'")
+        #     norm_range_txt, z_score_txt, norm_freq_txt, val_color = "N/A", "N/A", "N/A", (255,255,255,255)
+
+        #     if feature_type == "Numeric" and feature in normal_df.columns and not normal_df[feature].empty:
+        #         norm_series = normal_df[feature].dropna()
+        #         if len(norm_series) > 1:
+        #             p05, p95 = norm_series.quantile(0.05), norm_series.quantile(0.95)
+        #             mean, std = norm_series.mean(), norm_series.std()
+        #             norm_range_txt = f"{p05:.3f}~{p95:.3f}"
+        #             if pd.notna(value) and std > 1e-9 : # std가 0에 매우 가까운 경우 z-score 계산 회피 (이전 1e-6 보다 조금 더 작은 값)
+        #                 z = (value - mean) / std; z_score_txt = f"{z:.2f}"
+        #                 if abs(z) > 3: val_color = (255,0,0,255) # Red
+        #                 elif abs(z) > 2: val_color = (255,165,0,255) # Orange
+        #             elif pd.notna(value) and (value < p05 or value > p95) and val_color == (255,255,255,255): # z-score 계산 안될때도 범위로 색상
+        #                 val_color = (255,255,0,255) # Yellow
+        #         _log_mva(f"Debug:   Numeric stats for '{feature}': Range='{norm_range_txt}', Z='{z_score_txt}'")
+        #     elif feature_type == "Categorical" and feature in normal_df.columns and not normal_df[feature].empty:
+        #         norm_series_cat = normal_df[feature].dropna()
+        #         if not norm_series_cat.empty:
+        #             freq = norm_series_cat.value_counts(normalize=True).get(value,0)*100
+        #             norm_freq_txt = f"{freq:.1f}%"
+        #             if freq < 1: val_color = (255,100,100,255)
+        #             elif freq < 5: val_color = (255,200,0,255)
+        #         _log_mva(f"Debug:   Categorical stats for '{feature}': Freq='{norm_freq_txt}'")
+
+        #     with dpg.table_row(parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE):
+        #         dpg.add_text(str(feature))
+        #         dpg.add_text(f"{value:.4f}" if isinstance(value, (float,np.floating)) else str(value), color=val_color)
+        #         dpg.add_text(norm_range_txt); dpg.add_text(z_score_txt); dpg.add_text(norm_freq_txt)
+        # _log_mva("Debug: Finished populating selected point table.")
+    else:
+        _log_mva("Debug: Selected outlier table TAG does not exist.")
+
     _calculate_and_display_shap_values()
+    _log_mva("--- Debug: _update_selected_point_info_ui COMPLETED ---")
 
 def _calculate_and_display_shap_values(): # 이전 답변의 최종본 사용 (거의 동일)
     global _mva_shap_plot_active_texture_id
@@ -488,92 +551,110 @@ def _run_group_analysis(sender, app_data, user_data):
     global _mva_group_stats_df, _mva_group_numerical_cols_for_plot, _mva_group_categorical_cols_for_plot
     global _normal_group_df_cache, _outlier_group_df_cache
 
-    _log_mva("Run Group Analysis button clicked.")
+    _log_mva("--- Debug: _run_group_analysis CALLED ---")
     if _df_with_mva_outliers is None or 'is_mva_outlier' not in _df_with_mva_outliers.columns:
+        _log_mva("Debug: _run_group_analysis - MVA detection not run yet or 'is_mva_outlier' column missing.")
         _show_simple_modal_mva("Error", "Please run MVA detection first to define outlier groups.")
         return
 
+    _log_mva(f"Debug: _df_with_mva_outliers shape before group split: {_df_with_mva_outliers.shape}")
     _normal_group_df_cache = _df_with_mva_outliers[_df_with_mva_outliers['is_mva_outlier'] == False].copy()
     _outlier_group_df_cache = _df_with_mva_outliers[_df_with_mva_outliers['is_mva_outlier'] == True].copy()
+    _log_mva(f"Debug: _normal_group_df_cache shape: {_normal_group_df_cache.shape}")
+    _log_mva(f"Debug: _outlier_group_df_cache shape: {_outlier_group_df_cache.shape}")
 
     if _outlier_group_df_cache.empty:
+        _log_mva("Debug: No outliers detected, cannot perform group analysis.")
         _show_simple_modal_mva("Info", "No outliers detected in the dataset to perform group analysis.")
-        _clear_group_analysis_ui_elements() # UI 초기화
+        _clear_group_analysis_ui_elements()
         return
     if _normal_group_df_cache.empty:
+        _log_mva("Debug: No normal data points found, cannot perform group analysis.")
         _show_simple_modal_mva("Info", "No normal data points found to perform group analysis (all points are outliers?).")
         _clear_group_analysis_ui_elements()
         return
 
-    current_df_context = _df_with_mva_outliers # 전체 데이터셋 컨텍스트
-
-    # 분석에 사용된 컬럼 또는 전체 사용 가능한 컬럼으로 확장 가능
-    # 여기서는 _mva_cols_analyzed_for_if (MVA 탐지에 사용된 컬럼) 기준으로 분석
+    current_df_context = _df_with_mva_outliers
     cols_for_group_analysis = _mva_cols_analyzed_for_if if _mva_cols_analyzed_for_if else \
                               [col for col in current_df_context.columns if col != 'is_mva_outlier']
+    _log_mva(f"Debug: cols_for_group_analysis: {cols_for_group_analysis}")
 
 
     _mva_group_numerical_cols_for_plot = [col for col in cols_for_group_analysis if _get_feature_type(col, current_df_context) == "Numeric"]
     _mva_group_categorical_cols_for_plot = [col for col in cols_for_group_analysis if _get_feature_type(col, current_df_context) == "Categorical"]
+    _log_mva(f"Debug: _mva_group_numerical_cols_for_plot: {_mva_group_numerical_cols_for_plot}")
+    _log_mva(f"Debug: _mva_group_categorical_cols_for_plot: {_mva_group_categorical_cols_for_plot}")
 
+    _log_mva("Debug: Calling _populate_group_stats_table...")
     _populate_group_stats_table(_normal_group_df_cache, _outlier_group_df_cache, _mva_group_numerical_cols_for_plot)
 
     if dpg.does_item_exist(TAG_OT_MVA_GROUP_NUM_FEATURE_COMBO):
         dpg.configure_item(TAG_OT_MVA_GROUP_NUM_FEATURE_COMBO, items=_mva_group_numerical_cols_for_plot, default_value="")
     if dpg.does_item_exist(TAG_OT_MVA_GROUP_CAT_FEATURE_COMBO):
         dpg.configure_item(TAG_OT_MVA_GROUP_CAT_FEATURE_COMBO, items=_mva_group_categorical_cols_for_plot, default_value="")
+    _log_mva("Debug: Group feature selectors populated.")
     
-    _clear_group_dist_plot() # 이전 플롯 초기화
-    _clear_group_freq_plot() # 이전 플롯 초기화
-    _log_mva("Group analysis complete. Stats table and feature selectors populated.")
-
+    _clear_group_dist_plot()
+    _clear_group_freq_plot()
+    _log_mva("--- Debug: _run_group_analysis COMPLETED ---")
 
 def _populate_group_stats_table(normal_df: pd.DataFrame, outlier_df: pd.DataFrame, num_cols: List[str]):
-    if not dpg.does_item_exist(TAG_OT_MVA_GROUP_STATS_TABLE): return
-    dpg.delete_item(TAG_OT_MVA_GROUP_STATS_TABLE, children_only=True)
+    _log_mva("--- Debug: _populate_group_stats_table CALLED ---")
+    if not dpg.does_item_exist(TAG_OT_MVA_GROUP_STATS_TABLE):
+        _log_mva("Debug: Group stats table TAG does not exist. Returning.")
+        return
+    dpg.delete_item(TAG_OT_MVA_GROUP_STATS_TABLE, children_only=True) # 기존 내용만 지움 (컬럼은 유지)
+
+    _log_mva(f"Debug: normal_df shape for stats: {normal_df.shape if normal_df is not None else 'None'}")
+    _log_mva(f"Debug: outlier_df shape for stats: {outlier_df.shape if outlier_df is not None else 'None'}")
+    _log_mva(f"Debug: num_cols for stats: {num_cols}")
 
     if not num_cols:
+        _log_mva("Debug: No numerical features to compare in group stats table.")
         with dpg.table_row(parent=TAG_OT_MVA_GROUP_STATS_TABLE):
-            dpg.add_text("No numerical features to compare.") 
-            dpg.add_text("") 
-            dpg.add_text("") 
-            dpg.add_text("") 
+            dpg.add_text("No numerical features to compare.")
+            dpg.add_text("")
+            dpg.add_text("")
+            dpg.add_text("")
         return
+    num_defined_columns = 4 # 테이블 컬럼이 4개로 고정되어 있다고 가정
+    _log_mva(f"Debug: Assuming {num_defined_columns} defined columns in stats table.")
 
     stats_to_calc = ['count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max']
-    
-    # 테이블의 실제 컬럼 수를 가져옵니다.
-    num_defined_columns = 0
-    if dpg.does_item_exist(TAG_OT_MVA_GROUP_STATS_TABLE):
-        table_children_slot_1 = dpg.get_item_children(TAG_OT_MVA_GROUP_STATS_TABLE, 1)
-        if table_children_slot_1: # slot 1에 자식이 있는지 확인
-             num_defined_columns = len(table_children_slot_1)
-    
-    if num_defined_columns == 0 : # 컬럼이 정의되지 않은 경우 (예외 처리)
-        _log_mva("Error: Group stats table has no columns defined.")
-        return
 
 
     for col_name in num_cols:
-        normal_stats = normal_df[col_name].describe().reindex(stats_to_calc)
-        outlier_stats = outlier_df[col_name].describe().reindex(stats_to_calc)
+        _log_mva(f"Debug: Calculating stats for column: '{col_name}'")
+        if col_name not in normal_df.columns:
+            _log_mva(f"Warning: Column '{col_name}' not in normal_df. Skipping for normal_stats.")
+            normal_stats = pd.Series(index=stats_to_calc, dtype=float) # Empty series with NaN
+        else:
+            normal_stats = normal_df[col_name].describe().reindex(stats_to_calc)
+
+        if col_name not in outlier_df.columns:
+            _log_mva(f"Warning: Column '{col_name}' not in outlier_df. Skipping for outlier_stats.")
+            outlier_stats = pd.Series(index=stats_to_calc, dtype=float) # Empty series with NaN
+        else:
+            outlier_stats = outlier_df[col_name].describe().reindex(stats_to_calc)
+
+        _log_mva(f"Debug:   Normal stats for '{col_name}': {normal_stats.to_dict()}")
+        _log_mva(f"Debug:   Outlier stats for '{col_name}': {outlier_stats.to_dict()}")
 
         for i, stat_name in enumerate(stats_to_calc):
             with dpg.table_row(parent=TAG_OT_MVA_GROUP_STATS_TABLE):
-                if i == 0: 
+                if i == 0:
                     dpg.add_text(col_name, color=(200,200,0))
                 else:
-                    dpg.add_text("") 
-                
-                dpg.add_text(stat_name) 
+                    dpg.add_text("")
+                dpg.add_text(stat_name)
                 dpg.add_text(f"{normal_stats.get(stat_name, np.nan):.3f}")
                 dpg.add_text(f"{outlier_stats.get(stat_name, np.nan):.3f}")
-        
-        if num_cols.index(col_name) < len(num_cols) - 1: 
+
+        if num_cols.index(col_name) < len(num_cols) - 1:
             with dpg.table_row(parent=TAG_OT_MVA_GROUP_STATS_TABLE):
-                # 수정된 부분: 테이블의 실제 컬럼 수만큼 반복하여 구분선 추가
-                for _ in range(num_defined_columns): 
+                for _ in range(num_defined_columns): # Should match number of columns
                     dpg.add_separator()
+    _log_mva("--- Debug: _populate_group_stats_table COMPLETED ---")
 
 def _on_group_num_feature_select(sender, selected_feature: str, user_data):
     global _mva_group_dist_plot_texture_id
@@ -682,6 +763,13 @@ def create_multivariate_ui(parent_tab_bar_tag: str, shared_utilities: dict):
     global _shared_utils_mva, _mva_shap_plot_active_texture_id
     global _mva_group_dist_plot_texture_id, _mva_group_freq_plot_texture_id # 전역변수 선언
     _shared_utils_mva = shared_utilities
+    print(f"DEBUG_PRINT: _shared_utils_mva in create_multivariate_ui: {_shared_utils_mva}")
+    if _shared_utils_mva and 'log_message_func' in _shared_utils_mva:
+        print(f"DEBUG_PRINT: log_message_func IS PRESENT: {_shared_utils_mva['log_message_func']}")
+    else:
+        print("DEBUG_PRINT: log_message_func IS MISSING or _shared_utils_mva is None")
+    # --- 여기까지 직접 print ---
+
     _mva_shap_plot_active_texture_id = _shared_utils_mva.get("default_shap_plot_texture_tag", "")
     _mva_group_dist_plot_texture_id = _shared_utils_mva.get("default_group_dist_plot_texture_tag", "")
     _mva_group_freq_plot_texture_id = _shared_utils_mva.get("default_group_freq_plot_texture_tag", "")
@@ -721,28 +809,36 @@ def create_multivariate_ui(parent_tab_bar_tag: str, shared_utilities: dict):
 
                 # --- Outlier Group Analysis Section ---
                 dpg.add_spacer(height=10)
-                with dpg.collapsing_header(label="4. Outlier Group vs. Normal Group Analysis", tag=TAG_OT_MVA_GROUP_ANALYSIS_COLLAPSING_HEADER, default_open=False):
-                    dpg.add_button(label="Run Group Analysis", tag=TAG_OT_MVA_RUN_GROUP_ANALYSIS_BUTTON, callback=_run_group_analysis, width=-1)
-                    dpg.add_text("Comparative Descriptive Statistics (Numerical Features):")
-                    with dpg.child_window(height=180, border=True): # 테이블 높이
-                        with dpg.table(tag=TAG_OT_MVA_GROUP_STATS_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True, borders_outerH=True, borders_innerV=True):
-                            dpg.add_table_column(label="Feature", parent=TAG_OT_MVA_GROUP_STATS_TABLE, init_width_or_weight=0.3)
-                            dpg.add_table_column(label="Statistic", parent=TAG_OT_MVA_GROUP_STATS_TABLE, init_width_or_weight=0.2)
-                            dpg.add_table_column(label="Normal Group", parent=TAG_OT_MVA_GROUP_STATS_TABLE, init_width_or_weight=0.25)
-                            dpg.add_table_column(label="Outlier Group", parent=TAG_OT_MVA_GROUP_STATS_TABLE, init_width_or_weight=0.25)
-                    
-                    dpg.add_spacer(height=5)
-                    dpg.add_text("Numerical Feature Distribution Comparison (Box Plot):")
-                    dpg.add_combo(items=[], tag=TAG_OT_MVA_GROUP_NUM_FEATURE_COMBO, width=-1, callback=_on_group_num_feature_select, default_value="", no_preview=True)
-                    dpg.add_text("Select a numerical feature.", tag=TAG_OT_MVA_GROUP_DIST_PLOT_PLACEHOLDER)
-                    dpg.add_image(texture_tag=_shared_utils_mva.get("default_group_dist_plot_texture_tag",""), tag=TAG_OT_MVA_GROUP_DIST_PLOT_IMAGE, show=False, width=GROUP_ANALYSIS_PLOT_WIDTH)
+                dpg.add_text("4. Outlier Group vs. Normal Group Analysis", color=[255, 255, 0]) # 제목 추가
+                # dpg.collapsing_header 대신 직접 UI 요소들을 배치합니다.
+                # 또는 dpg.group으로 묶을 수 있습니다.
+                # with dpg.group(tag=TAG_OT_MVA_GROUP_ANALYSIS_COLLAPSING_HEADER): # 태그는 유지하거나 필요 없으면 제거
+                
+                dpg.add_button(label="Run Group Analysis", tag=TAG_OT_MVA_RUN_GROUP_ANALYSIS_BUTTON, callback=_run_group_analysis, width=-1)
+                dpg.add_text("Comparative Descriptive Statistics (Numerical Features):")
+                with dpg.child_window(height=180, border=True): # 테이블 높이
+                    # with dpg.table(...) 부분입니다.
+                    with dpg.table(tag=TAG_OT_MVA_GROUP_STATS_TABLE, header_row=True, resizable=True,
+                                policy=dpg.mvTable_SizingStretchProp, scrollY=True,
+                                borders_outerH=True, borders_innerV=True): # borders_innerH=True, borders_outerV=True 추가 가능
 
-                    dpg.add_spacer(height=5)
-                    dpg.add_text("Categorical Feature Frequency Comparison (Bar Chart):")
-                    dpg.add_combo(items=[], tag=TAG_OT_MVA_GROUP_CAT_FEATURE_COMBO, width=-1, callback=_on_group_cat_feature_select, default_value="", no_preview=True)
-                    dpg.add_text("Select a categorical feature.", tag=TAG_OT_MVA_GROUP_FREQ_PLOT_PLACEHOLDER)
-                    dpg.add_image(texture_tag=_shared_utils_mva.get("default_group_freq_plot_texture_tag",""), tag=TAG_OT_MVA_GROUP_FREQ_PLOT_IMAGE, show=False, width=GROUP_ANALYSIS_PLOT_WIDTH)
+                        # /// 이 부분이 중요합니다! 컬럼 정의가 되어 있어야 합니다. ///
+                        dpg.add_table_column(label="Feature", parent=TAG_OT_MVA_GROUP_STATS_TABLE, init_width_or_weight=0.3)
+                        dpg.add_table_column(label="Statistic", parent=TAG_OT_MVA_GROUP_STATS_TABLE, init_width_or_weight=0.2)
+                        dpg.add_table_column(label="Normal Group", parent=TAG_OT_MVA_GROUP_STATS_TABLE, init_width_or_weight=0.25)
+                        dpg.add_table_column(label="Outlier Group", parent=TAG_OT_MVA_GROUP_STATS_TABLE, init_width_or_weight=0.25)
 
+                dpg.add_spacer(height=5)
+                dpg.add_text("Numerical Feature Distribution Comparison (Box Plot):")
+                dpg.add_combo(items=[], tag=TAG_OT_MVA_GROUP_NUM_FEATURE_COMBO, width=-1, callback=_on_group_num_feature_select, default_value="", no_preview=True)
+                dpg.add_text("Select a numerical feature.", tag=TAG_OT_MVA_GROUP_DIST_PLOT_PLACEHOLDER)
+                dpg.add_image(texture_tag=_shared_utils_mva.get("default_group_dist_plot_texture_tag",""), tag=TAG_OT_MVA_GROUP_DIST_PLOT_IMAGE, show=False, width=GROUP_ANALYSIS_PLOT_WIDTH)
+
+                dpg.add_spacer(height=5)
+                dpg.add_text("Categorical Feature Frequency Comparison (Bar Chart):")
+                dpg.add_combo(items=[], tag=TAG_OT_MVA_GROUP_CAT_FEATURE_COMBO, width=-1, callback=_on_group_cat_feature_select, default_value="", no_preview=True)
+                dpg.add_text("Select a categorical feature.", tag=TAG_OT_MVA_GROUP_FREQ_PLOT_PLACEHOLDER)
+                dpg.add_image(texture_tag=_shared_utils_mva.get("default_group_freq_plot_texture_tag",""), tag=TAG_OT_MVA_GROUP_FREQ_PLOT_IMAGE, show=False, width=GROUP_ANALYSIS_PLOT_WIDTH)
 
             with dpg.child_window(width=SELECTED_POINT_INFO_GROUP_WIDTH, border=False, tag=TAG_OT_MVA_SELECTED_OUTLIER_INFO_GROUP):
                 dpg.add_text("3. Selected Point Details & Feature Contributions", color=[255, 255, 0])
@@ -751,6 +847,7 @@ def create_multivariate_ui(parent_tab_bar_tag: str, shared_utilities: dict):
                 with dpg.child_window(tag=TAG_OT_MVA_SELECTED_OUTLIER_TABLE_CHILD, height=SELECTED_POINT_TABLE_CHILD_HEIGHT, border=True): 
                     with dpg.table(tag=TAG_OT_MVA_SELECTED_OUTLIER_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True, borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
                         dpg.add_table_column(label="Feature", parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE, init_width_or_weight=0.30)
+                        print("test : Adding a row to selected_outlier_table")
                         dpg.add_table_column(label="Value", parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE, init_width_or_weight=0.15)
                         dpg.add_table_column(label="Normal Range (5-95%)", parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE, init_width_or_weight=0.25)
                         dpg.add_table_column(label="Z-Score", parent=TAG_OT_MVA_SELECTED_OUTLIER_TABLE, init_width_or_weight=0.15)
