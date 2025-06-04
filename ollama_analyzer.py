@@ -6,7 +6,7 @@ import json # JSON 다루기 위함
 
 # Ollama 서버 정보 (이전에 정의한 상수 사용)
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "gemma3:12b" # 또는 사용하고자 하는 Llava 모델명
+OLLAMA_MODEL = "gemma3:latest" # 또는 사용하고자 하는 Llava 모델명
 
 def analyze_image_with_llava(image_bytes: bytes, chart_name: str = "Untitled Chart") -> str:
     """
@@ -36,7 +36,7 @@ def analyze_image_with_llava(image_bytes: bytes, chart_name: str = "Untitled Cha
         # 3. Ollama API 호출
         # 타임아웃을 적절히 설정하여 너무 오래 기다리지 않도록 합니다 (예: 60초)
         print(f"[Ollama Analyzer] Sending request to Ollama for '{chart_name}'...")
-        response = requests.post(OLLAMA_API_URL, json=payload, timeout=60)
+        response = requests.post(OLLAMA_API_URL, json=payload, timeout=120)
         response.raise_for_status() # HTTP 오류 발생 시 예외를 발생시킴 (4xx, 5xx 상태 코드)
 
         # 4. 응답 파싱 및 결과 추출
