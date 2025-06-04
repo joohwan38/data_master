@@ -952,8 +952,8 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
             dpg.add_text("Analysis Steps", color=[255,255,0]); dpg.add_separator() 
             for step_name_nav in ANALYSIS_STEPS: 
                 dpg.add_button(label=step_name_nav, callback=switch_step_view, user_data=step_name_nav, width=-1, height=30)
-        content_area_width = 1300 # 남은 공간 모두 사용
-        ai_log_panel_width = 300
+        content_area_width = 1000 # 남은 공간 모두 사용
+        ai_log_panel_width = 400
 
         with dpg.child_window(tag="content_area", border=True, parent="main_layout_group", width=content_area_width):
             for step_name_create in ANALYSIS_STEPS:
@@ -997,11 +997,12 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
             dpg.add_text("💡 AI Analysis Log", color=[255, 255, 0])
             dpg.add_separator()
             # 로그를 표시할 읽기 전용 여러 줄 입력 텍스트
-            dpg.add_input_text(tag="ai_analysis_log_panel_text", multiline=True, readonly=True,
-                               default_value="AI 분석 결과가 여기에 표시됩니다.\n",
-                               width=-1, height=-1)
+            dpg.add_text("AI 분석 결과가 여기에 표시됩니다.\n", tag="ai_analysis_log_panel_text", wrap=ai_log_panel_width)
+            # dpg.add_input_text(tag="ai_analysis_log_panel_text", multiline=True, readonly=True,
+            #                    default_value="AI 분석 결과가 여기에 표시됩니다.\n",
+            #                    width=-1, height=-1, no_horizontal_scroll=True)
 
-dpg.create_viewport(title='Data Analysis Platform', width=1900, height=1300) 
+dpg.create_viewport(title='Data Analysis Platform', width=1700, height=1200) 
 dpg.set_exit_callback(save_state_on_exit) 
 dpg.setup_dearpygui()
 
