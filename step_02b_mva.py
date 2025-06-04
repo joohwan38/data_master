@@ -15,6 +15,7 @@ import umap
 import io
 from PIL import Image
 import traceback # traceback 임포트
+import ollama_analyzer
 
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 warnings.filterwarnings('ignore', category=UserWarning, module='umap')
@@ -95,23 +96,57 @@ def apply_mva_settings_from_loaded(settings: Dict[str, Any], current_df: Optiona
             dpg.add_text("Settings loaded. Click 'Run/Generate' button.", parent=area_tag)
     update_ui(current_df, main_callbacks)
 
-def _plot_to_dpg_texture_data(fig: plt.Figure, desired_dpi: int = 100) -> Tuple[Optional[str], int, int]: # DPI 기본값 100으로 상향
+def _plot_to_dpg_texture_data(fig: plt.Figure, desired_dpi: int = 100) -> Tuple[Optional[str], int, int, Optional[bytes]]:
     img_data_buf = io.BytesIO()
+    img_bytes_data = None
+    texture_tag = None # 초기화
+    img_width, img_height = 0, 0 # 초기화
+
+    TEXTURE_REGISTRY_TAG = "primary_texture_registry"
+    if not dpg.does_item_exist(TEXTURE_REGISTRY_TAG):
+        if dpg.is_dearpygui_running(): # DPG 컨텍스트가 활성화된 경우에만 추가 시도
+            print(f"Warning: Texture registry '{TEXTURE_REGISTRY_TAG}' not found. Creating it now in step_02b_mva.")
+            dpg.add_texture_registry(tag=TEXTURE_REGISTRY_TAG)
+        else:
+            print(f"Error: DPG not running, cannot create texture registry '{TEXTURE_REGISTRY_TAG}'.")
+            return None, 0, 0, None
+
+
     try:
         fig.savefig(img_data_buf, format="png", bbox_inches='tight', dpi=desired_dpi)
         img_data_buf.seek(0)
-        pil_image = Image.open(img_data_buf)
+        img_bytes_data = img_data_buf.getvalue()
+
+        pil_image = Image.open(io.BytesIO(img_bytes_data))
         if pil_image.mode != 'RGBA': pil_image = pil_image.convert('RGBA')
         img_width, img_height = pil_image.size
+
+        if img_width == 0 or img_height == 0:
+            print(f"Error: Plot image has zero dimension ({img_width}x{img_height}). Cannot create texture.")
+            return None, 0, 0, img_bytes_data # 바이트 데이터는 반환 가능
+
         texture_data_np = np.array(pil_image).astype(np.float32) / 255.0
         texture_data_flat_list = texture_data_np.ravel().tolist()
-        texture_tag = dpg.generate_uuid()
-        with dpg.texture_registry(show=False):
-            dpg.add_static_texture(width=img_width, height=img_height, default_value=texture_data_flat_list, tag=texture_tag)
-        return texture_tag, img_width, img_height
+        texture_tag = dpg.generate_uuid() # 고유 태그 생성
+
+        # dpg.add_static_texture 호출 시 parent를 명시적으로 지정합니다.
+        dpg.add_static_texture(
+            width=img_width,
+            height=img_height,
+            default_value=texture_data_flat_list,
+            tag=texture_tag,
+            parent=TEXTURE_REGISTRY_TAG # 명시적 부모 지정
+        )
+        return texture_tag, img_width, img_height, img_bytes_data
+    except SystemError as se: # 구체적인 SystemError를 먼저 캐치
+        print(f"SystemError converting plot to DPG texture: {se}")
+        print(f"Traceback (SystemError in _plot_to_dpg_texture_data): {traceback.format_exc()}")
+        # 오류 발생 시에도 생성된 태그(실패했다면 None), 크기, 바이트 데이터 반환 시도
+        return texture_tag, img_width, img_height, img_bytes_data
     except Exception as e:
-        print(f"Error converting plot to DPG texture: {e}\n{traceback.format_exc()}")
-        return None, 0, 0
+        print(f"General error converting plot to DPG texture: {e}")
+        print(f"Traceback (General Error in _plot_to_dpg_texture_data): {traceback.format_exc()}")
+        return None, 0, 0, img_bytes_data # 일반 오류 시 None 반환
     finally:
         plt.close(fig)
 
@@ -145,6 +180,9 @@ def _mva_run_correlation_analysis(df: pd.DataFrame, u_funcs: dict, callbacks: di
 
     # --- Clustermap 1: 상호 높은 상관관계 변수 ---
     dpg.add_text(f"Clustermap 1: Top {MAX_VARS_CM} Numeric Variables - Highest Pairwise Correlations", parent=results_group, color=(255,255,0))
+    img_bytes_cm1 = None # AI 분석용 이미지 바이트 저장 변수
+    tex_tag1, w1, h1 = None, 0, 0 # 이미지 표시용 변수들 초기화
+
     try:
         vars_cm1 = num_cols if len(num_cols) <= MAX_VARS_CM else \
                      [v for v, _ in sorted({col: corr_abs_mat_full.loc[col, corr_abs_mat_full.columns != col].max() if not corr_abs_mat_full.loc[col, corr_abs_mat_full.columns != col].empty else 0 for col in num_cols}.items(), key=lambda item: item[1], reverse=True)[:MAX_VARS_CM]]
@@ -152,19 +190,88 @@ def _mva_run_correlation_analysis(df: pd.DataFrame, u_funcs: dict, callbacks: di
             sub_corr1 = df[vars_cm1].corr().fillna(0).replace([np.inf, -np.inf], 0)
             n_vars1 = len(vars_cm1)
             fs1 = max(0.7, 1.2 - n_vars1 * 0.02)
-            fsize1 = (max(7, n_vars1 * 0.8), max(6, n_vars1 * 0.7)) # figsize 크게
+            fsize1 = (max(7, n_vars1 * 0.8), max(6, n_vars1 * 0.7))
 
             sns.set_theme(style="whitegrid", font_scale=fs1)
             cm1 = sns.clustermap(sub_corr1, annot=True, cmap="RdYlBu_r", fmt=".2f", linewidths=.5, vmin=-1, vmax=1, figsize=fsize1, dendrogram_ratio=0.12, cbar_kws={'shrink': .65})
             cm1.fig.suptitle(f"Top {n_vars1} Inter-correlated Variables", fontsize=15 if fs1 > 0.6 else 13, y=1.02)
-            tex_tag1, w1, h1 = _plot_to_dpg_texture_data(cm1.fig, desired_dpi=95)
-            _display_dpg_image(results_group, tex_tag1, w1, h1, max_w=700)
-        else: dpg.add_text("Not enough variables for this clustermap.", parent=results_group)
-    except Exception as e: dpg.add_text(f"Error (CM1): {e}", parent=results_group,color=(255,0,0)); print(traceback.format_exc())
+
+            # _plot_to_dpg_texture_data 함수를 한 번만 호출합니다.
+            plot_result_cm1 = _plot_to_dpg_texture_data(cm1.fig, desired_dpi=95)
+
+            if plot_result_cm1 and len(plot_result_cm1) == 4:
+                tex_tag1, w1, h1, img_bytes_cm1_temp = plot_result_cm1
+                img_bytes_cm1 = img_bytes_cm1_temp # AI 분석용 이미지 바이트 저장
+            else:
+                print("Warning: _plot_to_dpg_texture_data did not return 4 values for Clustermap 1.")
+                # 오류 발생 시 tex_tag1 등이 None으로 유지되어 아래 _display_dpg_image에서 처리가능
+
+            # DPG 이미지 및 AI 분석 버튼을 담을 그룹
+            # _display_dpg_image 호출은 tex_tag1 등이 올바르게 할당된 후에 이루어져야 합니다.
+            with dpg.group(horizontal=False, parent=results_group): # 수직 그룹
+                _display_dpg_image(dpg.last_item(), tex_tag1, w1, h1, max_w=700)
+
+                if img_bytes_cm1 and tex_tag1 : # 이미지와 바이트가 모두 성공적으로 생성되었을 때만 버튼 추가
+                    chart_name_cm1 = f"Clustermap1_Top_{len(vars_cm1)}_InterCorrelated"
+                    # AI 분석 버튼 콜백 정의 (analyze_cm1_callback, confirm_and_run_cm1_analysis)
+                    # (이전 답변에서 제공된 AI 분석 버튼 및 콜백 로직은 여기에 위치합니다)
+                    def analyze_cm1_callback():
+                        loading_indicator_tag = f"loading_cm1_{dpg.generate_uuid()}"
+                        if dpg.does_item_exist(ai_button_cm1_tag):
+                            dpg.configure_item(ai_button_cm1_tag, enabled=False, label="Analyzing...")
+                            dpg.add_loading_indicator(tag=loading_indicator_tag, parent=ai_button_cm1_tag, style=0, radius=7, color=[255,255,0,255])
+                        try:
+                            analysis_result = ollama_analyzer.analyze_image_with_llava(img_bytes_cm1, chart_name_cm1)
+                            if 'add_ai_log' in callbacks: # main_app_callbacks 에서 'add_ai_log' 가져오기
+                                callbacks['add_ai_log'](analysis_result, chart_name_cm1)
+                            else:
+                                print(f"AI Log ({chart_name_cm1}):\n{analysis_result}")
+                        except Exception as e_analysis:
+                            err_msg = f"Error during AI analysis for {chart_name_cm1}: {e_analysis}"
+                            print(err_msg)
+                            if 'add_ai_log' in callbacks:
+                                callbacks['add_ai_log'](err_msg, chart_name_cm1)
+                        finally:
+                            if dpg.does_item_exist(loading_indicator_tag):
+                                dpg.delete_item(loading_indicator_tag)
+                            if dpg.does_item_exist(ai_button_cm1_tag):
+                                dpg.configure_item(ai_button_cm1_tag, enabled=True, label="💡 Analyze with AI")
+
+
+                    def confirm_and_run_cm1_analysis():
+                        # callbacks 딕셔너리가 제대로 전달되었는지, 그 안에 'get_util_funcs'가 있는지 확인
+                        if 'get_util_funcs' in callbacks:
+                            util_funcs_dict = callbacks['get_util_funcs']() # 딕셔너리 반환
+                            # util_funcs_dict 안에 'show_confirmation_modal'이 있는지 확인
+                            if 'show_confirmation_modal' in util_funcs_dict:
+                                util_funcs_dict['show_confirmation_modal'](
+                                    title="AI Analysis Confirmation",
+                                    message=f"Proceed with AI analysis for '{chart_name_cm1}'?\n(This may take a few moments)",
+                                    yes_callback=analyze_cm1_callback
+                                )
+                            else:
+                                print("Confirmation modal function not found in utils dictionary. Running analysis directly.")
+                                analyze_cm1_callback()
+                        else:
+                            print("Util functions ('get_util_funcs') not available in callbacks. Running analysis directly.")
+                            analyze_cm1_callback() # 유틸 함수 없으면 바로 분석 (디버깅용)
+
+                    ai_button_cm1_tag = dpg.generate_uuid()
+                    # 버튼의 콜백으로 confirm_and_run_cm1_analysis를 연결해야 합니다.
+                    dpg.add_button(label="💡 Analyze with AI", tag=ai_button_cm1_tag, width=150, height=25,
+                                   callback=confirm_and_run_cm1_analysis) # 여기가 중요!
+                    dpg.add_spacer(height=5) # 버튼과 다음 요소 간 간격
+        else:
+            dpg.add_text("Not enough variables for this clustermap.", parent=results_group)
+    except Exception as e:
+        dpg.add_text(f"Error (CM1): {e}", parent=results_group,color=(255,0,0))
+        print(f"Error (CM1 traceback): {traceback.format_exc()}") # traceback 출력
     dpg.add_separator(parent=results_group)
 
     # --- Clustermap 2: 타겟 연관 변수 ---
     dpg.add_text(f"Clustermap 2: Top {MAX_VARS_CM} Numeric Variables - Correlated with Target '{target_var}'", parent=results_group, color=(255,255,0))
+    img_bytes_cm2 = None # AI 분석용
+    tex_tag2, w2, h2 = None, 0, 0
     vars_for_clustermap2 = []  # 최종적으로 Clustermap에 사용될 변수 리스트 초기화
     selection_method_description = "Not determined" # 변수 선택 방법에 대한 설명 초기화
 
@@ -238,8 +345,18 @@ def _mva_run_correlation_analysis(df: pd.DataFrame, u_funcs: dict, callbacks: di
             # 제목을 좀 더 일반적이게, selection_method_description은 이미 위에 텍스트로 표시됨
             cm2.fig.suptitle(f"Clustermap of Top {n_vars2} Target-Associated Numeric Variables", fontsize=15 if fs2 > 0.7 else 12, y=1.03) # 이전 폰트 조정값
             
-            tex_tag2, w2, h2 = _plot_to_dpg_texture_data(cm2.fig, desired_dpi=95)
-            _display_dpg_image(results_group, tex_tag2, w2, h2, max_w=700)
+            plot_result_cm2 = _plot_to_dpg_texture_data(cm2.fig, desired_dpi=95) # 한 번 호출
+            if plot_result_cm2 and len(plot_result_cm2) == 4:
+                tex_tag2, w2, h2, img_bytes_cm2_temp = plot_result_cm2
+                img_bytes_cm2 = img_bytes_cm2_temp
+            else:
+                print("Warning: _plot_to_dpg_texture_data did not return 4 values for Clustermap 2.")
+
+            with dpg.group(horizontal=False, parent=results_group):
+                _display_dpg_image(dpg.last_item(), tex_tag2, w2, h2, max_w=700)
+                if img_bytes_cm2 and tex_tag2:
+                    # 여기에 Clustermap 2를 위한 AI 분석 버튼 로직 추가
+                    pass # (Clustermap 1의 패턴 참고)
         except Exception as e_cm2_render:
             dpg.add_text(f"Error rendering Clustermap 2: {e_cm2_render}", parent=results_group, color=(255,0,0)); print(traceback.format_exc())
     elif target_var and target_var in df.columns : # 타겟은 있었으나 최종 선택된 변수가 2개 미만인 경우
@@ -252,77 +369,141 @@ def _mva_run_correlation_analysis(df: pd.DataFrame, u_funcs: dict, callbacks: di
 
     # --- UMAP ---
     dpg.add_text("UMAP 2D Visualization of All Numeric Variables:", parent=results_group, color=(255,255,0))
+    img_bytes_umap = None # AI 분석용 이미지 바이트 저장 변수
+    tex_tag_umap, w_umap, h_umap = None, 0, 0 # 이미지 표시용 변수들 초기화
+
     try:
         umap_prep_df = df[num_cols].copy()
         for col in umap_prep_df.columns: # Median imputation for numeric UMAP data
             if umap_prep_df[col].isnull().any() and pd.api.types.is_numeric_dtype(umap_prep_df[col]):
                 umap_prep_df[col] = umap_prep_df[col].fillna(umap_prep_df[col].median())
-        
+
         if umap_prep_df.shape[0] < 2 or umap_prep_df.shape[1] < 2:
-            dpg.add_text("Not enough data/features for UMAP.", parent=results_group); return
-
-        group_umap_cb = dpg.get_value(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX) if dpg.does_item_exist(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX) else False
-        umap_hue_values = None
-        umap_legend_hndls = None
-        actual_umap_hue_var = None
-
-        if group_umap_cb and target_var and target_var in df.columns:
-            target_s_for_hue = df[target_var].copy() # Use original target series
-            # Align target_s_for_hue with umap_prep_df's index if they differ (e.g., if umap_prep_df had rows dropped)
-            # However, umap_prep_df is just num_cols from df, so indices should align if df had no prior row drops.
-            # For safety, ensure indices match or reindex. Here, assuming indices are compatible.
-            
-            if target_s_for_hue.isnull().any(): # Handle NaNs in hue variable
-                 target_s_for_hue = target_s_for_hue.astype(str).fillna("Missing") # Convert to string and fill NaN
-
-            unique_hue_count = target_s_for_hue.nunique(dropna=False)
-            MAX_HUE_CATS_UMAP = 10 # UMAP hue 최대 범주 수
-
-            if 2 <= unique_hue_count <= MAX_HUE_CATS_UMAP:
-                actual_umap_hue_var = target_var
-                # Ensure hue data aligns with UMAP data (if umap_prep_df had rows dropped due to all-NaN columns)
-                # This part is tricky if umap_prep_df.index != df.index
-                # Assuming umap_prep_df is created from df[num_cols] and indices are aligned.
-                umap_hue_values = target_s_for_hue.loc[umap_prep_df.index].astype('category').cat.codes
-                
-                cats = target_s_for_hue.loc[umap_prep_df.index].astype('category').cat.categories
-                n_cats = len(cats)
-                cmap_for_umap = plt.colormaps.get_cmap('Spectral').resampled(n_cats) if n_cats > 0 else 'Spectral'
-                umap_legend_hndls = [plt.Line2D([0],[0], marker='o', color='w', label=str(c)[:15], markerfacecolor=cmap_for_umap(i) if n_cats>0 else 'gray', markersize=6) for i, c in enumerate(cats)]
-                dpg.add_text(f"UMAP: Grouping by target '{target_var}'.", parent=results_group, color=(180,180,180))
-            else:
-                dpg.add_text(f"UMAP Hue: Target '{target_var}' has {unique_hue_count} unique values. Hue disabled (requires 2-{MAX_HUE_CATS_UMAP}).", parent=results_group, color=(200,200,0))
-        
-        n_neigh = min(15, umap_prep_df.shape[0] - 1) if umap_prep_df.shape[0] > 1 else 1
-        if n_neigh <= 0: n_neigh = 1
-        reducer_umap = umap.UMAP(n_neighbors=n_neigh, n_components=2, random_state=42, min_dist=0.05, spread=1.0)
-        umap_embedding = reducer_umap.fit_transform(umap_prep_df)
-        
-        plt.style.use('seaborn-v0_8-whitegrid')
-        fig_umap_plot = plt.figure(figsize=(8, 6.5)) # UMAP figsize 늘림
-        
-        scatter_kwargs = {'s': 15, 'alpha': 0.7} # 점 크기, 투명도 상향
-        if umap_hue_values is not None:
-            scatter_kwargs['c'] = umap_hue_values
-            scatter_kwargs['cmap'] = cmap_for_umap if n_cats > 0 else 'Spectral' # 위에서 정의한 cmap_for_umap 사용
+            dpg.add_text("Not enough data/features for UMAP.", parent=results_group)
+            # UMAP 생성 불가 시 try 블록의 나머지 부분 실행하지 않도록 return 또는 다른 처리 필요시 추가
         else:
-            scatter_kwargs['cmap'] = 'viridis' 
+            group_umap_cb = dpg.get_value(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX) if dpg.does_item_exist(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX) else False
+            umap_hue_values = None
+            umap_legend_hndls = None
+            actual_umap_hue_var = None
+            cmap_for_umap = 'Spectral' # 기본값
+            n_cats_umap = 0 # 기본값
 
-        plt.scatter(umap_embedding[:, 0], umap_embedding[:, 1], **scatter_kwargs)
-        
-        if umap_legend_hndls and umap_hue_values is not None:
-            plt.legend(handles=umap_legend_hndls, title=str(actual_umap_hue_var)[:15], fontsize=7.5, loc='best', frameon=True, shadow=True)
-        
-        plt.title("UMAP Projection of Numeric Variables", fontsize=11)
-        plt.xlabel("UMAP Dimension 1", fontsize=9); plt.ylabel("UMAP Dimension 2", fontsize=9)
-        plt.xticks(fontsize=8.5); plt.yticks(fontsize=7.5)
-        plt.tight_layout()
-        
-        tex_tag_umap, w_umap, h_umap = _plot_to_dpg_texture_data(fig_umap_plot, desired_dpi=100)
-        _display_dpg_image(results_group, tex_tag_umap, w_umap, h_umap, max_w=750) # max_w 늘림
-        plt.style.use('default')
-    except ImportError: dpg.add_text("UMAP-learn not installed.",parent=results_group,color=(255,100,0))
-    except Exception as e: dpg.add_text(f"Error (UMAP): {e}",parent=results_group,color=(255,0,0)); print(traceback.format_exc())
+            if group_umap_cb and target_var and target_var in df.columns:
+                target_s_for_hue = df[target_var].copy()
+                if target_s_for_hue.isnull().any():
+                     target_s_for_hue = target_s_for_hue.astype(str).fillna("Missing")
+
+                unique_hue_count = target_s_for_hue.nunique(dropna=False)
+                MAX_HUE_CATS_UMAP = 10
+
+                if 2 <= unique_hue_count <= MAX_HUE_CATS_UMAP:
+                    actual_umap_hue_var = target_var
+                    # umap_prep_df 인덱스와 target_s_for_hue 인덱스 일치 확인 및 조정 필요
+                    # 여기서는 인덱스가 호환된다고 가정합니다.
+                    aligned_hue_series = target_s_for_hue.loc[umap_prep_df.index.intersection(target_s_for_hue.index)]
+                    umap_hue_values = aligned_hue_series.astype('category').cat.codes
+
+                    cats_umap = aligned_hue_series.astype('category').cat.categories
+                    n_cats_umap = len(cats_umap)
+                    if n_cats_umap > 0 :
+                         cmap_for_umap = plt.colormaps.get_cmap('Spectral').resampled(n_cats_umap)
+                    umap_legend_hndls = [plt.Line2D([0],[0], marker='o', color='w', label=str(c)[:15], markerfacecolor=cmap_for_umap(i) if n_cats_umap > 0 else 'gray', markersize=6) for i, c in enumerate(cats_umap)]
+                    dpg.add_text(f"UMAP: Grouping by target '{target_var}'.", parent=results_group, color=(180,180,180))
+                else:
+                    dpg.add_text(f"UMAP Hue: Target '{target_var}' has {unique_hue_count} unique values. Hue disabled (requires 2-{MAX_HUE_CATS_UMAP}).", parent=results_group, color=(200,200,0))
+
+            n_neigh = min(15, umap_prep_df.shape[0] - 1) if umap_prep_df.shape[0] > 1 else 1
+            if n_neigh <= 0: n_neigh = 1
+            reducer_umap = umap.UMAP(n_neighbors=n_neigh, n_components=2, random_state=42, min_dist=0.05, spread=1.0)
+            umap_embedding = reducer_umap.fit_transform(umap_prep_df)
+
+            plt.style.use('seaborn-v0_8-whitegrid')
+            fig_umap_plot = plt.figure(figsize=(8, 6.5))
+
+            scatter_kwargs_umap = {'s': 15, 'alpha': 0.7}
+            if umap_hue_values is not None:
+                scatter_kwargs_umap['c'] = umap_hue_values
+                scatter_kwargs_umap['cmap'] = cmap_for_umap
+            else:
+                scatter_kwargs_umap['cmap'] = 'viridis'
+
+            plt.scatter(umap_embedding[:, 0], umap_embedding[:, 1], **scatter_kwargs_umap)
+
+            if umap_legend_hndls and umap_hue_values is not None:
+                plt.legend(handles=umap_legend_hndls, title=str(actual_umap_hue_var)[:15], fontsize=7.5, loc='best', frameon=True, shadow=True)
+
+            plt.title("UMAP Projection of Numeric Variables", fontsize=11)
+            plt.xlabel("UMAP Dimension 1", fontsize=9); plt.ylabel("UMAP Dimension 2", fontsize=9)
+            plt.xticks(fontsize=8.5); plt.yticks(fontsize=7.5)
+            plt.tight_layout()
+
+            # _plot_to_dpg_texture_data 함수를 한 번만 호출합니다.
+            plot_result_umap = _plot_to_dpg_texture_data(fig_umap_plot, desired_dpi=100) # fig_umap_plot 사용
+
+            if plot_result_umap and len(plot_result_umap) == 4:
+                tex_tag_umap, w_umap, h_umap, img_bytes_umap_temp = plot_result_umap
+                img_bytes_umap = img_bytes_umap_temp # AI 분석용 이미지 바이트 저장
+            else:
+                print("Warning: _plot_to_dpg_texture_data did not return 4 values for UMAP.")
+                # 오류 발생 시 tex_tag_umap 등이 None으로 유지
+
+            plt.style.use('default') # 스타일 복원 (matplotlib의 기본 스타일로)
+
+            # DPG 이미지 및 AI 분석 버튼을 담을 그룹
+            with dpg.group(horizontal=False, parent=results_group): # 수직 그룹
+                _display_dpg_image(dpg.last_item(), tex_tag_umap, w_umap, h_umap, max_w=750)
+
+                if img_bytes_umap and tex_tag_umap : # 이미지와 바이트가 모두 성공적으로 생성되었을 때만 버튼 추가
+                    chart_name_umap = "UMAP_Projection"
+                    # AI 분석 버튼 콜백 정의
+                    def analyze_umap_callback():
+                        loading_indicator_tag_umap = f"loading_umap_{dpg.generate_uuid()}"
+                        if dpg.does_item_exist(ai_button_umap_tag):
+                            dpg.configure_item(ai_button_umap_tag, enabled=False, label="Analyzing...")
+                            dpg.add_loading_indicator(tag=loading_indicator_tag_umap, parent=ai_button_umap_tag, style=0, radius=7, color=[255,255,0,255])
+                        try:
+                            analysis_result = ollama_analyzer.analyze_image_with_llava(img_bytes_umap, chart_name_umap)
+                            if 'add_ai_log' in callbacks:
+                                callbacks['add_ai_log'](analysis_result, chart_name_umap)
+                            else:
+                                print(f"AI Log ({chart_name_umap}):\n{analysis_result}")
+                        except Exception as e_analysis:
+                            err_msg = f"Error during AI analysis for {chart_name_umap}: {e_analysis}"
+                            print(err_msg)
+                            if 'add_ai_log' in callbacks:
+                                callbacks['add_ai_log'](err_msg, chart_name_umap)
+                        finally:
+                            if dpg.does_item_exist(loading_indicator_tag_umap):
+                                dpg.delete_item(loading_indicator_tag_umap)
+                            if dpg.does_item_exist(ai_button_umap_tag):
+                                dpg.configure_item(ai_button_umap_tag, enabled=True, label="💡 Analyze with AI")
+
+                    def confirm_and_run_umap_analysis():
+                        if 'get_util_funcs' in callbacks:
+                            util_funcs_dict = callbacks['get_util_funcs']()
+                            if 'show_confirmation_modal' in util_funcs_dict:
+                                util_funcs_dict['show_confirmation_modal'](
+                                    title="AI Analysis Confirmation",
+                                    message=f"Proceed with AI analysis for '{chart_name_umap}'?\n(This may take a few moments)",
+                                    yes_callback=analyze_umap_callback
+                                )
+                            else:
+                                print("Confirmation modal function not found in utils. Running UMAP analysis directly.")
+                                analyze_umap_callback()
+                        else:
+                            print("Util functions not available for UMAP. Running analysis directly.")
+                            analyze_umap_callback()
+
+                    ai_button_umap_tag = dpg.generate_uuid()
+                    dpg.add_button(label="💡 Analyze with AI", tag=ai_button_umap_tag, width=150, height=25,
+                                   callback=confirm_and_run_umap_analysis)
+                    dpg.add_spacer(height=5)
+    except ImportError:
+        dpg.add_text("UMAP-learn not installed.",parent=results_group,color=(255,100,0))
+    except Exception as e:
+        dpg.add_text(f"Error (UMAP): {e}",parent=results_group,color=(255,0,0))
+        print(f"Error (UMAP traceback): {traceback.format_exc()}")
 
 def _mva_run_pair_plot_analysis(df: pd.DataFrame, u_funcs: dict, callbacks: dict):
     res_group = TAG_MVA_PAIRPLOT_RESULTS_GROUP
@@ -430,7 +611,15 @@ def _mva_run_pair_plot_analysis(df: pd.DataFrame, u_funcs: dict, callbacks: dict
         # 폰트 크기 조정 (이전 답변의 폰트 크기 조정 로직 유지)
         g.fig.suptitle(f"Pair Plot (Top {len(vars_for_pp)} Vars)" + (f" (Hue: {hue_var_pp})" if hue_var_pp and hue_var_pp in pp_subset_df_for_grid.columns else ""), y=1.01, fontsize=13)
         
-        tex_tag_pp_img, w_pp, h_pp = _plot_to_dpg_texture_data(g.fig, desired_dpi=80)
+        plot_result_pp = _plot_to_dpg_texture_data(g.fig, desired_dpi=80)
+        tex_tag_pp_img, w_pp, h_pp, _ = None, 0, 0, None # 기본값 설정
+        if plot_result_pp and len(plot_result_pp) == 4:
+            tex_tag_pp_img, w_pp, h_pp, img_bytes_pp = plot_result_pp # 4개의 값을 모두 받음
+            # img_bytes_pp 변수는 이 함수에서 당장 사용하지 않더라도 받아줘야 합니다.
+            # 필요하다면 나중에 이 페어플롯에 대한 AI 분석 기능을 추가할 때 사용할 수 있습니다.
+        else:
+            # _plot_to_dpg_texture_data가 예상과 다른 값을 반환했을 경우에 대한 로깅 또는 처리
+            print("Warning: _plot_to_dpg_texture_data did not return 4 values for Pair Plot.")
         _display_dpg_image(res_group, tex_tag_pp_img, w_pp, h_pp, max_w=850)
     except ImportError:
         dpg.add_text("Seaborn or Matplotlib is not installed.", parent=res_group, color=(255,100,0))

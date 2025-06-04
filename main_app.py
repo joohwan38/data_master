@@ -14,6 +14,7 @@ import step_05_outlier_treatment # Step 5 모듈 임포트
 import traceback
 import hashlib
 import json
+import datetime
 
 STEP_03_SAVE_LOAD_ENABLED = True 
 
@@ -32,6 +33,7 @@ class AppState:
         self.active_settings = {} 
         self.step_group_tags = {}
         self.module_ui_updaters = {}
+        self.ai_analysis_log = ""
 
 app_state = AppState()
 
@@ -44,6 +46,7 @@ TARGET_VARIABLE_TYPE_RADIO_TAG = "main_target_variable_type_radio"
 TARGET_VARIABLE_TYPE_LABEL_TAG = "main_target_variable_type_label"
 TARGET_VARIABLE_COMBO_TAG = "main_target_variable_combo"
 MAIN_FILE_PATH_DISPLAY_TAG = "main_file_path_display_text"
+
 
 ANALYSIS_STEPS = [
     "1. Data Loading & Overview",
@@ -75,6 +78,32 @@ def _show_simple_modal_message(title: str, message: str, width: int = 450, heigh
 
             dpg.add_spacer(width=int(spacer_w))
             dpg.add_button(label="OK", width=button_width, callback=lambda: dpg.configure_item(_MODAL_ID_SIMPLE_MESSAGE, show=False))
+
+def add_ai_log_message(message: str, chart_context: str = ""):
+    """AI 분석 로그 패널에 새로운 메시지를 추가합니다."""
+    if not dpg.is_dearpygui_running():
+        return
+
+    log_panel_tag = "ai_analysis_log_panel_text" # 아래 UI 생성 시 사용할 태그
+    if dpg.does_item_exist(log_panel_tag):
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        context_str = f"[{chart_context}] " if chart_context else ""
+        new_entry = f"[{timestamp}] {context_str}\n{message}\n{'-'*30}\n"
+
+        current_log = dpg.get_value(log_panel_tag)
+        # 새로운 메시지를 위로 추가 (최신 내용이 상단에 보이도록)
+        updated_log = new_entry + current_log
+
+        # 로그 길이 제한 (예: 최근 5000자) - 선택 사항
+        max_log_length = 5000
+        if len(updated_log) > max_log_length:
+            updated_log = updated_log[:max_log_length] + "\n... (로그 잘림) ..."
+
+        dpg.set_value(log_panel_tag, updated_log)
+        # 로그 패널의 스크롤을 맨 위로 이동 (새 메시지 확인 용이)
+        # dpg.set_y_scroll(dpg.get_item_parent(log_panel_tag), 0.0) # child_window의 y_scroll을 0으로
+
+
 
 def setup_korean_font():
     """시스템에 맞는 한글 폰트를 설정합니다. UI는 영어로 유지되므로, 주석 등 내부용입니다."""
@@ -853,11 +882,13 @@ util_functions_for_modules = {
     'calculate_column_widths': utils.calculate_column_widths,
     'format_text_for_display': utils.format_text_for_display,
     'get_safe_text_size': utils.get_safe_text_size,
-    '_show_simple_modal_message': _show_simple_modal_message, 
-    'show_dpg_alert_modal': utils.show_dpg_alert_modal, 
-    'get_numeric_cols': utils._get_numeric_cols, 
-    'get_categorical_cols': utils._get_categorical_cols, 
-    'calculate_cramers_v': utils.calculate_cramers_v, 
+    '_show_simple_modal_message': _show_simple_modal_message, # main_app.py 내 정의된 함수
+    'show_dpg_alert_modal': utils.show_dpg_alert_modal, # utils.py 에 정의된 함수
+    'show_confirmation_modal': utils.show_confirmation_modal, # !!! 이 부분이 중요 !!!
+    'get_numeric_cols': utils._get_numeric_cols,
+    'get_categorical_cols': utils._get_categorical_cols,
+    'calculate_cramers_v': utils.calculate_cramers_v,
+    'calculate_feature_target_relevance': utils.calculate_feature_target_relevance, # 추가됨
 }
 
 main_app_callbacks = {
@@ -885,13 +916,19 @@ main_app_callbacks = {
     'step3_processing_complete': step3_processing_complete, 
     'step4_missing_value_processing_complete': step4_missing_value_processing_complete, 
     'step5_outlier_treatment_complete': step5_outlier_treatment_complete, # Step 5 callback
+    'add_ai_log': add_ai_log_message, # 다른 모듈에서 로그 추가 시 사용
 }
 
 dpg.create_context()
+
+TEXTURE_REGISTRY_TAG = "primary_texture_registry"
+if not dpg.does_item_exist(TEXTURE_REGISTRY_TAG):
+    dpg.add_texture_registry(tag=TEXTURE_REGISTRY_TAG)
+
 with dpg.file_dialog(directory_selector=False, show=False, callback=file_load_callback, id="file_dialog_id", width=700, height=400, modal=True):
     dpg.add_file_extension(".parquet")
     dpg.add_file_extension(".csv")
-    dpg.add_file_extension(".*") 
+    dpg.add_file_extension(".*")
 
 setup_korean_font() 
 
@@ -904,8 +941,8 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
         dpg.add_text("No data loaded.", tag=MAIN_FILE_PATH_DISPLAY_TAG, wrap=-1) 
     dpg.add_separator()
     
-    with dpg.group(horizontal=True):
-        with dpg.child_window(width=280, tag="navigation_panel", border=True): 
+    with dpg.group(horizontal=True, tag="main_layout_group"): # 전체를 감싸는 가로 그룹
+        with dpg.child_window(width=280, tag="navigation_panel", border=True, parent="main_layout_group"):
             dpg.add_text("Target Variable (y):")
             dpg.add_combo(items=[""], tag=TARGET_VARIABLE_COMBO_TAG, width=-1, callback=target_variable_selected_callback)
             dpg.add_text("Target Variable Type:", tag=TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
@@ -915,8 +952,10 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
             dpg.add_text("Analysis Steps", color=[255,255,0]); dpg.add_separator() 
             for step_name_nav in ANALYSIS_STEPS: 
                 dpg.add_button(label=step_name_nav, callback=switch_step_view, user_data=step_name_nav, width=-1, height=30)
-        
-        with dpg.child_window(tag="content_area", border=True): 
+        content_area_width = 1300 # 남은 공간 모두 사용
+        ai_log_panel_width = 300
+
+        with dpg.child_window(tag="content_area", border=True, parent="main_layout_group", width=content_area_width):
             for step_name_create in ANALYSIS_STEPS:
                 if step_name_create == ANALYSIS_STEPS[0]: 
                     if hasattr(step_01_data_loading, 'create_ui'):
@@ -954,8 +993,15 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
                 else: 
                     app_state.active_step_name = first_step
 
+        with dpg.child_window(tag="ai_analysis_log_panel", width=ai_log_panel_width, border=True, parent="main_layout_group"):
+            dpg.add_text("💡 AI Analysis Log", color=[255, 255, 0])
+            dpg.add_separator()
+            # 로그를 표시할 읽기 전용 여러 줄 입력 텍스트
+            dpg.add_input_text(tag="ai_analysis_log_panel_text", multiline=True, readonly=True,
+                               default_value="AI 분석 결과가 여기에 표시됩니다.\n",
+                               width=-1, height=-1)
 
-dpg.create_viewport(title='Data Analysis Platform', width=1600, height=1000) 
+dpg.create_viewport(title='Data Analysis Platform', width=1900, height=1300) 
 dpg.set_exit_callback(save_state_on_exit) 
 dpg.setup_dearpygui()
 

@@ -12,6 +12,101 @@ CELL_PADDING = 20
 TARGET_DATA_CHARS = 25
 ELLIPSIS = "..."
 
+UTL_CONFIRMATION_MODAL_TAG = "utl_reusable_confirmation_modal"
+UTL_CONFIRMATION_TEXT_TAG = "utl_reusable_confirmation_text"
+_yes_callback_storage = None # 콜백 임시 저장용
+
+def _internal_yes_callback_handler(sender, app_data, user_data_modal_tag):
+    global _yes_callback_storage
+    if dpg.does_item_exist(user_data_modal_tag):
+        dpg.configure_item(user_data_modal_tag, show=False)
+    if _yes_callback_storage:
+        _yes_callback_storage() # 저장된 yes_callback 실행
+        _yes_callback_storage = None # 실행 후 초기화
+
+def _internal_no_callback_handler(sender, app_data, user_data_modal_tag):
+    global _yes_callback_storage
+    if dpg.does_item_exist(user_data_modal_tag):
+        dpg.configure_item(user_data_modal_tag, show=False)
+    # no_callback은 현재 정의하지 않았지만, 필요시 유사하게 처리 가능
+    _yes_callback_storage = None # No를 눌러도 콜백 저장된 것 초기화
+
+def show_confirmation_modal(title: str, message: str,
+                            yes_callback: callable,
+                            modal_tag: str = UTL_CONFIRMATION_MODAL_TAG,
+                            text_tag: str = UTL_CONFIRMATION_TEXT_TAG):
+    global _yes_callback_storage
+    if not dpg.is_dearpygui_running():
+        print(f"CONFIRMATION (Non-DPG): {title} - {message}. Assuming 'Yes'.")
+        if yes_callback:
+            yes_callback()
+        return
+
+    _yes_callback_storage = yes_callback
+
+    vp_w = dpg.get_viewport_width()
+    vp_h = dpg.get_viewport_height()
+    modal_w = 450
+
+    if not dpg.does_item_exist(modal_tag):
+        with dpg.window(label=title, modal=True, show=False, tag=modal_tag,
+                        no_close=True, width=modal_w, autosize=True, no_saved_settings=True):
+            dpg.add_text("", tag=text_tag, wrap=modal_w - 30)
+            dpg.add_spacer(height=15)
+            with dpg.group(horizontal=True):
+                btn_width = 100
+                # === 버튼 간격 계산 수정 ===
+                # dpg.get_theme_item 이 존재하지 않으므로,
+                # 버튼들을 중앙에 배치하기 위한 spacer 너비를 더 간단하게 계산하거나,
+                # DPG의 자동 레이아웃에 맡기거나, 수동으로 근사치를 사용합니다.
+
+                # 방법 1: 대략적인 중앙 정렬을 위한 spacer (가장 간단)
+                # (모달 너비 - 총 버튼 너비 - 버튼 사이 기본 간격) / 2
+                # DPG의 기본 아이템 간격(mvStyleVar_ItemSpacing)은 보통 (8, 4) 정도입니다.
+                # 여기서는 x축 간격 8을 가정합니다.
+                num_buttons = 2
+                default_item_spacing_x = 8.0
+                # 윈도우 내부 패딩도 고려 (양쪽), 기본값 8 가정
+                window_padding_x = 8.0 * 2
+                
+                # 사용 가능한 전체 공간에서 버튼이 차지할 공간을 뺌
+                available_space_for_buttons_and_spacing = modal_w - window_padding_x
+                total_button_width = btn_width * num_buttons
+                spacing_between_buttons = default_item_spacing_x * (num_buttons -1) if num_buttons > 1 else 0
+
+                # 버튼들을 중앙에 놓기 위한 양쪽 여백의 합
+                total_side_padding = available_space_for_buttons_and_spacing - total_button_width - spacing_between_buttons
+                single_side_spacer_width = total_side_padding / 2
+
+                if single_side_spacer_width < 5: # 최소 spacer 너비
+                    single_side_spacer_width = 5
+
+                dpg.add_spacer(width=int(single_side_spacer_width))
+                dpg.add_button(label="Proceed", width=btn_width, user_data=modal_tag,
+                               callback=_internal_yes_callback_handler)
+                # Cancel 버튼을 Proceed 버튼 바로 옆에 추가 (기본 ItemSpacing 적용됨)
+                dpg.add_button(label="Cancel", width=btn_width, user_data=modal_tag,
+                               callback=_internal_no_callback_handler)
+                # 오른쪽에도 동일한 spacer를 추가하여 완벽한 중앙 정렬 시도 가능
+                # dpg.add_spacer(width=int(single_side_spacer_width))
+                # 하지만 DPG가 자동으로 남은 공간을 채우므로, 왼쪽 spacer만으로도 충분할 수 있습니다.
+    else:
+        dpg.configure_item(modal_tag, label=title)
+
+    dpg.set_value(text_tag, message)
+    dpg.configure_item(modal_tag, show=True)
+    current_modal_height = dpg.get_item_height(modal_tag) if dpg.does_item_exist(modal_tag) else 200
+    pos_x = (vp_w - modal_w) // 2
+    pos_y = (vp_h - current_modal_height) // 2 if current_modal_height > 0 else vp_h // 3
+    dpg.set_item_pos(modal_tag, [max(0, pos_x), max(0, pos_y)])
+
+def icon_button(label: str, icon: str, width: int = -1, height: int = 0, **kwargs):
+    """아이콘과 라벨을 함께 표시하는 버튼을 생성합니다."""
+    # 아이콘과 라벨 사이에 약간의 공백을 주는 것이 보기 좋을 수 있습니다.
+    # label 인자가 비어있으면 아이콘만 표시하도록 할 수도 있습니다.
+    button_label = f"{icon} {label}" if label else icon
+    return dpg.add_button(label=button_label, width=width, height=height, **kwargs)
+
 def calculate_feature_target_relevance(
     df: pd.DataFrame,
     target_var: str,
