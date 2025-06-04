@@ -1,12 +1,13 @@
+# utils.py
 import dearpygui.dearpygui as dpg
 import pandas as pd
 import numpy as np
 from io import BytesIO
 from typing import List, Tuple, Optional, Any, Dict, Callable
-from scipy import stats # calculate_feature_target_relevance 에서 사용
+from scipy import stats
 import matplotlib.figure
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_agg import FigureCanvasAgg # ★★★ 추가 ★★★
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 import traceback
 
 MIN_COL_WIDTH = 50
@@ -15,14 +16,14 @@ CELL_PADDING = 20
 TARGET_DATA_CHARS = 25
 ELLIPSIS = "..."
 
-def _log_util(message: str, level: str = "DEBUG"): # 로깅 함수 추가 (선택적)
+def _log_util(message: str, level: str = "DEBUG"):
     print(f"[{level} utils] {message}")
 
 
 def calculate_feature_target_relevance(
     df: pd.DataFrame,
     target_var: str,
-    target_var_type: str, # "Continuous" 또는 "Categorical"
+    target_var_type: str,
     features_to_analyze: List[str],
     main_app_callbacks: Optional[Dict] = None
 ) -> List[Tuple[str, float]]:
@@ -74,7 +75,7 @@ def create_analyzable_image_widget(
     fig: matplotlib.figure.Figure,
     image_widget_tag: Any,
     image_title: str,
-    shared_callbacks: Dict[str, Callable],
+    shared_callbacks: Dict[str, Callable], # 'ask_for_ollama_confirmation' 포함 필요
     desired_dpi: int = 100,
     default_texture_tag: Optional[Any] = None,
     existing_dpg_texture_id: Optional[Any] = None
@@ -87,10 +88,11 @@ def create_analyzable_image_widget(
         return None, None
 
     cache_image_func = shared_callbacks.get('cache_image_data_func')
-    initiate_ollama_func = shared_callbacks.get('initiate_ollama_analysis')
+    # initiate_ollama_func = shared_callbacks.get('initiate_ollama_analysis') # 직접 호출 대신 확인 팝업 함수 사용
+    ask_for_confirmation_func = shared_callbacks.get('ask_for_ollama_confirmation') # 새로 추가된 콜백
 
-    if not callable(cache_image_func) or not callable(initiate_ollama_func):
-        _log_util("Error: 필수 콜백 함수 누락.", "ERROR")
+    if not callable(cache_image_func) or not callable(ask_for_confirmation_func): # initiate_ollama_func -> ask_for_confirmation_func
+        _log_util("Error: 필수 콜백 함수 누락 (cache_image_func 또는 ask_for_ollama_confirmation).", "ERROR")
         plt.close(fig) if fig else None
         return None, None
 
@@ -101,30 +103,23 @@ def create_analyzable_image_widget(
 
     try:
         _log_util(f"1. Matplotlib Figure -> DPG 텍스처 변환 시작: {image_title}")
-
-        # ★★★ FigureCanvasAgg를 사용하여 이미지 데이터 추출 ★★★
         canvas = FigureCanvasAgg(fig)
         canvas.draw()
-        
-        # RGBA 버퍼 가져오기 - 변수명 오타 수정
         buf_rgba_raw = canvas.buffer_rgba()
-        image_numpy_uint8_temp = np.asarray(buf_rgba_raw)  # ← 수정: buf_rgba_raw 사용
+        image_numpy_uint8_temp = np.asarray(buf_rgba_raw)
         _log_util(f"   FigureCanvasAgg buffer_rgba() -> np.asarray() shape: {image_numpy_uint8_temp.shape}, dtype: {image_numpy_uint8_temp.dtype}")
 
         if image_numpy_uint8_temp.ndim == 3 and image_numpy_uint8_temp.shape[2] == 4:
             height, width, _ = image_numpy_uint8_temp.shape
             image_numpy_uint8 = image_numpy_uint8_temp
         elif image_numpy_uint8_temp.ndim == 1 and image_numpy_uint8_temp.size % 4 == 0:
-            width_px = int(fig.get_figwidth() * fig.get_dpi())
-            height_px = int(fig.get_figheight() * fig.get_dpi())
+            width_px, height_px = int(fig.get_figwidth() * fig.get_dpi()), int(fig.get_figheight() * fig.get_dpi())
             if image_numpy_uint8_temp.size == width_px * height_px * 4:
-                _log_util(f"   1D buffer_rgba() size matches fig_width*dpi * fig_height*dpi * 4. Reshaping.")
                 width, height = width_px, height_px
                 image_numpy_uint8 = image_numpy_uint8_temp.reshape((height, width, 4))
             else:
                 width_canvas, height_canvas = canvas.get_width_height()
                 if image_numpy_uint8_temp.size == width_canvas * height_canvas * 4:
-                    _log_util(f"   1D buffer_rgba() size matches canvas_width*canvas_height*4. Reshaping using canvas dimensions.")
                     width, height = width_canvas, height_canvas
                     image_numpy_uint8 = image_numpy_uint8_temp.reshape((height, width, 4))
                 else:
@@ -132,19 +127,14 @@ def create_analyzable_image_widget(
         else:
             raise ValueError(f"Unexpected image data shape from FigureCanvasAgg: {image_numpy_uint8_temp.shape}")
 
-        # 로깅 함수명 오타 수정
-        _log_util(f"   Matplotlib Figure 최종 사용 크기: Width={width}, Height={height}")  # ← 수정: _log_util 사용
+        _log_util(f"   Matplotlib Figure 최종 사용 크기: Width={width}, Height={height}")
         if width == 0 or height == 0:
             raise ValueError("Figure width or height is 0 after processing canvas.")
 
-        # float32로 변환하고 0-1 범위로 정규화
         texture_data = image_numpy_uint8.astype(np.float32) / 255.0
         _log_util(f"   최종 DPG 텍스처 데이터 - Shape: {texture_data.shape}, Min: {np.min(texture_data):.2f}, Max: {np.max(texture_data):.2f}, Dtype: {texture_data.dtype}")
 
-        if texture_data.ndim == 3:
-            texture_data_flat = texture_data.flatten()
-        else:
-            texture_data_flat = texture_data
+        texture_data_flat = texture_data.flatten() if texture_data.ndim == 3 else texture_data
         
         if texture_data_flat.size != width * height * 4:
             _log_util(f"   [ERROR] 최종 texture_data_flat.size ({texture_data_flat.size}) != width*height*4 ({width*height*4}).", "ERROR")
@@ -154,9 +144,11 @@ def create_analyzable_image_widget(
         new_dpg_texture_id_str = str(temp_dpg_texture_id)
         _log_util(f"   생성된 새 DPG 텍스처 ID: {new_dpg_texture_id_str} (original int: {temp_dpg_texture_id})")
 
-        with dpg.texture_registry(show=False):
-            dpg.add_raw_texture(width=width, height=height, default_value=texture_data_flat,
-                                format=dpg.mvFormat_Float_rgba, tag=new_dpg_texture_id_str)
+        with dpg.texture_registry(show=False): # 이미 존재할 수 있으므로 with 블록으로 감싸기
+             if not dpg.does_item_exist("texture_registry_global"): # 고유한 태그 사용 또는 확인
+                 dpg.add_texture_registry(tag="texture_registry_global", show=False) # 없다면 생성
+             dpg.add_raw_texture(width=width, height=height, default_value=texture_data_flat,
+                                format=dpg.mvFormat_Float_rgba, tag=new_dpg_texture_id_str, parent="texture_registry_global")
         _log_util(f"   DPG 텍스처 등록 완료: {new_dpg_texture_id_str}")
 
         img_buf_for_cache = BytesIO()
@@ -168,97 +160,73 @@ def create_analyzable_image_widget(
     except Exception as e:
         _log_util(f"이미지/텍스처 생성 중 예외 발생: {image_title} - {e}", "ERROR")
         _log_util(traceback.format_exc(), "ERROR")
-        if img_buf_for_cache:
-            img_buf_for_cache.close()
+        if img_buf_for_cache: img_buf_for_cache.close()
         if new_dpg_texture_id_str and dpg.does_item_exist(new_dpg_texture_id_str):
-            try:
-                dpg.delete_item(new_dpg_texture_id_str)
-            except Exception as e_del_tex:
-                _log_util(f"오류 발생한 텍스처 삭제 중 예외: {e_del_tex}", "ERROR")
+            try: dpg.delete_item(new_dpg_texture_id_str)
+            except Exception as e_del_tex: _log_util(f"오류 발생한 텍스처 삭제 중 예외: {e_del_tex}", "ERROR")
         new_dpg_texture_id_str = None
     finally:
-        if fig:
-            plt.close(fig)
-            _log_util(f"Matplotlib Figure 객체 닫힘: {image_title}")
+        if fig: plt.close(fig); _log_util(f"Matplotlib Figure 객체 닫힘: {image_title}")
 
-    # ... (나머지 코드는 동일하게 유지)
     str_existing_dpg_texture_id = str(existing_dpg_texture_id) if existing_dpg_texture_id is not None else None
     if str_existing_dpg_texture_id and dpg.does_item_exist(str_existing_dpg_texture_id):
         if new_dpg_texture_id_str is None or (new_dpg_texture_id_str != str_existing_dpg_texture_id):
             _log_util(f"이전 DPG 텍스처 삭제 시도: {str_existing_dpg_texture_id}")
-            try:
-                dpg.delete_item(str_existing_dpg_texture_id)
-                _log_util(f"이전 DPG 텍스처 ({str_existing_dpg_texture_id}) 삭제됨.", "INFO")
-            except Exception as e_del:
-                _log_util(f"이전 DPG 텍스처 ({str_existing_dpg_texture_id}) 삭제 중 오류: {e_del}", "WARN")
+            try: dpg.delete_item(str_existing_dpg_texture_id); _log_util(f"이전 DPG 텍스처 ({str_existing_dpg_texture_id}) 삭제됨.", "INFO")
+            except Exception as e_del: _log_util(f"이전 DPG 텍스처 ({str_existing_dpg_texture_id}) 삭제 중 오류: {e_del}", "WARN")
     elif str_existing_dpg_texture_id:
         _log_util(f"이전 DPG 텍스처 ({str_existing_dpg_texture_id})가 존재하지 않아 삭제 건너뜀.")
 
-    str_parent_dpg_tag = str(parent_dpg_tag)
-    str_image_widget_tag = str(image_widget_tag)
+    str_parent_dpg_tag, str_image_widget_tag = str(parent_dpg_tag), str(image_widget_tag)
     str_default_texture_tag = str(default_texture_tag) if default_texture_tag is not None else None
-
     _log_util(f"DPG 이미지 위젯 생성/업데이트 시작: {str_image_widget_tag}")
+
     if dpg.does_item_exist(str_parent_dpg_tag):
         if new_dpg_texture_id_str and width > 0 and height > 0:
             _log_util(f"   새 텍스처({new_dpg_texture_id_str})로 이미지 위젯({str_image_widget_tag}) 설정. 부모: {str_parent_dpg_tag}, 크기: {width}x{height}")
             if dpg.does_item_exist(str_image_widget_tag):
                 dpg.configure_item(str_image_widget_tag, texture_tag=new_dpg_texture_id_str, width=width, height=height, show=True)
-                _log_util(f"   기존 이미지 위젯 '{str_image_widget_tag}' 업데이트 완료.")
             else:
-                dpg.add_image(texture_tag=new_dpg_texture_id_str, tag=str_image_widget_tag,
-                              width=width, height=height, parent=str_parent_dpg_tag, show=True)
-                _log_util(f"   새 이미지 위젯 '{str_image_widget_tag}' 추가 완료.")
+                dpg.add_image(texture_tag=new_dpg_texture_id_str, tag=str_image_widget_tag, width=width, height=height, parent=str_parent_dpg_tag, show=True)
+            
             user_data_for_callback = {"title": image_title, "texture_tag_for_ollama": new_dpg_texture_id_str}
             handler_reg_tag = f"{str_image_widget_tag}_hr_{dpg.generate_uuid()}"
             try:
-                # DPG 버전 호환성을 위한 안전한 unbind 처리
                 if dpg.does_item_exist(str_image_widget_tag):
-                    try:
-                        if hasattr(dpg, 'unbind_item_handler_registry'):
-                            dpg.unbind_item_handler_registry(str_image_widget_tag)
-                        elif hasattr(dpg, 'bind_item_handler_registry'):
-                            # 구버전에서는 None을 바인딩하여 기존 핸들러 제거
-                            dpg.bind_item_handler_registry(str_image_widget_tag, None)
-                    except Exception as e_unbind:
-                        _log_util(f"기존 핸들러 unbind 중 오류 (무시): {e_unbind}", "WARN")
+                    current_handler = dpg.get_item_info(str_image_widget_tag).get("handler_registry")
+                    if current_handler and dpg.does_item_exist(current_handler):
+                        dpg.delete_item(current_handler) # 기존 핸들러 레지스트리 삭제
                 
                 with dpg.item_handler_registry(tag=str(handler_reg_tag)):
-                    dpg.add_item_clicked_handler(callback=initiate_ollama_func, user_data=user_data_for_callback)
+                    # 클릭 시 확인 팝업 함수 호출
+                    dpg.add_item_clicked_handler(callback=ask_for_confirmation_func, user_data=user_data_for_callback)
                 dpg.bind_item_handler_registry(str_image_widget_tag, str(handler_reg_tag))
-                _log_util(f"   ItemClickedHandler 설정 완료: {str_image_widget_tag} -> {str(handler_reg_tag)}")
+                _log_util(f"   ItemClickedHandler (for confirmation) 설정 완료: {str_image_widget_tag} -> {str(handler_reg_tag)}")
             except Exception as e_handler:
                 _log_util(f"ItemClickedHandler 설정 중 오류: {str_image_widget_tag} - {e_handler}", "ERROR")
             return new_dpg_texture_id_str, str_image_widget_tag
-        else:
+        else: # 새 텍스처 생성 실패 시
             _log_util(f"새 텍스처 생성 실패({new_dpg_texture_id_str}), 기본 텍스처로 대체: {str_image_widget_tag}", "WARN")
             if dpg.does_item_exist(str_image_widget_tag):
                 if str_default_texture_tag and dpg.does_item_exist(str_default_texture_tag):
                     cfg = dpg.get_item_configuration(str_default_texture_tag)
                     dpg.configure_item(str_image_widget_tag, texture_tag=str_default_texture_tag, width=cfg.get('width',100), height=cfg.get('height',30), show=True)
-                    try:
-                        if hasattr(dpg, 'unbind_item_handler_registry'):
-                            dpg.unbind_item_handler_registry(str_image_widget_tag)
-                        elif hasattr(dpg, 'bind_item_handler_registry'):
-                            dpg.bind_item_handler_registry(str_image_widget_tag, None)
-                    except Exception as e_unbind_fallback:
-                        _log_util(f"기본 텍스처 대체 시 unbind 오류 (무시): {e_unbind_fallback}", "WARN")
+                    current_handler = dpg.get_item_info(str_image_widget_tag).get("handler_registry")
+                    if current_handler and dpg.does_item_exist(current_handler): dpg.delete_item(current_handler)
                     dpg.set_item_user_data(str_image_widget_tag, None)
-                else:
-                    dpg.configure_item(str_image_widget_tag, show=False)
+                else: dpg.configure_item(str_image_widget_tag, show=False)
             elif str_default_texture_tag and dpg.does_item_exist(str_default_texture_tag):
                 cfg = dpg.get_item_configuration(str_default_texture_tag)
                 dpg.add_image(texture_tag=str_default_texture_tag, tag=str_image_widget_tag, width=cfg.get('width',100), height=cfg.get('height',30), parent=str_parent_dpg_tag, show=True)
             return None, (str_image_widget_tag if dpg.does_item_exist(str_image_widget_tag) else None)
-    else:
+    else: # 부모 DPG 태그가 존재하지 않을 때
         _log_util(f"부모 DPG 태그 '{parent_dpg_tag}'가 존재하지 않음.", "ERROR")
         if new_dpg_texture_id_str and dpg.does_item_exist(new_dpg_texture_id_str):
-            try:
-                dpg.delete_item(new_dpg_texture_id_str)
-            except Exception as e_del_tex2:
-                _log_util(f"부모 부재로 텍스처 삭제 중 예외: {e_del_tex2}", "ERROR")
+            try: dpg.delete_item(new_dpg_texture_id_str)
+            except Exception as e_del_tex2: _log_util(f"부모 부재로 텍스처 삭제 중 예외: {e_del_tex2}", "ERROR")
         return None, None
-    
+
+# ... (utils.py의 나머지 함수들은 기존과 동일하게 유지) ...
 def _get_numeric_cols(df: pd.DataFrame) -> List[str]:
     if df is None: return []
     return df.select_dtypes(include=np.number).columns.tolist()
@@ -374,10 +342,7 @@ def create_dpg_heatmap_plot(parent: str, matrix: pd.DataFrame, title: str, h: in
     if matrix is None or matrix.empty: dpg.add_text(f"{title}: No data.", parent=parent); return
     r, c = matrix.shape
     if r == 0 or c == 0: dpg.add_text(f"{title}: Empty data (0 rows/cols).", parent=parent); return
-
-    # 수정: matrix.values.flatten.astype(float) -> matrix.values.flatten().astype(float)
     data_np = np.nan_to_num(matrix.values.flatten().astype(float), nan=0.0, posinf=1.0, neginf=-1.0)
-
     data_flat = data_np.tolist()
     if len(data_flat) != r * c: dpg.add_text(f"{title}: Data size mismatch.", parent=parent, color=(255,0,0)); return
     col_lbls, row_lbls = [str(x) for x in matrix.columns], [str(x) for x in matrix.index]
@@ -387,7 +352,7 @@ def create_dpg_heatmap_plot(parent: str, matrix: pd.DataFrame, title: str, h: in
     if row_lbls and r > 0: dpg.set_axis_ticks(y_tag, tuple(zip(row_lbls, [i + 0.5 for i in range(r)])))
     s_min, s_max = -1.0, 1.0; actual_min, actual_max = data_np.min(), data_np.max()
     if actual_min == actual_max: s_min, s_max = actual_min - 0.5 if actual_min != 0 else -0.5, actual_max + 0.5 if actual_max != 0 else 0.5
-    elif cmap in [dpg.mvPlotColormap_RdBu, dpg.mvPlotColormap_Spectral, dpg.mvPlotColormap_PiYG, dpg.mvPlotColormap_BrBG]: # RdBu 중복 제거
+    elif cmap in [dpg.mvPlotColormap_RdBu, dpg.mvPlotColormap_Spectral, dpg.mvPlotColormap_PiYG, dpg.mvPlotColormap_BrBG]:
         abs_val = max(abs(actual_min), abs(actual_max))
         s_min, s_max = -abs_val if abs_val != 0 else -0.5, abs_val if abs_val != 0 else 0.5
     else: s_min, s_max = actual_min, actual_max
@@ -427,7 +392,7 @@ def show_dpg_alert_modal(title: str, message: str,
             with dpg.group(horizontal=True):
                 btn_w = 100; default_item_spacing_x = 8.0
                 spacer_w = (modal_w - btn_w - (default_item_spacing_x * 2)) / 2
-                dpg.add_spacer(width=max(0, spacer_w))
+                dpg.add_spacer(width=max(0, int(spacer_w)))
                 dpg.add_button(label="OK", width=btn_w, user_data=modal_tag,
                                callback=lambda s, a, u: dpg.configure_item(u, show=False))
     dpg.set_value(text_tag, message)
@@ -450,7 +415,7 @@ def show_dpg_progress_modal(title: str, message: str,
                        width=modal_width, height=modal_height):
             dpg.add_text(message, tag=text_tag)
     dpg.configure_item(modal_tag, show=True, label=title)
-    dpg.set_value(text_tag, message); dpg.split_frame()
+    dpg.set_value(text_tag, message); dpg.split_frame() # Consider if split_frame is always needed here
     return True
 
 def hide_dpg_progress_modal(modal_tag: str = UTL_PROGRESS_MODAL_TAG):

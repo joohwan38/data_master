@@ -355,24 +355,41 @@ def _on_uni_row_selectable_clicked(sender, app_data_is_selected: bool, user_data
 
 def _generate_uni_combined_plot_texture(column_name: str):
     global _uni_active_plot_texture_id
-    # ... (기존 로직과 동일, _log_message -> _log_uni)
-    # _s5_plot_to_dpg_texture 대신 _shared_utils_uni['plot_to_dpg_texture_func'] 사용
-    # _current_df_for_this_step 대신 _shared_utils_uni['get_current_df_func']() 사용
     
+    # --- 1. 필요한 콜백 및 유틸리티 함수 가져오기 ---
+    if not _shared_utils_uni or 'main_app_callbacks' not in _shared_utils_uni or \
+       'util_funcs_common' not in _shared_utils_uni:
+        _log_uni(f"Plot error for '{column_name}': Shared utilities or main_app_callbacks not fully initialized.")
+        _clear_uni_visualization_plot()
+        return
+
+    main_callbacks = _shared_utils_uni['main_app_callbacks']
+    util_funcs = _shared_utils_uni['util_funcs_common']
+    
+    create_widget_func = util_funcs.get('create_analyzable_image_widget')
+    if not callable(create_widget_func):
+        _log_uni(f"Plot error for '{column_name}': create_analyzable_image_widget function not found in util_funcs.")
+        _clear_uni_visualization_plot()
+        return
+
+    # --- 2. 데이터 준비 (기존 로직과 거의 동일) ---
     current_df = _shared_utils_uni['get_current_df_func']()
-    plot_texture_func = _shared_utils_uni['plot_to_dpg_texture_func']
-    default_texture_tag = _shared_utils_uni['default_uni_plot_texture_tag']
+    default_texture_tag_from_shared = _shared_utils_uni.get('default_uni_plot_texture_tag') # 기본 텍스처 태그
 
     if _df_with_uni_detected_outliers is None or column_name not in _df_with_uni_detected_outliers.columns or \
        current_df is None or column_name not in current_df.columns:
-        _clear_uni_visualization_plot(); _log_uni(f"Plot error: Data for '{column_name}' not ready."); return
+        _clear_uni_visualization_plot()
+        _log_uni(f"Plot error: Data for '{column_name}' not ready for univariate plot.")
+        return
 
     original_series = current_df[column_name].dropna()
     outlier_flag_col = f"{column_name}_is_outlier"
     if original_series.empty or not pd.api.types.is_numeric_dtype(original_series.dtype) or \
-       outlier_flag_col not in _df_with_uni_detected_outliers.columns: # _df_with_uni_detected_outliers 사용
-        _clear_uni_visualization_plot(); _log_uni(f"Plot error: Invalid data or flags for '{column_name}'."); return
-
+       outlier_flag_col not in _df_with_uni_detected_outliers.columns:
+        _clear_uni_visualization_plot()
+        _log_uni(f"Plot error: Invalid data or flags for univariate plot of '{column_name}'.")
+        return
+    
     fig_width, fig_height = 15.6, 5.85 
     fig, axes = plt.subplots(1, 2, figsize=(fig_width, fig_height))
     plt.subplots_adjust(wspace=0.3) # 서브플롯 간 간격
@@ -424,29 +441,42 @@ def _generate_uni_combined_plot_texture(column_name: str):
     fig.suptitle(f"Univariate Outlier Visualization for {column_name}", fontsize=12, y=0.99 if fig_height > 5 else 1.02) # y 조정으로 제목 위치 확보
     plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # 전체 레이아웃 조정으로 suptitle 공간 확보
 
-    texture_tag, tex_w, tex_h = plot_texture_func(fig) # 부모의 함수 사용
-    plt.close(fig) # matplotlib figure 객체 닫기
+    uni_plot_shared_callbacks = {
+        'cache_image_data_func': main_callbacks.get('cache_image_data_func'),
+        'ask_for_ollama_confirmation': main_callbacks.get('ask_for_ollama_confirmation')
+        # 'initiate_ollama_analysis'는 더 이상 create_analyzable_image_widget에서 직접 필요하지 않습니다.
+        # 'ask_for_ollama_confirmation'을 통해 main_app에서 처리합니다.
+    }
 
-    if _uni_active_plot_texture_id and _uni_active_plot_texture_id != default_texture_tag and dpg.does_item_exist(_uni_active_plot_texture_id):
-        try: dpg.delete_item(_uni_active_plot_texture_id)
-        except Exception as e: _log_uni(f"Error deleting old uni plot texture: {e}")
+    # DPG 이미지 위젯이 실제로 위치할 부모 DPG 아이템의 태그
+    # (create_univariate_ui 함수에서 TAG_OT_VISUALIZATION_GROUP_UNI로 생성됨)
+    image_parent_dpg_tag = TAG_OT_VISUALIZATION_GROUP_UNI
     
-    if texture_tag and tex_w > 0 and tex_h > 0:
-        _uni_active_plot_texture_id = texture_tag
-        if dpg.does_item_exist(TAG_OT_VISUALIZATION_PLOT_IMAGE_UNI):
-            # 이미지 부모의 너비를 가져와서 이미지 크기 동적 조절 (개선된 부분)
-            img_parent_width = dpg.get_item_width(TAG_OT_VISUALIZATION_GROUP_UNI) # 그룹의 너비
-            display_width = tex_w
-            if img_parent_width and img_parent_width > 20 : # 유효한 부모 너비가 있을 경우
-                 display_width = min(tex_w, img_parent_width - 20) # 여유 공간 20px 제외
-            
-            display_height = int(tex_h * (display_width / tex_w)) if tex_w > 0 else tex_h
-            
-            dpg.configure_item(TAG_OT_VISUALIZATION_PLOT_IMAGE_UNI, texture_tag=_uni_active_plot_texture_id, 
-                               width=int(display_width), height=int(display_height), show=True)
+    # DPG 이미지 위젯 자체의 태그
+    # (create_univariate_ui 함수에서 TAG_OT_VISUALIZATION_PLOT_IMAGE_UNI로 생성됨)
+    image_widget_dpg_tag = TAG_OT_VISUALIZATION_PLOT_IMAGE_UNI
+    
+    image_title_for_ollama = f"단변량 이상치 분석: {column_name}"
+
+    # 이전에 사용되던 텍스처 ID (있다면 전달하여 이전 텍스처 삭제 유도)
+    existing_texture_to_replace = _uni_active_plot_texture_id
+
+    new_texture_id, DPG_image_widget_tag_returned = create_widget_func(
+        parent_dpg_tag=image_parent_dpg_tag,
+        fig=fig, # 위에서 생성한 matplotlib figure 객체
+        image_widget_tag=image_widget_dpg_tag,
+        image_title=image_title_for_ollama,
+        shared_callbacks=uni_plot_shared_callbacks, # 구성한 콜백 전달
+        default_texture_tag=default_texture_tag_from_shared, # 기본 텍스처
+        existing_dpg_texture_id=existing_texture_to_replace # 이전 텍스처 ID
+    )
+
+    if new_texture_id:
+        _uni_active_plot_texture_id = new_texture_id # 새로 생성된 텍스처 ID로 업데이트
+        _log_uni(f"Univariate plot for '{column_name}' updated/created with analyzable widget. New texture: {new_texture_id}")
     else:
-        _clear_uni_visualization_plot() # 실패 시 기본 이미지로
-        _log_uni(f"Failed to generate or display univariate plot for '{column_name}'.")
+        _log_uni(f"Failed to create/update analyzable univariate plot for '{column_name}'. Clearing plot.")
+        _clear_uni_visualization_plot() # 실패 시 기본 이미지로 설정
 
 
 def _clear_uni_visualization_plot():

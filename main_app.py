@@ -5,7 +5,7 @@ import dearpygui.dearpygui as dpg
 import pandas as pd
 import os
 import utils
-from typing import Optional, Dict, List, Any, Callable # List, Any 추가
+from typing import Optional, Dict, List, Any, Callable
 import step_01_data_loading
 import step_02a_sva
 import step_02b_mva
@@ -18,7 +18,7 @@ import json
 import ollama_integration
 from io import BytesIO
 import platform
-import threading # ollama_integration의 스레드 작업과 관련하여 필요할 수 있음
+import threading
 
 STEP_03_SAVE_LOAD_ENABLED = True
 
@@ -38,8 +38,11 @@ class AppState:
         self.step_group_tags = {}
         self.module_ui_updaters = {}
         self.image_data_cache: Dict[str, BytesIO] = {}
-        self.callback_queue: List[List[Any]] = [] # ★ 콜백 큐 추가
+        self.callback_queue: List[List[Any]] = []
 
+        # Ollama 분석 관련 상태 추가
+        self.is_ollama_analysis_in_progress: bool = False
+        self.ollama_confirm_user_data: Optional[Dict] = None # 이미지 제목, 텍스처 태그 임시 저장
 
 app_state = AppState()
 
@@ -52,7 +55,9 @@ TARGET_VARIABLE_TYPE_RADIO_TAG = "main_target_variable_type_radio"
 TARGET_VARIABLE_TYPE_LABEL_TAG = "main_target_variable_type_label"
 TARGET_VARIABLE_COMBO_TAG = "main_target_variable_combo"
 MAIN_FILE_PATH_DISPLAY_TAG = "main_file_path_display_text"
-POPUP_TAG = "ollama_analysis_popup_v2"
+
+# 기존 POPUP_TAG 대신 새로운 태그 사용 또는 구분 필요
+# POPUP_TAG = "ollama_analysis_popup_v2" # 이 태그는 ollama_integration.py의 레거시 팝업용이므로 유지하거나 삭제. 여기서는 새 창 사용.
 
 ANALYSIS_STEPS = [
     "1. Data Loading & Overview",
@@ -64,7 +69,16 @@ ANALYSIS_STEPS = [
 
 _MODAL_ID_SIMPLE_MESSAGE = "main_simple_modal_message_id"
 
-# --- Ollama 연동 콜백 함수들 ---
+# --- Ollama 분석 확인 팝업 및 결과창 태그 ---
+OLLAMA_CONFIRMATION_POPUP_TAG = "ollama_confirmation_popup"
+OLLAMA_RESULT_WINDOW_TAG = "ollama_result_window"
+OLLAMA_RESULT_WINDOW_TITLE_TEXT_TAG = "ollama_result_window_title_text"
+OLLAMA_RESULT_WINDOW_CONTENT_TEXT_TAG = "ollama_result_window_content_text"
+OLLAMA_RESULT_WINDOW_STATUS_TEXT_TAG = "ollama_result_window_status_text"
+OLLAMA_RESULT_WINDOW_LOADING_SPINNER_TAG = "ollama_result_window_loading_spinner"
+
+
+# --- Ollama 연동 콜백 함수들 (main_app 관점) ---
 def get_cached_image_bytes_for_ollama(texture_tag: str) -> Optional[BytesIO]:
     return app_state.image_data_cache.get(texture_tag)
 
@@ -74,6 +88,127 @@ def cache_image_data_for_ollama(texture_tag: str, image_bytes_io: BytesIO):
 
 def add_job_to_main_app_queue(job: List[Any]):
     app_state.callback_queue.append(job)
+
+def _ollama_analysis_confirmed_callback(sender, app_data, user_data):
+    """Ollama 분석 확인 팝업에서 '예'를 클릭했을 때 호출되는 함수"""
+    dpg.configure_item(OLLAMA_CONFIRMATION_POPUP_TAG, show=False)
+    if app_state.ollama_confirm_user_data:
+        if app_state.is_ollama_analysis_in_progress:
+            _show_simple_modal_message("알림", "이미 다른 이미지 분석 작업이 진행 중입니다.")
+            return
+
+        # main_app_callbacks를 통해 ollama_integration 모듈의 함수를 호출
+        # 이 때, 분석 시작을 알리고, 결과창을 띄우는 로직도 함께 실행
+        if 'initiate_ollama_analysis_with_window' in main_app_callbacks:
+             main_app_callbacks['initiate_ollama_analysis_with_window'](app_state.ollama_confirm_user_data)
+        else:
+            _show_simple_modal_message("오류", "Ollama 분석 시작 함수를 찾을 수 없습니다.")
+        app_state.ollama_confirm_user_data = None # 사용 후 초기화
+    else:
+        _show_simple_modal_message("오류", "Ollama 분석을 위한 사용자 데이터가 없습니다.")
+
+def _ollama_analysis_cancelled_callback(sender, app_data, user_data):
+    """Ollama 분석 확인 팝업에서 '아니오'를 클릭했을 때 호출되는 함수"""
+    dpg.configure_item(OLLAMA_CONFIRMATION_POPUP_TAG, show=False)
+    app_state.ollama_confirm_user_data = None # 사용하지 않았으므로 초기화
+
+def _show_ollama_confirmation_popup(user_data_for_analysis: Dict):
+    """Ollama 분석 진행 여부를 묻는 팝업창을 표시합니다."""
+    if app_state.is_ollama_analysis_in_progress:
+        _show_simple_modal_message("알림", "이미 다른 이미지 분석 작업이 진행 중입니다.\n완료 후 다시 시도해주세요.")
+        return
+
+    app_state.ollama_confirm_user_data = user_data_for_analysis # 분석 시작 시 사용할 데이터 저장
+    image_title = user_data_for_analysis.get("title", "해당 이미지")
+
+    if dpg.does_item_exist(OLLAMA_CONFIRMATION_POPUP_TAG):
+        dpg.configure_item(OLLAMA_CONFIRMATION_POPUP_TAG, label=f"'{image_title}' 분석 요청")
+        if dpg.does_item_exist(OLLAMA_CONFIRMATION_POPUP_TAG + "_message"):
+            dpg.set_value(OLLAMA_CONFIRMATION_POPUP_TAG + "_message", f"'{image_title}'에 대해 AI 분석을 시작하시겠습니까?\n(Ollama {ollama_integration.OLLAMA_MODEL_NAME} 모델 사용)")
+        dpg.configure_item(OLLAMA_CONFIRMATION_POPUP_TAG, show=True)
+    else:
+        vp_w, vp_h = dpg.get_viewport_width(), dpg.get_viewport_height()
+        popup_width, popup_height = 450, 180 # 팝업 크기 조정
+        with dpg.window(label=f"'{image_title}' 분석 요청", modal=True, show=True, tag=OLLAMA_CONFIRMATION_POPUP_TAG,
+                        no_close=True, width=popup_width, height=popup_height, no_saved_settings=True,
+                        pos=[(vp_w - popup_width) // 2, (vp_h - popup_height) // 2]):
+            dpg.add_text(f"'{image_title}'에 대해 AI 분석을 시작하시겠습니까?\n(Ollama {ollama_integration.OLLAMA_MODEL_NAME} 모델 사용)", tag=OLLAMA_CONFIRMATION_POPUP_TAG + "_message", wrap=popup_width - 20)
+            dpg.add_spacer(height=15)
+            with dpg.group(horizontal=True):
+                btn_width = 100
+                spacer_w = (popup_width - (btn_width * 2) - (dpg.get_item_configuration(dpg.last_item())["item_spacing"][0] * 3) - 30) / 2 # 여백 고려
+                if spacer_w < 0 : spacer_w = 0
+                dpg.add_spacer(width=int(spacer_w))
+                dpg.add_button(label="예", width=btn_width, callback=_ollama_analysis_confirmed_callback)
+                dpg.add_spacer(width=10)
+                dpg.add_button(label="아니오", width=btn_width, callback=_ollama_analysis_cancelled_callback)
+
+def create_ollama_result_window():
+    """Ollama 분석 결과를 표시할 별도의 윈도우 (초기에는 숨김)"""
+    if not dpg.does_item_exist(OLLAMA_RESULT_WINDOW_TAG):
+        with dpg.window(label="Ollama 이미지 분석 결과", show=False, tag=OLLAMA_RESULT_WINDOW_TAG,
+                        width=500, height=350, autosize=False, no_collapse=True,
+                        no_saved_settings=True, pos=[100, 100],
+                        on_close=lambda: dpg.configure_item(OLLAMA_RESULT_WINDOW_TAG, show=False)): # 닫기 버튼 누르면 숨김
+            dpg.add_text("제목: ", tag=OLLAMA_RESULT_WINDOW_TITLE_TEXT_TAG)
+            dpg.add_separator()
+            with dpg.group(horizontal=True):
+                dpg.add_loading_indicator(tag=OLLAMA_RESULT_WINDOW_LOADING_SPINNER_TAG, show=False, style=0, radius=3.5, color=(50,150,255,255))
+                dpg.add_spacer(width=5)
+                dpg.add_text("상태: 대기 중", tag=OLLAMA_RESULT_WINDOW_STATUS_TEXT_TAG, color=(200,200,100))
+            dpg.add_input_text(tag=OLLAMA_RESULT_WINDOW_CONTENT_TEXT_TAG, multiline=True, readonly=True, width=-1, height=-1, default_value="분석 결과를 기다리는 중...")
+            # 윈도우 닫기 버튼은 윈도우 자체 기능 사용 (on_close)
+
+def show_and_update_ollama_result_window(title: str, initial_status: str = "요청 준비 중...", is_loading: bool = True):
+    """Ollama 결과 창을 보이게 하고 초기 메시지 및 상태 설정"""
+    if not dpg.does_item_exist(OLLAMA_RESULT_WINDOW_TAG):
+        create_ollama_result_window() # 없으면 생성
+
+    dpg.configure_item(OLLAMA_RESULT_WINDOW_TAG, label=f"Ollama 분석: {title[:30]}{'...' if len(title)>30 else ''}", show=True)
+    if dpg.does_item_exist(OLLAMA_RESULT_WINDOW_TITLE_TEXT_TAG):
+        dpg.set_value(OLLAMA_RESULT_WINDOW_TITLE_TEXT_TAG, f"분석 대상: {title}")
+    if dpg.does_item_exist(OLLAMA_RESULT_WINDOW_STATUS_TEXT_TAG):
+        dpg.set_value(OLLAMA_RESULT_WINDOW_STATUS_TEXT_TAG, f"상태: {initial_status}")
+    if dpg.does_item_exist(OLLAMA_RESULT_WINDOW_LOADING_SPINNER_TAG):
+        dpg.configure_item(OLLAMA_RESULT_WINDOW_LOADING_SPINNER_TAG, show=is_loading)
+    if dpg.does_item_exist(OLLAMA_RESULT_WINDOW_CONTENT_TEXT_TAG):
+        dpg.set_value(OLLAMA_RESULT_WINDOW_CONTENT_TEXT_TAG, "분석을 시작합니다..." if is_loading else "오류 또는 정보 없음")
+
+def update_ollama_result_window_content_from_job(sender, app_data, user_data: Dict[str, Any]):
+    """ollama_integration에서 보낸 작업으로 결과 창 업데이트 (메인 스레드에서 실행)"""
+    title = user_data.get("title", "분석 결과") # 이 title은 이미지의 원본 제목
+    content = user_data.get("content", "내용 없음")
+    is_loading = user_data.get("loading", False)
+    status_message = user_data.get("status_message", "완료" if not is_loading else "처리 중...")
+    error_occurred = user_data.get("error", False)
+
+    if not dpg.is_dearpygui_running(): return
+    if not dpg.does_item_exist(OLLAMA_RESULT_WINDOW_TAG): return # 창이 없으면 아무것도 안 함
+
+    # 창이 숨겨져 있다면 보이도록 설정 (예: 오류 발생 시에도 결과창을 띄워 알림)
+    if not dpg.is_item_shown(OLLAMA_RESULT_WINDOW_TAG):
+        dpg.configure_item(OLLAMA_RESULT_WINDOW_TAG, show=True)
+
+    dpg.configure_item(OLLAMA_RESULT_WINDOW_TAG, label=f"Ollama 분석: {title[:30]}{'...' if len(title)>30 else ''}")
+    if dpg.does_item_exist(OLLAMA_RESULT_WINDOW_TITLE_TEXT_TAG):
+         dpg.set_value(OLLAMA_RESULT_WINDOW_TITLE_TEXT_TAG, f"분석 대상: {title}")
+    if dpg.does_item_exist(OLLAMA_RESULT_WINDOW_CONTENT_TEXT_TAG):
+        formatted_content = content.replace("\\n", "\n")
+        dpg.set_value(OLLAMA_RESULT_WINDOW_CONTENT_TEXT_TAG, formatted_content)
+    if dpg.does_item_exist(OLLAMA_RESULT_WINDOW_LOADING_SPINNER_TAG):
+        dpg.configure_item(OLLAMA_RESULT_WINDOW_LOADING_SPINNER_TAG, show=is_loading)
+    if dpg.does_item_exist(OLLAMA_RESULT_WINDOW_STATUS_TEXT_TAG):
+        final_status_message = f"상태: {status_message}"
+        if error_occurred: final_status_message += " (오류 발생)"
+        dpg.set_value(OLLAMA_RESULT_WINDOW_STATUS_TEXT_TAG, final_status_message)
+
+    # 분석이 완료되었거나 오류가 발생했고, 로딩 중이 아니라면 상태 플래그 해제
+    if not is_loading:
+        set_ollama_analysis_status(False) # 여기서 호출하거나, ollama_integration에서 명시적으로 호출
+
+def set_ollama_analysis_status(status: bool):
+    app_state.is_ollama_analysis_in_progress = status
+    print(f"Ollama 분석 상태 변경: {'진행 중' if status else '종료됨'}")
 
 # --- (이전 이벤트 핸들러 관련 코드 삭제) ---
 
@@ -85,7 +220,7 @@ def _show_simple_modal_message(title: str, message: str, width: int = 450, heigh
                     width=width, height=height, pos=[modal_x, modal_y], no_saved_settings=True, autosize=False):
         dpg.add_text(message, wrap=width - 20); dpg.add_spacer(height=15)
         with dpg.group(horizontal=True):
-            item_spacing_x = 8.0 # 수정됨
+            item_spacing_x = 8.0
             button_width = 100; spacer_w = (width - button_width - (item_spacing_x * 2)) / 2
             if spacer_w < 0: spacer_w = 0
             dpg.add_spacer(width=int(spacer_w))
@@ -104,9 +239,8 @@ def setup_korean_font():
         try:
             with dpg.font_registry():
                 font_id = dpg.add_font(font_path, font_size, tag="korean_font_for_app")
-                # dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean, parent=font_id) # 2.0.0 에서는 parent 인자 없음
-                dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean, parent=font_id) # 2.0.0 에 맞게 수정
-                dpg.bind_font(font_id) # 태그 대신 ID 사용
+                dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean, parent=font_id)
+                dpg.bind_font(font_id)
             print(f"Korean font for comments/internal use bound: {font_path}")
         except Exception as e: print(f"Font error: {e}"); traceback.print_exc()
     else: print("Korean font not found. Using default.")
@@ -464,6 +598,14 @@ def reset_application_state(clear_df_completely=True):
     app_state.current_df = None; app_state.df_after_step1 = None; app_state.df_after_step3 = None
     app_state.df_after_step4 = None; app_state.df_after_step5 = None
     app_state.selected_target_variable = None; app_state.selected_target_variable_type = "Continuous"
+
+    # Ollama 상태 초기화 추가
+    app_state.is_ollama_analysis_in_progress = False
+    app_state.ollama_confirm_user_data = None
+    if dpg.is_dearpygui_running() and dpg.does_item_exist(OLLAMA_RESULT_WINDOW_TAG): # 결과 창이 존재하면 숨김
+        dpg.configure_item(OLLAMA_RESULT_WINDOW_TAG, show=False)
+
+
     if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
     if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
     if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
@@ -640,10 +782,8 @@ util_functions_for_modules = {
     'get_numeric_cols': utils._get_numeric_cols,
     'get_categorical_cols': utils._get_categorical_cols,
     'calculate_cramers_v': utils.calculate_cramers_v,
-    # utils.create_analyzable_image_widget 추가
     'create_analyzable_image_widget': utils.create_analyzable_image_widget,
-    'add_job_to_callback_queue': lambda job: app_state.callback_queue.append(job) # ★ ollama_integration에서 사용
-
+    'add_job_to_callback_queue': lambda job: app_state.callback_queue.append(job)
 }
 
 main_app_callbacks = {
@@ -654,7 +794,7 @@ main_app_callbacks = {
     'get_df_after_step4': lambda: app_state.df_after_step4,
     'get_df_after_step5': lambda: app_state.df_after_step5,
     'get_loaded_file_path': lambda: app_state.loaded_file_path,
-    'get_util_funcs': lambda: util_functions_for_modules, # 이제 create_analyzable_image_widget 포함
+    'get_util_funcs': lambda: util_functions_for_modules,
     'show_file_dialog': lambda: dpg.show_item("file_dialog_id"),
     'register_step_group_tag': lambda name, tag: app_state.step_group_tags.update({name: tag}),
     'register_module_updater': lambda name, func: app_state.module_ui_updaters.update({name: func}),
@@ -669,15 +809,24 @@ main_app_callbacks = {
     'step3_processing_complete': step3_processing_complete,
     'step4_missing_value_processing_complete': step4_missing_value_processing_complete,
     'step5_outlier_treatment_complete': step5_outlier_treatment_complete,
-    'initiate_ollama_analysis': ollama_integration.request_image_analysis,
+
+    # Ollama 관련 콜백 변경 및 추가
+    'ask_for_ollama_confirmation': _show_ollama_confirmation_popup, # utils.py에서 사용
+    'initiate_ollama_analysis_with_window': ollama_integration.request_image_analysis, # 확인 후 호출될 함수
     'get_cached_image_data_func': get_cached_image_bytes_for_ollama,
     'cache_image_data_func': cache_image_data_for_ollama,
-    'get_main_callback_queue': lambda: app_state.callback_queue # ★ ollama_integration에 큐 전달용
+    'get_main_callback_queue': lambda: app_state.callback_queue,
+    'is_ollama_analysis_in_progress': lambda: app_state.is_ollama_analysis_in_progress,
+    'set_ollama_analysis_status': set_ollama_analysis_status,
+    'show_ollama_result_window_and_set_initial': show_and_update_ollama_result_window,
+    'update_ollama_result_window_job': update_ollama_result_window_content_from_job
 }
+
+
 
 # --- Dear PyGUI Setup ---
 dpg.create_context()
-dpg.configure_app(manual_callback_management=True)  # ★ 중요: 수동 콜백 관리 활성화
+dpg.configure_app(manual_callback_management=True)
 
 with dpg.file_dialog(directory_selector=False, show=False, callback=file_load_callback, id="file_dialog_id", width=700, height=400, modal=True):
     dpg.add_file_extension(".parquet")
@@ -685,6 +834,7 @@ with dpg.file_dialog(directory_selector=False, show=False, callback=file_load_ca
     dpg.add_file_extension(".*")
 
 setup_korean_font()
+create_ollama_result_window() # Ollama 결과창 미리 생성 (숨김 상태)
 
 with dpg.window(label="Data Analysis Platform", tag="main_window"):
     with dpg.group(horizontal=True):
@@ -739,42 +889,41 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
                 else: app_state.active_step_name = first_step
 
 dpg.create_viewport(title='Data Analysis Platform', width=1600, height=1000)
-dpg.set_exit_callback(save_state_on_exit) # 종료 시 상태 저장 콜백
+dpg.set_exit_callback(save_state_on_exit)
 dpg.setup_dearpygui()
 
-# --- Ollama Integration 초기화 (수정된 최종 위치) ---
+# --- Ollama Integration 초기화 ---
 ollama_integration.initialize_ollama_integration(
-    get_image_func=get_cached_image_bytes_for_ollama,
-    add_job_func=add_job_to_main_app_queue  # ★ 수정: 콜백 큐 추가 함수 전달
+    get_image_func=main_app_callbacks['get_cached_image_data_func'],
+    add_job_func=main_app_callbacks['get_main_callback_queue'], # 메인 큐 전달
+    # 새로운 콜백 함수들 전달
+    is_analysis_in_progress_func=main_app_callbacks['is_ollama_analysis_in_progress'],
+    set_analysis_status_func=main_app_callbacks['set_ollama_analysis_status'],
+    show_result_window_func=main_app_callbacks['show_ollama_result_window_and_set_initial'],
+    update_result_window_job_func_name='update_ollama_result_window_job' # 문자열로 전달 (ollama_integration에서 main_app_callbacks 통해 가져옴)
 )
 
 initial_load_on_startup()
 
 dpg.show_viewport()
-if dpg.does_item_exist("main_window"): # 메인 윈도우 존재 확인
+if dpg.does_item_exist("main_window"):
     dpg.set_primary_window("main_window", True)
+
 while dpg.is_dearpygui_running():
-    # UI에서 발생한 콜백과 다른 스레드에서 추가한 콜백을 모두 가져와 합침
-    # app_state.callback_queue는 다른 스레드에서 작업 추가용
-    # dpg.get_callback_queue()는 DPG 내부 UI 이벤트 등으로 발생한 콜백
-    jobs_from_dpg = dpg.get_callback_queue() # DPG 내부 큐에서 가져오기
+    jobs_from_dpg = dpg.get_callback_queue()
+    if jobs_from_dpg is None: jobs_from_dpg = []
     
-    if jobs_from_dpg is None:
-        jobs_from_dpg = []
-    # 스레드 안전성을 위해 app_state.callback_queue 접근 시 락 고려 가능 (지금은 단순화)
     all_jobs_to_run = []
-    if app_state.callback_queue: # app_state.callback_queue에 내용이 있을 때만 처리
+    if app_state.callback_queue:
         all_jobs_to_run.extend(app_state.callback_queue)
         app_state.callback_queue.clear()
     
-    if jobs_from_dpg: # jobs_from_dpg에 내용이 있을 때만 처리
+    if jobs_from_dpg:
         all_jobs_to_run.extend(jobs_from_dpg)
-        # dpg.get_callback_queue()는 호출 시 내부 큐를 비우므로, 여기서 clear 불필요
 
     if all_jobs_to_run:
         dpg.run_callbacks(all_jobs_to_run)
-        # dpg.run_callbacks가 전달된 리스트를 수정하지 않는다고 가정하고 clear
-        all_jobs_to_run.clear() 
+        all_jobs_to_run.clear()
 
     dpg.render_dearpygui_frame()
 

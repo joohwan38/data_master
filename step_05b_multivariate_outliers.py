@@ -332,9 +332,19 @@ def _generate_mva_umap_pca_plots(data_for_reduction: np.ndarray, original_indice
         return
 
     # Ollama 연동 및 이미지 캐싱에 필요한 콜백 가져오기
-    shared_image_callbacks = _get_shared_callbacks_for_image_util() # 이 함수는 이미 정의되어 있음
-    if not shared_image_callbacks.get('cache_image_data_func') or \
-       not shared_image_callbacks.get('initiate_ollama_analysis'):
+    mva_shared_image_callbacks = {
+    'cache_image_data_func': _shared_utils_mva['main_app_callbacks'].get('cache_image_data_func'),
+    'ask_for_ollama_confirmation': _shared_utils_mva['main_app_callbacks'].get('ask_for_ollama_confirmation')
+    # 주석 처리된 부분에 대한 설명:
+    # 'initiate_ollama_analysis'는 이제 'ask_for_ollama_confirmation' 콜백 내부에서
+    # 사용자가 "예"를 선택했을 때 main_app.py를 통해 간접적으로 호출됩니다.
+    # (정확히는 main_app.py의 _ollama_analysis_confirmed_callback -> initiate_ollama_analysis_with_window)
+    # 따라서 utils.py의 create_analyzable_image_widget 함수는 더 이상
+    # 'initiate_ollama_analysis' 콜백을 직접 받아서 사용할 필요가 없습니다.
+    # 클릭 시 'ask_for_ollama_confirmation'만 호출하면 되기 때문입니다.
+}
+    if not mva_shared_image_callbacks.get('cache_image_data_func') or \
+       not mva_shared_image_callbacks.get('initiate_ollama_analysis'):
         _log_mva("UMAP/PCA 생성 실패: 필수 이미지 유틸리티 콜백 누락.")
         return
 
