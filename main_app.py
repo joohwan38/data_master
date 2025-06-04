@@ -79,31 +79,69 @@ def _show_simple_modal_message(title: str, message: str, width: int = 450, heigh
             dpg.add_spacer(width=int(spacer_w))
             dpg.add_button(label="OK", width=button_width, callback=lambda: dpg.configure_item(_MODAL_ID_SIMPLE_MESSAGE, show=False))
 
-def add_ai_log_message(message: str, chart_context: str = ""):
-    """AI 분석 로그 패널에 새로운 메시지를 추가합니다."""
+def add_ai_log_message(message: str, chart_context: str = "", mode: str = "new_log_entry"):
+    # 디버그 print문 모두 제거
     if not dpg.is_dearpygui_running():
         return
 
-    log_panel_tag = "ai_analysis_log_panel_text" # 아래 UI 생성 시 사용할 태그
-    if dpg.does_item_exist(log_panel_tag):
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_panel_tag = "ai_analysis_log_panel_text"
+    log_container_window_tag = "ai_analysis_log_panel"
+
+    if not dpg.does_item_exist(log_panel_tag):
+        return
+    if not dpg.does_item_exist(log_container_window_tag) or \
+       dpg.get_item_info(log_container_window_tag)['type'] != "mvAppItemType::mvChildWindow":
+        return
+
+    current_full_log = dpg.get_value(log_panel_tag)
+    default_placeholder_msg = "AI 분석 결과가 여기에 표시됩니다.\n"
+    
+    is_log_empty_or_default = (current_full_log == default_placeholder_msg or not current_full_log.strip())
+    if is_log_empty_or_default:
+        current_full_log = "" 
+        
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    updated_log = ""
+    
+    standard_separator = "\n\n" + "-"*30 + "\n"
+
+    if mode == "stream_start_entry" or mode == "new_log_entry":
         context_str = f"[{chart_context}] " if chart_context else ""
-        new_entry = f"[{timestamp}] {context_str}\n{message}\n{'-'*30}\n"
-
-        current_log = dpg.get_value(log_panel_tag)
-        # 새로운 메시지를 위로 추가 (최신 내용이 상단에 보이도록)
-        updated_log = new_entry + current_log
-
-        # 로그 길이 제한 (예: 최근 5000자) - 선택 사항
-        max_log_length = 5000
-        if len(updated_log) > max_log_length:
-            updated_log = updated_log[:max_log_length] + "\n... (로그 잘림) ..."
-
+        entry_header = f"[{timestamp}] {context_str}\n"
+        new_entry_content = entry_header + message
+        
+        if current_full_log:
+            updated_log = current_full_log + standard_separator + new_entry_content
+        else:
+            updated_log = new_entry_content
+        
         dpg.set_value(log_panel_tag, updated_log)
-        # 로그 패널의 스크롤을 맨 위로 이동 (새 메시지 확인 용이)
-        # dpg.set_y_scroll(dpg.get_item_parent(log_panel_tag), 0.0) # child_window의 y_scroll을 0으로
+        dpg.set_y_scroll(log_container_window_tag, dpg.get_y_scroll_max(log_container_window_tag))
 
-
+    elif mode == "stream_chunk_append":
+        if is_log_empty_or_default: 
+            add_ai_log_message(message, chart_context, mode="stream_start_entry")
+            return
+        
+        updated_log = current_full_log + message 
+        
+        dpg.set_value(log_panel_tag, updated_log)
+        dpg.set_y_scroll(log_container_window_tag, dpg.get_y_scroll_max(log_container_window_tag))
+    
+    # Log Truncation (remove from the TOP - oldest entries)
+    max_log_length = 30000
+    if len(updated_log) > max_log_length:
+        chars_to_remove = len(updated_log) - max_log_length
+        
+        cutoff_search_start_index = max(0, chars_to_remove - len("...(오래된 로그 일부 잘림)...\n"))
+        cutoff_point = updated_log.find(standard_separator, cutoff_search_start_index)
+        
+        if cutoff_point != -1 and cutoff_point > 0 :
+            updated_log = "...(오래된 로그 일부 잘림)..." + updated_log[cutoff_point + len(standard_separator):]
+        else: 
+            updated_log = "...(오래된 로그 일부 잘림)...\n" + updated_log[-max_log_length:]
+            
+        dpg.set_value(log_panel_tag, updated_log)
 
 def setup_korean_font():
     """시스템에 맞는 한글 폰트를 설정합니다. UI는 영어로 유지되므로, 주석 등 내부용입니다."""
@@ -998,10 +1036,7 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
             dpg.add_separator()
             # 로그를 표시할 읽기 전용 여러 줄 입력 텍스트
             dpg.add_text("AI 분석 결과가 여기에 표시됩니다.\n", tag="ai_analysis_log_panel_text", wrap=ai_log_panel_width)
-            # dpg.add_input_text(tag="ai_analysis_log_panel_text", multiline=True, readonly=True,
-            #                    default_value="AI 분석 결과가 여기에 표시됩니다.\n",
-            #                    width=-1, height=-1, no_horizontal_scroll=True)
-
+            
 dpg.create_viewport(title='Data Analysis Platform', width=1700, height=1200) 
 dpg.set_exit_callback(save_state_on_exit) 
 dpg.setup_dearpygui()
