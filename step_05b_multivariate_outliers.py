@@ -664,11 +664,10 @@ def _generate_mva_boxplots_for_comparison():
         _log_mva(f"Parent container {parent_cw} for boxplots does not exist.")
         return
         
-    # 부모 너비 가져오기 수정
     parent_w = dpg.get_item_width(parent_cw)
-    if parent_w is None or parent_w <= 0: # dpg.get_item_width는 아이템이 없거나 아직 렌더링되지 않아 너비를 알 수 없으면 None 또는 0을 반환할 수 있음
+    if parent_w is None or parent_w <= 0: 
         _log_mva(f"Warning: Could not get valid width for {parent_cw}. Using fallback width 700.")
-        parent_w = 700 # Fallback 너비
+        parent_w = 700 
     
     plot_grp_w = (parent_w - (10 * (cols_per_row +1))) // cols_per_row 
     plot_grp_w = max(250, plot_grp_w) 
@@ -714,13 +713,8 @@ def _generate_mva_boxplots_for_comparison():
                                 disp_h = int(h_b * (disp_w/w_b)) if w_b > 0 else h_b
                                 dpg.add_image(t_b, width=disp_w, height=disp_h, parent=plot_cell_grp)
                                 _mva_boxplot_image_tags.append(t_b) 
-                                
-                                if b_b: 
-                                    btn_tag = f"MVA_Box_AI_{var.replace(' ','_')}_{dpg.generate_uuid()}"
-                                    act_b = functools.partial(utils.confirm_and_run_ai_analysis, b_b, f"MVA_Box_{var}", btn_tag, main_cb)
-                                    dpg.add_button(label=f"💡 Analyze '{var}'", tag=btn_tag, parent=plot_cell_grp, width=-1, height=30, callback=act_b) 
-                                else:
-                                    dpg.add_text(f"AI analysis N/A for '{var}' (no image data).", parent=plot_cell_grp, color=[150,150,150])
+                                dpg.add_spacer(height=5, parent=plot_cell_grp) # Add spacer after image
+                                # AI 분석 버튼 관련 코드 제거됨
                             else: 
                                 if dpg.does_item_exist(plot_cell_grp):
                                      dpg.add_text(f"Error generating plot for '{var}'.",parent=plot_cell_grp, color=[255,0,0])
