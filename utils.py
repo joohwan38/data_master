@@ -142,7 +142,7 @@ def generic_ai_analysis_streaming_handler(
 
     except Exception as e_analysis:
         error_message = f"AI 분석 중 예외 발생 ({chart_name}): {str(e_analysis)}"
-        print(f"[Error] {error_message}\n{traceback.format_exc()}")
+        print(f"[Error] {error_message}\n{traceback.format_exc()}") #
         if 'add_ai_log' in main_callbacks:
             main_callbacks['add_ai_log'](error_message, chart_name, mode="new_log_entry")
     finally:
@@ -165,12 +165,12 @@ def confirm_and_run_ai_analysis(
                 chart_name,
                 ai_button_tag,
                 main_callbacks
-            )
+            ) #
             util_funcs['show_confirmation_modal'](
                 title="AI Analysis Confirmation",
                 message=f"'{chart_name}'에 대한 AI 분석을 진행하시겠습니까?\n(응답은 스트리밍됩니다)",
                 yes_callback=yes_action
-            )
+            ) #
         else:
             print(f"Warning: Confirmation modal utility not found. Running AI analysis for '{chart_name}' directly.")
             generic_ai_analysis_streaming_handler(image_bytes, chart_name, ai_button_tag, main_callbacks)
@@ -221,21 +221,21 @@ def calculate_feature_target_relevance(
                 continue
             aligned_target = target_series_clean.loc[common_index]
             aligned_feature = feature_series_clean.loc[common_index]
-            if target_var_type == "Categorical" and is_feature_numeric:
-                target_categories_local = aligned_target.unique()
-                if len(target_categories_local) >= 2:
+            if target_var_type == "Categorical" and is_feature_numeric: #
+                target_categories_local = aligned_target.unique() #
+                if len(target_categories_local) >= 2: #
                     grouped_feature_data_for_anova = [
                         aligned_feature[aligned_target == cat]
                         for cat in target_categories_local
-                    ]
-                    valid_groups_anova = [g for g in grouped_feature_data_for_anova if len(g) >= 2]
-                    if len(valid_groups_anova) >= 2:
-                        f_val, p_val = stats.f_oneway(*valid_groups_anova)
-                        score = abs(f_val) if pd.notna(f_val) and np.isfinite(f_val) else 0.0
-            elif target_var_type == "Continuous" and is_feature_numeric:
-                if pd.api.types.is_numeric_dtype(aligned_target.dtype):
-                    corr_val = aligned_feature.corr(aligned_target)
-                    score = abs(corr_val) if pd.notna(corr_val) and np.isfinite(corr_val) else 0.0
+                    ] #
+                    valid_groups_anova = [g for g in grouped_feature_data_for_anova if len(g) >= 2] #
+                    if len(valid_groups_anova) >= 2: #
+                        f_val, p_val = stats.f_oneway(*valid_groups_anova) #
+                        score = abs(f_val) if pd.notna(f_val) and np.isfinite(f_val) else 0.0 #
+            elif target_var_type == "Continuous" and is_feature_numeric: #
+                if pd.api.types.is_numeric_dtype(aligned_target.dtype): #
+                    corr_val = aligned_feature.corr(aligned_target) #
+                    score = abs(corr_val) if pd.notna(corr_val) and np.isfinite(corr_val) else 0.0 #
         except Exception as e_relevance:
             score = 0.0 
         if score > 1e-6:
@@ -243,52 +243,52 @@ def calculate_feature_target_relevance(
     scores.sort(key=lambda x: x[1], reverse=True)
     return scores
 
-def _get_numeric_cols(df: pd.DataFrame) -> List[str]:
-    if df is None: return []
-    return df.select_dtypes(include=np.number).columns.tolist()
+def _get_numeric_cols(df: pd.DataFrame) -> List[str]: #
+    if df is None: return [] #
+    return df.select_dtypes(include=np.number).columns.tolist() #
 
-def _get_categorical_cols(df: pd.DataFrame, max_unique_for_cat: int = 35, main_callbacks: Optional[Dict] = None) -> List[str]:
-    if df is None: return []
-    categorical_cols = []
-    s1_analysis_types = {}
-    if main_callbacks and 'get_column_analysis_types' in main_callbacks:
-        s1_analysis_types = main_callbacks['get_column_analysis_types']()
-    for col in df.columns:
-        if col in s1_analysis_types:
-            s1_type = s1_analysis_types[col]
-            if any(cat_keyword in s1_type for cat_keyword in ["Categorical", "Text (", "Potentially Sensitive"]):
-                categorical_cols.append(col); continue
-            elif "Numeric (Binary)" in s1_type:
-                categorical_cols.append(col); continue
-            elif "Numeric" in s1_type: continue
-        dtype = df[col].dtype; nunique = df[col].nunique(dropna=False)
-        if pd.api.types.is_string_dtype(dtype) or pd.api.types.is_object_dtype(dtype):
-            if nunique <= max_unique_for_cat: categorical_cols.append(col)
-        elif pd.api.types.is_categorical_dtype(dtype): categorical_cols.append(col)
-        elif pd.api.types.is_bool_dtype(dtype): categorical_cols.append(col)
-        elif pd.api.types.is_numeric_dtype(dtype):
-            if nunique <= 5:
-                if not (col in s1_analysis_types and "Numeric" in s1_analysis_types[col]):
-                    categorical_cols.append(col)
-        if pd.api.types.is_datetime64_any_dtype(dtype) or pd.api.types.is_timedelta64_dtype(dtype):
-            if nunique <= max_unique_for_cat: categorical_cols.append(col)
-    return list(dict.fromkeys(categorical_cols))
+def _get_categorical_cols(df: pd.DataFrame, max_unique_for_cat: int = 35, main_callbacks: Optional[Dict] = None) -> List[str]: #
+    if df is None: return [] #
+    categorical_cols = [] #
+    s1_analysis_types = {} #
+    if main_callbacks and 'get_column_analysis_types' in main_callbacks: #
+        s1_analysis_types = main_callbacks['get_column_analysis_types']() #
+    for col in df.columns: #
+        if col in s1_analysis_types: #
+            s1_type = s1_analysis_types[col] #
+            if any(cat_keyword in s1_type for cat_keyword in ["Categorical", "Text (", "Potentially Sensitive"]): #
+                categorical_cols.append(col); continue #
+            elif "Numeric (Binary)" in s1_type: #
+                categorical_cols.append(col); continue #
+            elif "Numeric" in s1_type: continue #
+        dtype = df[col].dtype; nunique = df[col].nunique(dropna=False) #
+        if pd.api.types.is_string_dtype(dtype) or pd.api.types.is_object_dtype(dtype): #
+            if nunique <= max_unique_for_cat: categorical_cols.append(col) #
+        elif pd.api.types.is_categorical_dtype(dtype): categorical_cols.append(col) #
+        elif pd.api.types.is_bool_dtype(dtype): categorical_cols.append(col) #
+        elif pd.api.types.is_numeric_dtype(dtype): #
+            if nunique <= 5: #
+                if not (col in s1_analysis_types and "Numeric" in s1_analysis_types[col]): #
+                    categorical_cols.append(col) #
+        if pd.api.types.is_datetime64_any_dtype(dtype) or pd.api.types.is_timedelta64_dtype(dtype): #
+            if nunique <= max_unique_for_cat: categorical_cols.append(col) #
+    return list(dict.fromkeys(categorical_cols)) #
 
-def _guess_target_type(df: pd.DataFrame, column_name: str, step1_type_selections: dict = None) -> str:
-    if not column_name or df is None or column_name not in df.columns: return "Continuous"
-    series = df[column_name]
-    if step1_type_selections and column_name in step1_type_selections:
-        s1_type = step1_type_selections[column_name]
-        if any(k in s1_type for k in ["Text (", "Potentially Sensitive", "Categorical"]): return "Categorical"
-        if "Numeric" in s1_type:
-            return "Categorical" if "Binary" in s1_type or series.nunique(dropna=False) <= 5 else "Continuous"
-        if any(k in s1_type for k in ["Datetime", "Timedelta"]): return "Categorical"
-    if pd.api.types.is_categorical_dtype(series.dtype) or pd.api.types.is_bool_dtype(series.dtype): return "Categorical"
-    if pd.api.types.is_object_dtype(series.dtype) or pd.api.types.is_string_dtype(series.dtype): return "Categorical"
-    if pd.api.types.is_numeric_dtype(series.dtype):
-        return "Categorical" if series.nunique(dropna=False) <= 10 else "Continuous"
-    if pd.api.types.is_datetime64_any_dtype(series.dtype) or pd.api.types.is_timedelta64_dtype(series.dtype): return "Categorical"
-    return "Continuous"
+def _guess_target_type(df: pd.DataFrame, column_name: str, step1_type_selections: dict = None) -> str: #
+    if not column_name or df is None or column_name not in df.columns: return "Continuous" #
+    series = df[column_name] #
+    if step1_type_selections and column_name in step1_type_selections: #
+        s1_type = step1_type_selections[column_name] #
+        if any(k in s1_type for k in ["Text (", "Potentially Sensitive", "Categorical"]): return "Categorical" #
+        if "Numeric" in s1_type: #
+            return "Categorical" if "Binary" in s1_type or series.nunique(dropna=False) <= 5 else "Continuous" #
+        if any(k in s1_type for k in ["Datetime", "Timedelta"]): return "Categorical" #
+    if pd.api.types.is_categorical_dtype(series.dtype) or pd.api.types.is_bool_dtype(series.dtype): return "Categorical" #
+    if pd.api.types.is_object_dtype(series.dtype) or pd.api.types.is_string_dtype(series.dtype): return "Categorical" #
+    if pd.api.types.is_numeric_dtype(series.dtype): #
+        return "Categorical" if series.nunique(dropna=False) <= 10 else "Continuous" #
+    if pd.api.types.is_datetime64_any_dtype(series.dtype) or pd.api.types.is_timedelta64_dtype(series.dtype): return "Categorical" #
+    return "Continuous" #
 
 def get_safe_text_size(text: str, font=None, wrap_width: float = -1.0) -> tuple[int, int]:
     if not dpg.is_dearpygui_running(): return (len(str(text)) * 8, 16)
@@ -379,24 +379,24 @@ def create_dpg_heatmap_plot(parent: str, matrix: pd.DataFrame, title: str, h: in
     else: s_min, s_max = actual_min, actual_max
     add_dpg_heat_series(y_tag, data_flat, r, c, float(s_min), float(s_max))
 
-def calculate_cramers_v(x: pd.Series, y: pd.Series) -> float:
-    if x is None or y is None or x.empty or y.empty: return 0.0
+def calculate_cramers_v(x: pd.Series, y: pd.Series) -> float: #
+    if x is None or y is None or x.empty or y.empty: return 0.0 #
     try:
-        temp_df = pd.DataFrame({'x': x, 'y': y}).dropna()
-        if temp_df.empty or temp_df['x'].nunique() < 1 or temp_df['y'].nunique() < 1: return 0.0
-        confusion_matrix = pd.crosstab(temp_df['x'], temp_df['y'])
-        if confusion_matrix.empty or confusion_matrix.shape[0] < 2 or confusion_matrix.shape[1] < 2: return 0.0
-        chi2 = stats.chi2_contingency(confusion_matrix, correction=False)[0]
-        n = confusion_matrix.sum().sum()
-        if n == 0: return 0.0
-        phi2 = chi2 / n
-        r_rows, k_cols = confusion_matrix.shape
-        phi2corr = max(0, phi2 - ((k_cols - 1) * (r_rows - 1)) / (n - 1 if n > 1 else 1))
-        rcorr = r_rows - (((r_rows - 1)**2) / (n - 1 if n > 1 else 1) if r_rows > 1 else 0)
-        kcorr = k_cols - (((k_cols - 1)**2) / (n - 1 if n > 1 else 1) if k_cols > 1 else 0)
-        denominator = min((kcorr - 1 if kcorr > 1 else 0), (rcorr - 1 if rcorr > 1 else 0))
-        return np.sqrt(phi2corr / denominator) if denominator != 0 else 0.0
-    except Exception: return 0.0
+        temp_df = pd.DataFrame({'x': x, 'y': y}).dropna() #
+        if temp_df.empty or temp_df['x'].nunique() < 1 or temp_df['y'].nunique() < 1: return 0.0 #
+        confusion_matrix = pd.crosstab(temp_df['x'], temp_df['y']) #
+        if confusion_matrix.empty or confusion_matrix.shape[0] < 2 or confusion_matrix.shape[1] < 2: return 0.0 #
+        chi2 = stats.chi2_contingency(confusion_matrix, correction=False)[0] #
+        n = confusion_matrix.sum().sum() #
+        if n == 0: return 0.0 #
+        phi2 = chi2 / n #
+        r_rows, k_cols = confusion_matrix.shape #
+        phi2corr = max(0, phi2 - ((k_cols - 1) * (r_rows - 1)) / (n - 1 if n > 1 else 1)) #
+        rcorr = r_rows - (((r_rows - 1)**2) / (n - 1 if n > 1 else 1) if r_rows > 1 else 0) #
+        kcorr = k_cols - (((k_cols - 1)**2) / (n - 1 if n > 1 else 1) if k_cols > 1 else 0) #
+        denominator = min((kcorr - 1 if kcorr > 1 else 0), (rcorr - 1 if rcorr > 1 else 0)) #
+        return np.sqrt(phi2corr / denominator) if denominator != 0 else 0.0 #
+    except Exception: return 0.0 #
 
 UTL_REUSABLE_ALERT_MODAL_TAG = "utl_reusable_alert_modal"
 UTL_REUSABLE_ALERT_TEXT_TAG = "utl_reusable_alert_text"

@@ -36,40 +36,66 @@ _current_df_for_this_step_parent: Optional[pd.DataFrame] = None
 _step_05_shared_utilities: Optional[Dict[str, Any]] = None
 
 
-def _s5_plot_to_dpg_texture_parent(fig: 'plt.Figure', desired_dpi: int = 90) -> Tuple[Optional[str], int, int]:
-    """
-    Matplotlib figure를 DPG 텍스처로 변환합니다.
-    이 함수는 이제 step_05_outlier_treatment.py (부모 모듈)에 위치하며,
-    하위 모듈 (uni_module, mva_module)에 전달되어 사용됩니다.
-    """
+def _s5_plot_to_dpg_texture_parent(fig: 'plt.Figure', desired_dpi: int = 90) -> Tuple[Optional[str], int, int, Optional[bytes]]:
     img_data_buf = io.BytesIO()
+    img_bytes_data: Optional[bytes] = None
+    texture_tag: Optional[str] = None
+    img_width: int = 0
+    img_height: int = 0
+    fig_title_for_log = "Unnamed Figure" # 기본값
+    if hasattr(fig, 'axes') and fig.axes:
+        ax = fig.axes[0]
+        if hasattr(ax, 'get_title') and ax.get_title():
+            fig_title_for_log = ax.get_title()
+        elif hasattr(fig, 'get_label') and fig.get_label(): # Figure 자체의 레이블 (거의 사용 안함)
+             fig_title_for_log = fig.get_label()
+
     try:
-        # Matplotlib Figure는 함수 호출 시점에 plt 객체를 직접 참조하지 않도록 fig를 인자로 받음
         fig.savefig(img_data_buf, format="png", bbox_inches='tight', dpi=desired_dpi)
         img_data_buf.seek(0)
-        pil_image = Image.open(img_data_buf)
+        img_bytes_data = img_data_buf.getvalue()
+
+        pil_image = Image.open(io.BytesIO(img_bytes_data))
         if pil_image.mode != 'RGBA': pil_image = pil_image.convert('RGBA')
         img_width, img_height = pil_image.size
         if img_width == 0 or img_height == 0:
-            _log_message_parent(f"Error: Plot image has zero dimension ({img_width}x{img_height}). Cannot create texture.")
-            # plt.close(fig) # fig는 외부에서 관리
-            return None, 0, 0
+            _log_message_parent(f"Error: Plot image '{fig_title_for_log}' has zero dimension ({img_width}x{img_height}). Cannot create texture.")
+            if fig: plt.close(fig) # 실패 시 명시적 close
+            return None, 0, 0, None
+
         texture_data_np = np.array(pil_image).astype(np.float32) / 255.0
         texture_data_flat_list = texture_data_np.ravel().tolist()
         
-        # 텍스처 레지스트리는 create_ui에서 한 번만 생성되도록 보장
-        if not dpg.does_item_exist("texture_registry"):
-             # 이 경우는 create_ui에서 처리되므로, 실제로는 거의 발생하지 않음
-            dpg.add_texture_registry(tag="texture_registry", show=False)
+        if not dpg.is_dearpygui_running():
+             # Dear PyGui 컨텍스트가 없다면, 여기서 plt.close를 해주는 것이 좋을 수 있음
+             # 다만 이 함수는 DPG 환경에서 호출되는 것을 전제로 하므로, 이 경로는 예외적
+             if fig: plt.close(fig) 
+             return None, img_width, img_height, img_bytes_data
+
 
         texture_tag = dpg.generate_uuid()
+        # "texture_registry"는 main_app.py 에서 생성 ("primary_texture_registry")
+        # 여기서는 해당 레지스트리를 사용해야 함. create_ui에서 _step_05_shared_utilities 를 통해 전달받거나,
+        # 전역 상수로 정의된 레지스트리 태그를 사용.
+        # 현재 코드는 "texture_registry"를 하드코딩. main_app의 TEXTURE_REGISTRY_TAG = "primary_texture_registry" 와 불일치.
+        # 일관성을 위해 TEXTURE_REGISTRY_TAG를 사용하도록 수정 필요 (main_app에서 전달받는 것이 가장 좋음)
+        # 임시로 "texture_registry" 사용 유지하나, 검토 필요.
+        if not dpg.does_item_exist("texture_registry"): # 방어 코드
+             _log_message_parent("Warning: Global 'texture_registry' not found by step_05. Creating a local one.")
+             dpg.add_texture_registry(tag="texture_registry", show=False)
+
         dpg.add_static_texture(width=img_width, height=img_height, default_value=texture_data_flat_list, tag=texture_tag, parent="texture_registry")
-        return texture_tag, img_width, img_height
+        # _log_message_parent(f"Successfully converted plot '{fig_title_for_log}' to DPG texture '{texture_tag}'.") # 성공 로그 추가 가능
+        return texture_tag, img_width, img_height, img_bytes_data
     except Exception as e:
-        _log_message_parent(f"Error converting plot to DPG texture: {e}\n{traceback.format_exc()}")
-        return None, 0, 0
-    # finally: # fig는 외부에서 관리하므로 여기서 close 하지 않음
-        # plt.close(fig)
+        _log_message_parent(f"Error converting plot '{fig_title_for_log}' to DPG texture: {e}\n{traceback.format_exc()}")
+        return None, 0, 0, None
+    finally:
+        # fig는 외부에서 관리하는 것이 일반적이나, 여기서 에러 발생 시 또는 DPG 컨텍스트 없을 때 close 고려.
+        # 성공적으로 DPG 텍스처 생성 후에는 fig를 close 해주는 것이 메모리 관리에 좋음.
+        # 이 함수를 호출하는 쪽에서 fig를 close 하도록 책임을 명확히 하는 것이 좋음.
+        # (예: _generate_mva_boxplots_for_comparison 의 finally 블록에서 fig.close())
+        pass # 명시적으로 여기서 close하지 않음. 호출자가 관리.
 
 def _log_message_parent(message: str):
     """

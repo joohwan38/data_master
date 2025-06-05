@@ -5,9 +5,10 @@ import base64
 import json
 import traceback
 import re
+import subprocess
 
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "gemma3:latest"
+OLLAMA_MODEL = "gemma3:12b"
 
 def analyze_image_with_llava(image_bytes: bytes, chart_name: str = "Untitled Chart"):
     print(f"[Ollama Analyzer] Received image for '{chart_name}' (size: {len(image_bytes)} bytes). Starting analysis (streaming)...")
@@ -15,14 +16,15 @@ def analyze_image_with_llava(image_bytes: bytes, chart_name: str = "Untitled Cha
     try:
         encoded_image = base64.b64encode(image_bytes).decode('utf-8')
         prompt_text = (
-            f"당신은 전문적인 데이터분석가 입니다. '{chart_name}'차트를 데이터분석 하고 핵심분석결과와 활용방안에 대해서 짧고 강력한 인사이트를 주세요."
+            f"당신은 전문적인 데이터분석가 입니다. '{chart_name}'차트를 데이터분석 하고 전반적흐름/핵심분석결과/활용방안에 대해서 강력한 인사이트를 주세요. 대답은 간결성을 유지하세요."
         )
 
         payload = {
             "model": OLLAMA_MODEL,
             "prompt": prompt_text,
             "images": [encoded_image],
-            "stream": True
+            "stream": True,
+            "temperature" : 0.1
         }
 
         print(f"[Ollama Analyzer] Sending request to Ollama for '{chart_name}' (streaming)...")
@@ -48,11 +50,14 @@ def analyze_image_with_llava(image_bytes: bytes, chart_name: str = "Untitled Cha
                         if processed_chunk_text.startswith('#') and not processed_chunk_text.startswith('\n'):
                             processed_chunk_text = '\n' + processed_chunk_text
 
-                        processed_chunk_text = re.sub(r'(\*\*[^*]+\*\*):(?!\n)', r'\1:\n', processed_chunk_text)                       
-                        processed_chunk_text = processed_chunk_text.replace('. ', '.\n')
-                        processed_chunk_text = re.sub(r'\.(?=[A-Za-z가-힣])(?!\s*\n)', r'.\n', processed_chunk_text)
-                        processed_chunk_text = re.sub(r'\. (?!\n)', r'.\n', processed_chunk_text)
-                        processed_chunk_text = re.sub(r'\.(?=[가-힣A-Za-z])(?!\n)', r'.\n', processed_chunk_text)
+                        # 굵은 글씨 뒤 콜론(:) 처리
+                        processed_chunk_text = re.sub(r'(\*\*[^*]+\*\*):(?!\n)', r'\1:\n', processed_chunk_text)
+
+                        # 숫자 목록 제외, 문장 끝 마침표에 줄바꿈 추가
+                        processed_chunk_text = re.sub(r'(?<!\d)\.(?!\s*\d+\.\s)(?!\n)', r'.\n', processed_chunk_text)
+
+                        # 연속된 줄바꿈 정리
+                        processed_chunk_text = re.sub(r'\n\s*\n', r'\n', processed_chunk_text)
 
                         yield processed_chunk_text
                         any_chunk_yielded = True

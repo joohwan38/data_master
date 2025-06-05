@@ -3,6 +3,8 @@ import dearpygui.dearpygui as dpg
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, Optional, List, Tuple
+import utils 
+import functools 
 
 try:
     from pyod.models.hbos import HBOS as PyOD_HBOS
@@ -35,6 +37,8 @@ TAG_OT_RECOMMEND_TREATMENTS_BUTTON_UNI = "step5_ot_recommend_treatments_button_u
 TAG_OT_RESET_TREATMENTS_BUTTON_UNI = "step5_ot_reset_treatments_button_uni"
 TAG_OT_APPLY_TREATMENT_BUTTON_UNI = "step5_ot_apply_treatment_button_uni"
 TAG_OT_TREATMENT_TABLE_UNI = "step5_ot_treatment_table_uni"
+TAG_OT_BOX_PLOT_IMAGE_UNI = "step5_ot_box_plot_image_uni"
+TAG_OT_SCATTER_PLOT_IMAGE_UNI = "step5_ot_scatter_plot_image_uni"
 
 # --- Constants for Filtering (Univariate) ---
 MIN_UNIQUE_VALUES_FOR_OUTLIER_DETECTION_UNI = 10
@@ -64,6 +68,8 @@ _uni_hbos_n_bins: int = DEFAULT_UNI_HBOS_N_BINS
 _uni_ecod_contamination: float = DEFAULT_UNI_ECOD_CONTAMINATION
 _uni_treatment_selections: Dict[str, Dict[str, Any]] = {}
 _uni_active_plot_texture_id: Optional[str] = None # 부모의 TAG_OT_DEFAULT_PLOT_TEXTURE_UNI로 초기화될 것
+_uni_active_box_plot_texture_id: Optional[str] = None
+_uni_active_scatter_plot_texture_id: Optional[str] = None
 _uni_currently_visualized_column: Optional[str] = None
 _uni_all_selectable_tags_in_table: List[str] = []
 
@@ -300,10 +306,10 @@ def _run_uni_outlier_detection_logic(sender, app_data, user_data):
     
     if first_col_with_outliers_for_auto_vis:
         _uni_currently_visualized_column = first_col_with_outliers_for_auto_vis
-        _generate_uni_combined_plot_texture(first_col_with_outliers_for_auto_vis)
+        _generate_univariate_plots_with_ai_buttons(first_col_with_outliers_for_auto_vis)
     elif _uni_columns_eligible_for_detection: # 이상치가 없더라도 첫번째 eligible 컬럼 시각화 시도
         _uni_currently_visualized_column = _uni_columns_eligible_for_detection[0]
-        _generate_uni_combined_plot_texture(_uni_columns_eligible_for_detection[0])
+        _generate_univariate_plots_with_ai_buttons(_uni_columns_eligible_for_detection[0])
     else: 
         _uni_currently_visualized_column = None; _clear_uni_visualization_plot()
     _log_uni("--- Univariate Outlier Detection Finished ---")
@@ -342,134 +348,214 @@ def _populate_uni_detection_results_table():
 
 def _on_uni_row_selectable_clicked(sender, app_data_is_selected: bool, user_data_col_name: str):
     global _uni_currently_visualized_column
-    if app_data_is_selected: # selectable이 True일 때만 (선택될 때)
-        # 다른 selectable들의 선택 상태 해제
+    if app_data_is_selected:
         for tag_iter in _uni_all_selectable_tags_in_table:
             if tag_iter != sender and dpg.does_item_exist(tag_iter) and dpg.get_value(tag_iter):
                 dpg.set_value(tag_iter, False)
         
         _uni_currently_visualized_column = user_data_col_name
-        _generate_uni_combined_plot_texture(user_data_col_name)
+        # 변경된 함수 호출
+        _generate_univariate_plots_with_ai_buttons(user_data_col_name)
         _log_uni(f"Visualizing univariate outlier plots for: {user_data_col_name}")
 
-
-def _generate_uni_combined_plot_texture(column_name: str):
-    global _uni_active_plot_texture_id
-    # ... (기존 로직과 동일, _log_message -> _log_uni)
-    # _s5_plot_to_dpg_texture 대신 _shared_utils_uni['plot_to_dpg_texture_func'] 사용
-    # _current_df_for_this_step 대신 _shared_utils_uni['get_current_df_func']() 사용
+def _generate_univariate_plots_with_ai_buttons(column_name: str):
+    global _uni_active_box_plot_texture_id, _uni_active_scatter_plot_texture_id
     
-    current_df = _shared_utils_uni['get_current_df_func']()
-    plot_texture_func = _shared_utils_uni['plot_to_dpg_texture_func']
-    default_texture_tag = _shared_utils_uni['default_uni_plot_texture_tag']
+    if not _shared_utils_uni:
+        _log_uni("Error: _shared_utils_uni is not initialized.")
+        return
+
+    current_df = _shared_utils_uni.get('get_current_df_func', lambda: None)()
+    plot_texture_func = _shared_utils_uni.get('plot_to_dpg_texture_func')
+    default_texture_tag = _shared_utils_uni.get('default_uni_plot_texture_tag') # 기본 플레이스홀더용
+    main_callbacks_for_ai = _shared_utils_uni.get('main_app_callbacks')
+
+    if not all([current_df is not None, plot_texture_func, default_texture_tag, main_callbacks_for_ai]):
+        _log_uni("Error: Missing shared utilities or data for plot generation in _generate_univariate_plots_with_ai_buttons.")
+        _clear_uni_visualization_plot()
+        return
 
     if _df_with_uni_detected_outliers is None or column_name not in _df_with_uni_detected_outliers.columns or \
-       current_df is None or column_name not in current_df.columns:
+       column_name not in current_df.columns:
         _clear_uni_visualization_plot(); _log_uni(f"Plot error: Data for '{column_name}' not ready."); return
 
     original_series = current_df[column_name].dropna()
     outlier_flag_col = f"{column_name}_is_outlier"
     if original_series.empty or not pd.api.types.is_numeric_dtype(original_series.dtype) or \
-       outlier_flag_col not in _df_with_uni_detected_outliers.columns: # _df_with_uni_detected_outliers 사용
+       outlier_flag_col not in _df_with_uni_detected_outliers.columns:
         _clear_uni_visualization_plot(); _log_uni(f"Plot error: Invalid data or flags for '{column_name}'."); return
 
-    fig_width, fig_height = 15.6, 5.85 
-    fig, axes = plt.subplots(1, 2, figsize=(fig_width, fig_height))
-    plt.subplots_adjust(wspace=0.3) # 서브플롯 간 간격
-
-    # Box Plot
-    axes[0].boxplot(original_series, vert=True, patch_artist=True, 
-                    medianprops={'color':'#FF0000', 'linewidth': 1.5},
-                    flierprops={'marker':'o', 'markersize':4, 'markerfacecolor':'#FF7F50', 'alpha':0.6})
-    axes[0].set_xticks([]) 
-    axes[0].set_ylabel(column_name, fontsize=9)
-    axes[0].set_title(f"Box Plot: {column_name}", fontsize=10)
-    axes[0].tick_params(axis='y', labelsize=8)
-    axes[0].grid(True, linestyle='--', alpha=0.6)
-    # IQR Bounds for Box Plot (using current _uni_iqr_multiplier)
-    q1, q3 = original_series.quantile(0.25), original_series.quantile(0.75)
-    iqr_val = q3 - q1
-    lower_b, upper_b = q1 - _uni_iqr_multiplier * iqr_val, q3 + _uni_iqr_multiplier * iqr_val
-    axes[0].axhline(upper_b, color='orangered', linestyle='--', linewidth=1.2, label=f'Upper ({_uni_iqr_multiplier}*IQR): {upper_b:.2f}')
-    axes[0].axhline(lower_b, color='orangered', linestyle='--', linewidth=1.2, label=f'Lower ({_uni_iqr_multiplier}*IQR): {lower_b:.2f}')
-    axes[0].legend(fontsize=7, loc='upper right', framealpha=0.5)
+    # 시각화 그룹 내 이전 AI 버튼들 삭제 (새로운 플롯에 대한 버튼만 표시)
+    if dpg.does_item_exist(TAG_OT_VISUALIZATION_GROUP_UNI):
+        children_slots = dpg.get_item_children(TAG_OT_VISUALIZATION_GROUP_UNI, 1)
+        for child_tag_slot in children_slots:
+            # 이미지 위젯은 남기고 버튼과 스페이서만 삭제 시도
+            # 더 확실하게 하려면 버튼에 특정 패턴의 alias를 주고 그것으로 필터링
+            item_info = dpg.get_item_info(child_tag_slot)
+            if item_info['type'] == "mvAppItemType::mvButton" or item_info['type'] == "mvAppItemType::mvSpacer":
+                 if "uni_plot_ai_button_for_" in dpg.get_item_alias(child_tag_slot): # AI 버튼 식별
+                    try: dpg.delete_item(child_tag_slot)
+                    except Exception as e: _log_uni(f"Minor error deleting old item {child_tag_slot}: {e}")
 
 
-    # Scatter Plot (vs Index, with outliers highlighted)
-    # _df_with_uni_detected_outliers에서 해당 컬럼과 플래그 컬럼을 사용
-    scatter_df = pd.DataFrame({
-        'index': _df_with_uni_detected_outliers.index, # 원본 DF의 인덱스 사용
-        'value': _df_with_uni_detected_outliers[column_name], # 이상치 탐지 로직이 적용된 DF의 값
-        'is_outlier': _df_with_uni_detected_outliers[outlier_flag_col]
-    })
-    sns.scatterplot(data=scatter_df, x='index', y='value', hue='is_outlier', 
-                    style='is_outlier', palette={True: "red", False: "cornflowerblue"}, 
-                    markers={True: "X", False: "o"}, alpha=0.7, 
-                    size='is_outlier', sizes={True: 50, False: 20}, 
-                    ax=axes[1], legend='brief') # legend='auto' or 'brief'
-
-    median_val = original_series.median() # 원본 시리즈의 중앙값
-    axes[1].axhline(median_val, color='forestgreen', linestyle=':', linewidth=1.2, label=f'Median: {median_val:.2f}')
-    axes[1].set_title(f"Scatter Plot (vs. Index): {column_name}", fontsize=10)
-    axes[1].set_xlabel("Data Index", fontsize=9)
-    axes[1].set_ylabel(column_name, fontsize=9)
-    if scatter_df['is_outlier'].nunique() > 1 : # 두 종류 이상의 hue가 있을 때만 범례 표시
-        axes[1].legend(fontsize=8, loc='upper right', framealpha=0.5)
-    else: # 단일 종류면 범례 제거 (에러 방지)
-        if axes[1].get_legend() is not None: axes[1].legend().remove()
-
-    axes[1].tick_params(axis='both', which='major', labelsize=8)
-    axes[1].grid(True, linestyle='--', alpha=0.6)
-
-    fig.suptitle(f"Univariate Outlier Visualization for {column_name}", fontsize=12, y=0.99 if fig_height > 5 else 1.02) # y 조정으로 제목 위치 확보
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # 전체 레이아웃 조정으로 suptitle 공간 확보
-
-    texture_tag, tex_w, tex_h = plot_texture_func(fig) # 부모의 함수 사용
-    plt.close(fig) # matplotlib figure 객체 닫기
-
-    if _uni_active_plot_texture_id and _uni_active_plot_texture_id != default_texture_tag and dpg.does_item_exist(_uni_active_plot_texture_id):
-        try: dpg.delete_item(_uni_active_plot_texture_id)
-        except Exception as e: _log_uni(f"Error deleting old uni plot texture: {e}")
+    plot_figsize = (7, 4.8) # 각 개별 플롯의 크기
+    img_parent_width = dpg.get_item_width(TAG_OT_VISUALIZATION_GROUP_UNI) if dpg.does_item_exist(TAG_OT_VISUALIZATION_GROUP_UNI) else 700
     
-    if texture_tag and tex_w > 0 and tex_h > 0:
-        _uni_active_plot_texture_id = texture_tag
-        if dpg.does_item_exist(TAG_OT_VISUALIZATION_PLOT_IMAGE_UNI):
-            # 이미지 부모의 너비를 가져와서 이미지 크기 동적 조절 (개선된 부분)
-            img_parent_width = dpg.get_item_width(TAG_OT_VISUALIZATION_GROUP_UNI) # 그룹의 너비
-            display_width = tex_w
-            if img_parent_width and img_parent_width > 20 : # 유효한 부모 너비가 있을 경우
-                 display_width = min(tex_w, img_parent_width - 20) # 여유 공간 20px 제외
-            
-            display_height = int(tex_h * (display_width / tex_w)) if tex_w > 0 else tex_h
-            
-            dpg.configure_item(TAG_OT_VISUALIZATION_PLOT_IMAGE_UNI, texture_tag=_uni_active_plot_texture_id, 
-                               width=int(display_width), height=int(display_height), show=True)
-    else:
-        _clear_uni_visualization_plot() # 실패 시 기본 이미지로
-        _log_uni(f"Failed to generate or display univariate plot for '{column_name}'.")
+    # --- 1. Box Plot 생성 및 AI 버튼 ---
+    try:
+        fig_box, ax_box = plt.subplots(figsize=plot_figsize)
+        ax_box.boxplot(original_series, vert=True, patch_artist=True, 
+                        medianprops={'color':'#FF0000', 'linewidth': 1.5},
+                        flierprops={'marker':'o', 'markersize':4, 'markerfacecolor':'#FF7F50', 'alpha':0.6})
+        ax_box.set_xticks([]) 
+        ax_box.set_ylabel(column_name, fontsize=9)
+        ax_box.set_title(f"Box Plot: {column_name}", fontsize=10)
+        q1_box, q3_box = original_series.quantile(0.25), original_series.quantile(0.75)
+        iqr_val_box = q3_box - q1_box
+        lower_b_box, upper_b_box = q1_box - _uni_iqr_multiplier * iqr_val_box, q3_box + _uni_iqr_multiplier * iqr_val_box
+        ax_box.axhline(upper_b_box, color='orangered', linestyle='--', linewidth=1.2, label=f'Upper ({_uni_iqr_multiplier}*IQR): {upper_b_box:.2f}')
+        ax_box.axhline(lower_b_box, color='orangered', linestyle='--', linewidth=1.2, label=f'Lower ({_uni_iqr_multiplier}*IQR): {lower_b_box:.2f}')
+        ax_box.legend(fontsize=7, loc='upper right', framealpha=0.5)
+        ax_box.grid(True, linestyle='--', alpha=0.6)
+        plt.tight_layout()
+
+        plot_result_box = plot_texture_func(fig_box)
+        plt.close(fig_box)
+        
+        tex_tag_box, w_box, h_box, img_bytes_box = None, 0, 0, None
+        if plot_result_box and len(plot_result_box) == 4:
+            tex_tag_box, w_box, h_box, img_bytes_box = plot_result_box
+
+        if _uni_active_box_plot_texture_id and _uni_active_box_plot_texture_id != default_texture_tag and dpg.does_item_exist(_uni_active_box_plot_texture_id):
+            try: dpg.delete_item(_uni_active_box_plot_texture_id)
+            except Exception as e: _log_uni(f"Error deleting old box plot texture: {e}")
+        
+        if tex_tag_box and w_box > 0 and h_box > 0:
+            _uni_active_box_plot_texture_id = tex_tag_box
+            if dpg.does_item_exist(TAG_OT_BOX_PLOT_IMAGE_UNI):
+                display_w_box = min(w_box, img_parent_width - 20 if img_parent_width > 20 else w_box)
+                display_h_box = int(h_box * (display_w_box / w_box)) if w_box > 0 else h_box
+                dpg.configure_item(TAG_OT_BOX_PLOT_IMAGE_UNI, texture_tag=tex_tag_box, width=display_w_box, height=display_h_box, show=True)
+
+                if img_bytes_box:
+                    ai_button_tag_box = f"uni_plot_ai_button_for_BoxPlot_{''.join(filter(str.isalnum, column_name))}"
+                    chart_name_box = f"Univariate_Box_Plot_{column_name}"
+                    action_box = functools.partial(utils.confirm_and_run_ai_analysis, img_bytes_box, chart_name_box, ai_button_tag_box, main_callbacks_for_ai)
+                    with dpg.group(parent=TAG_OT_VISUALIZATION_GROUP_UNI, horizontal=True):
+                        btn_w = 200; sp_w = (display_w_box - btn_w) / 2 if display_w_box > btn_w else 0
+                        if sp_w > 0: dpg.add_spacer(width=int(sp_w))
+                        dpg.add_button(label=f"💡 Analyze Box Plot", tag=ai_button_tag_box, callback=lambda s,a,u: action_box(), width=btn_w, height=30)
+        else:
+            if dpg.does_item_exist(TAG_OT_BOX_PLOT_IMAGE_UNI):
+                 dpg.configure_item(TAG_OT_BOX_PLOT_IMAGE_UNI, texture_tag=default_texture_tag, width=100, height=30, show=True)
+            _log_uni(f"Failed to generate Box Plot for '{column_name}'.")
+        dpg.add_spacer(height=10, parent=TAG_OT_VISUALIZATION_GROUP_UNI)
+    except Exception as e_box_plot:
+        _log_uni(f"Error generating box plot for {column_name}: {e_box_plot}")
+        if dpg.does_item_exist(TAG_OT_BOX_PLOT_IMAGE_UNI):
+             dpg.configure_item(TAG_OT_BOX_PLOT_IMAGE_UNI, texture_tag=default_texture_tag, width=100, height=30, show=True)
 
 
-def _clear_uni_visualization_plot():
-    global _uni_active_plot_texture_id
-    if not dpg.is_dearpygui_running(): return
+    # --- 2. Scatter Plot 생성 및 AI 버튼 ---
+    try:
+        fig_scatter, ax_scatter = plt.subplots(figsize=plot_figsize)
+        scatter_df_data = pd.DataFrame({
+            'index': _df_with_uni_detected_outliers.index,
+            'value': _df_with_uni_detected_outliers[column_name],
+            'is_outlier': _df_with_uni_detected_outliers[outlier_flag_col]
+        })
+        sns.scatterplot(data=scatter_df_data, x='index', y='value', hue='is_outlier', 
+                        style='is_outlier', palette={True: "red", False: "cornflowerblue"}, 
+                        markers={True: "X", False: "o"}, alpha=0.7, 
+                        size='is_outlier', sizes={True: 50, False: 20}, 
+                        ax=ax_scatter, legend='brief')
+        median_val_scatter = original_series.median()
+        ax_scatter.axhline(median_val_scatter, color='forestgreen', linestyle=':', linewidth=1.2, label=f'Median: {median_val_scatter:.2f}')
+        ax_scatter.set_title(f"Scatter Plot (vs. Index): {column_name}", fontsize=10)
+        ax_scatter.set_xlabel("Data Index", fontsize=9); ax_scatter.set_ylabel(column_name, fontsize=9)
+        if scatter_df_data['is_outlier'].nunique() > 1 : ax_scatter.legend(fontsize=8, loc='upper right', framealpha=0.5)
+        else: 
+            if ax_scatter.get_legend() is not None: ax_scatter.legend().remove()
+        ax_scatter.tick_params(axis='both', which='major', labelsize=8)
+        ax_scatter.grid(True, linestyle='--', alpha=0.6)
+        plt.tight_layout()
+
+        plot_result_scatter = plot_texture_func(fig_scatter)
+        plt.close(fig_scatter)
+
+        tex_tag_scatter, w_scatter, h_scatter, img_bytes_scatter = None, 0, 0, None
+        if plot_result_scatter and len(plot_result_scatter) == 4:
+            tex_tag_scatter, w_scatter, h_scatter, img_bytes_scatter = plot_result_scatter
+
+        if _uni_active_scatter_plot_texture_id and _uni_active_scatter_plot_texture_id != default_texture_tag and dpg.does_item_exist(_uni_active_scatter_plot_texture_id):
+            try: dpg.delete_item(_uni_active_scatter_plot_texture_id)
+            except Exception as e: _log_uni(f"Error deleting old scatter plot texture: {e}")
+
+        if tex_tag_scatter and w_scatter > 0 and h_scatter > 0:
+            _uni_active_scatter_plot_texture_id = tex_tag_scatter
+            if dpg.does_item_exist(TAG_OT_SCATTER_PLOT_IMAGE_UNI):
+                display_w_scatter = min(w_scatter, img_parent_width - 20 if img_parent_width > 20 else w_scatter)
+                display_h_scatter = int(h_scatter * (display_w_scatter / w_scatter)) if w_scatter > 0 else h_scatter
+                dpg.configure_item(TAG_OT_SCATTER_PLOT_IMAGE_UNI, texture_tag=tex_tag_scatter, width=display_w_scatter, height=display_h_scatter, show=True)
+
+                if img_bytes_scatter:
+                    ai_button_tag_scatter = f"uni_plot_ai_button_for_ScatterPlot_{''.join(filter(str.isalnum, column_name))}"
+                    chart_name_scatter = f"Univariate_Scatter_Plot_{column_name}"
+                    action_scatter = functools.partial(utils.confirm_and_run_ai_analysis, img_bytes_scatter, chart_name_scatter, ai_button_tag_scatter, main_callbacks_for_ai)
+                    with dpg.group(parent=TAG_OT_VISUALIZATION_GROUP_UNI, horizontal=True): # 버튼을 가운데 정렬하기 위한 그룹
+                        btn_w_sc = 200; sp_w_sc = (display_w_scatter - btn_w_sc) / 2 if display_w_scatter > btn_w_sc else 0
+                        if sp_w_sc > 0: dpg.add_spacer(width=int(sp_w_sc))
+                        dpg.add_button(label=f"💡 Analyze Scatter Plot", tag=ai_button_tag_scatter, callback=lambda s,a,u: action_scatter(), width=btn_w_sc, height=30)
+        else:
+            if dpg.does_item_exist(TAG_OT_SCATTER_PLOT_IMAGE_UNI):
+                dpg.configure_item(TAG_OT_SCATTER_PLOT_IMAGE_UNI, texture_tag=default_texture_tag, width=100, height=30, show=True)
+            _log_uni(f"Failed to generate Scatter Plot for '{column_name}'.")
+        dpg.add_spacer(height=10, parent=TAG_OT_VISUALIZATION_GROUP_UNI)
+    except Exception as e_scatter_plot:
+        _log_uni(f"Error generating scatter plot for {column_name}: {e_scatter_plot}")
+        if dpg.does_item_exist(TAG_OT_SCATTER_PLOT_IMAGE_UNI):
+            dpg.configure_item(TAG_OT_SCATTER_PLOT_IMAGE_UNI, texture_tag=default_texture_tag, width=100, height=30, show=True)
+
+
+def _clear_uni_visualization_plot(): # 두 개의 이미지 플롯을 초기화하도록 수정
+    global _uni_active_box_plot_texture_id, _uni_active_scatter_plot_texture_id
+    if not dpg.is_dearpygui_running() or not _shared_utils_uni: return
     
-    default_texture_tag = _shared_utils_uni['default_uni_plot_texture_tag'] if _shared_utils_uni else None
+    default_texture_tag = _shared_utils_uni.get('default_uni_plot_texture_tag') # 범용 기본 텍스처
     if not default_texture_tag:
-        _log_uni("Error: Default uni plot texture tag not available for clearing plot.")
+        _log_uni("Error: Default uni plot texture tag not available for clearing plots.")
         return
 
-    if dpg.does_item_exist(TAG_OT_VISUALIZATION_PLOT_IMAGE_UNI) and dpg.does_item_exist(default_texture_tag):
-        # 기본 텍스처의 크기를 가져와서 설정
-        cfg = dpg.get_item_configuration(default_texture_tag)
-        w,h = (cfg.get('width',100), cfg.get('height',30)) if cfg else (100,30)
-        dpg.configure_item(TAG_OT_VISUALIZATION_PLOT_IMAGE_UNI, texture_tag=default_texture_tag, width=w, height=h, show=True)
-    
-    if _uni_active_plot_texture_id and _uni_active_plot_texture_id != default_texture_tag and dpg.does_item_exist(_uni_active_plot_texture_id):
-        try:
-            dpg.delete_item(_uni_active_plot_texture_id)
-        except Exception as e:
-            _log_uni(f"Error deleting active uni plot texture: {e}") # 디버깅 메시지
-    _uni_active_plot_texture_id = default_texture_tag
+    # Box Plot 이미지 초기화
+    if dpg.does_item_exist(TAG_OT_BOX_PLOT_IMAGE_UNI) and dpg.does_item_exist(default_texture_tag):
+        cfg = dpg.get_item_configuration(default_texture_tag); w,h = (cfg.get('width',100), cfg.get('height',30))
+        dpg.configure_item(TAG_OT_BOX_PLOT_IMAGE_UNI, texture_tag=default_texture_tag, width=w, height=h, show=True)
+    if _uni_active_box_plot_texture_id and _uni_active_box_plot_texture_id != default_texture_tag and dpg.does_item_exist(_uni_active_box_plot_texture_id):
+        try: dpg.delete_item(_uni_active_box_plot_texture_id)
+        except Exception as e: _log_uni(f"Error deleting active box plot texture: {e}")
+    _uni_active_box_plot_texture_id = default_texture_tag
+
+    # Scatter Plot 이미지 초기화
+    if dpg.does_item_exist(TAG_OT_SCATTER_PLOT_IMAGE_UNI) and dpg.does_item_exist(default_texture_tag):
+        cfg = dpg.get_item_configuration(default_texture_tag); w,h = (cfg.get('width',100), cfg.get('height',30))
+        dpg.configure_item(TAG_OT_SCATTER_PLOT_IMAGE_UNI, texture_tag=default_texture_tag, width=w, height=h, show=True)
+    if _uni_active_scatter_plot_texture_id and _uni_active_scatter_plot_texture_id != default_texture_tag and dpg.does_item_exist(_uni_active_scatter_plot_texture_id):
+        try: dpg.delete_item(_uni_active_scatter_plot_texture_id)
+        except Exception as e: _log_uni(f"Error deleting active scatter plot texture: {e}")
+    _uni_active_scatter_plot_texture_id = default_texture_tag
+
+    # AI 버튼들도 삭제 (TAG_OT_VISUALIZATION_GROUP_UNI 내 버튼들)
+    # 또는 _generate 함수에서 버튼 추가 전에 이전 버튼들을 삭제
+    if dpg.does_item_exist(TAG_OT_VISUALIZATION_GROUP_UNI):
+        # 이 그룹 내의 AI 버튼들을 식별하여 삭제 (더 구체적인 태그 규칙 필요)
+        # 예시: "uni_plot_ai_button_for_BoxPlot_{column_name}"
+        # 더 간단하게는 _generate 함수에서 버튼 추가 전에 해당 그룹의 버튼 자식들을 먼저 지우는 방법도 있음
+        children_slots = dpg.get_item_children(TAG_OT_VISUALIZATION_GROUP_UNI, 1)
+        for child_tag in children_slots:
+            alias = dpg.get_item_alias(child_tag)
+            if alias and "uni_plot_ai_button_for_" in alias:
+                try: dpg.delete_item(child_tag)
+                except: pass
 
 
 def _populate_uni_treatment_table():
@@ -709,31 +795,31 @@ def _apply_uni_outlier_treatment_logic(sender, app_data, user_data):
 
 # --- Main UI Creation and Update Functions for Univariate ---
 def create_univariate_ui(parent_tab_bar_tag: str, shared_utilities: dict):
-    global _shared_utils_uni, _uni_active_plot_texture_id
+    # ... (기존 _shared_utils_uni, _uni_active_plot_texture_id 설정 부분은 삭제 또는 수정 불필요)
+    # _uni_active_box_plot_texture_id 와 _uni_active_scatter_plot_texture_id 가 이제 사용됨
+    global _shared_utils_uni, _uni_active_box_plot_texture_id, _uni_active_scatter_plot_texture_id 
     _shared_utils_uni = shared_utilities
     
-    # PyOD 라이브러리 누락 시 사용자에게 알림
     if PyOD_HBOS is None or PyOD_ECOD is None:
         _log_uni("Warning: PyOD library (for HBOS/ECOD) not found. Some detection methods will be unavailable.")
-        # _show_simple_modal_uni("Library Missing", "PyOD library not found. HBOS and ECOD detection methods will be disabled.")
 
-
-    # 부모로부터 default texture tag를 가져와 _uni_active_plot_texture_id 초기화
-    _uni_active_plot_texture_id = _shared_utils_uni.get('default_uni_plot_texture_tag', None)
-
-
+    # 기본 텍스처 ID를 각 플롯 ID에 할당 (초기화 시)
+    default_tex_tag = _shared_utils_uni.get('default_uni_plot_texture_tag', None)
+    _uni_active_box_plot_texture_id = default_tex_tag
+    _uni_active_scatter_plot_texture_id = default_tex_tag
+    
     with dpg.tab(label="Univariate Outlier Detection", tag=TAG_OT_UNIVARIATE_TAB, parent=parent_tab_bar_tag):
+        # ... (상단 설정 UI 부분은 이전과 동일하게 유지) ...
         dpg.add_text("1. Configure & Run Univariate Outlier Detection", color=[255, 255, 0])
         with dpg.group(horizontal=True):
             dpg.add_text("Detection Method:")
-            # HBOS, ECOD 사용 가능 여부에 따라 항목 조절
             uni_methods = ["IQR"]
             if PyOD_HBOS: uni_methods.append("HBOS")
             if PyOD_ECOD: uni_methods.append("ECOD")
             dpg.add_radio_button(uni_methods, tag=TAG_OT_DETECT_METHOD_RADIO_UNI, default_value=_uni_selected_detection_method, horizontal=True, callback=_on_uni_detection_method_change)
         
         dpg.add_text("Detection Parameters (applied to eligible columns):")
-        with dpg.group(horizontal=True, tag=TAG_OT_IQR_MULTIPLIER_INPUT + "_group_parent_uni"): # Label과 Input을 그룹화
+        with dpg.group(horizontal=True, tag=TAG_OT_IQR_MULTIPLIER_INPUT + "_group_parent_uni"): 
             dpg.add_text("IQR Multiplier:", tag=TAG_OT_IQR_MULTIPLIER_INPUT + "_label")
             dpg.add_input_float(tag=TAG_OT_IQR_MULTIPLIER_INPUT, width=120, default_value=_uni_iqr_multiplier, step=0.1, callback=_on_uni_iqr_multiplier_change)
         
@@ -744,50 +830,70 @@ def create_univariate_ui(parent_tab_bar_tag: str, shared_utilities: dict):
         
         if PyOD_ECOD:
             with dpg.group(horizontal=True, tag=TAG_OT_ECOD_CONTAM_INPUT_UNI + "_group_parent_uni"):
-                dpg.add_text("ECOD Contamination (0.0-0.5):", tag=TAG_OT_ECOD_CONTAM_INPUT_UNI + "_label") # 범위 명시
+                dpg.add_text("ECOD Contamination (0.0-0.5):", tag=TAG_OT_ECOD_CONTAM_INPUT_UNI + "_label")
                 dpg.add_input_float(tag=TAG_OT_ECOD_CONTAM_INPUT_UNI, width=120, default_value=_uni_ecod_contamination, min_value=0.0001, max_value=0.5, min_clamped=True, max_clamped=True, step=0.01, format="%.4f", callback=_on_uni_ecod_contamination_change)
         
-        _update_uni_parameter_fields_visibility() # 초기 가시성 설정
+        _update_uni_parameter_fields_visibility()
 
         with dpg.group(horizontal=True):
-            dpg.add_button(label="Run Univariate Detection", tag=TAG_OT_DETECT_BUTTON_UNI, width=-1, height=30, callback=_run_uni_outlier_detection_logic)
-            dpg.add_button(label="Set Recommended Univariate Params", tag=TAG_OT_RECOMMEND_PARAMS_BUTTON_UNI, width=-1, height=30, callback=_set_uni_recommended_detection_parameters)
+            button_width = 230 
+            dpg.add_button(label="Run Univariate Detection", tag=TAG_OT_DETECT_BUTTON_UNI, 
+                           width=button_width, height=30, callback=_run_uni_outlier_detection_logic)
+            dpg.add_button(label="Set Recommended Univariate Params", tag=TAG_OT_RECOMMEND_PARAMS_BUTTON_UNI, 
+                           width=button_width, height=30, callback=_set_uni_recommended_detection_parameters)
         dpg.add_spacer(height=5)
         
         dpg.add_text("2. Univariate Detection Summary & Visualization (Click row in table to visualize)", color=[255, 255, 0])
         with dpg.table(tag=TAG_OT_DETECTION_RESULTS_TABLE_UNI, header_row=True, resizable=True, 
-                       policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=120, # 고정 높이
+                       policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=120, 
                        borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
+             # ... (테이블 컬럼 및 초기 메시지)
             dpg.add_table_column(label="Info", parent=TAG_OT_DETECTION_RESULTS_TABLE_UNI, width_stretch=True)
             with dpg.table_row(parent=TAG_OT_DETECTION_RESULTS_TABLE_UNI):
                 dpg.add_text("Run univariate detection.", parent=dpg.last_item())
         
-        with dpg.group(tag=TAG_OT_VISUALIZATION_GROUP_UNI, horizontal=False): # Plot 이미지 부모 그룹
-             # 초기 이미지 크기는 기본 텍스처 크기에 맞추거나, 적절한 기본값으로 설정
-            default_tex_tag = _shared_utils_uni.get('default_uni_plot_texture_tag')
-            init_w, init_h = 100, 30 # 기본 텍스처 크기 (부모에서 생성된 크기)
+        # 시각화 그룹: 두 개의 이미지 위젯과 AI 버튼들이 여기에 동적으로 추가됨
+        with dpg.group(tag=TAG_OT_VISUALIZATION_GROUP_UNI, horizontal=False): 
+            # Box Plot 이미지 위젯 초기화
+            init_w_box, init_h_box = 100, 30 
             if default_tex_tag and dpg.does_item_exist(default_tex_tag):
-                cfg = dpg.get_item_configuration(default_tex_tag)
-                init_w = cfg.get('width', init_w)
-                init_h = cfg.get('height', init_h)
+                cfg_box = dpg.get_item_configuration(default_tex_tag)
+                init_w_box, init_h_box = cfg_box.get('width', init_w_box), cfg_box.get('height', init_h_box)
+            dpg.add_image(texture_tag=default_tex_tag or "", 
+                          tag=TAG_OT_BOX_PLOT_IMAGE_UNI, show=True, 
+                          width=init_w_box, height=init_h_box)
+            dpg.add_spacer(height=5, parent=TAG_OT_VISUALIZATION_GROUP_UNI) # Box Plot 이미지와 버튼 사이 간격 (버튼은 동적 추가)
 
-            dpg.add_image(texture_tag=default_tex_tag or "", # 초기에는 기본 텍스처
-                          tag=TAG_OT_VISUALIZATION_PLOT_IMAGE_UNI, show=True, 
-                          width=init_w, height=init_h) # 크기 유동적으로 변경될 것
+            # Scatter Plot 이미지 위젯 초기화
+            init_w_scatter, init_h_scatter = 100, 30
+            if default_tex_tag and dpg.does_item_exist(default_tex_tag):
+                cfg_scatter = dpg.get_item_configuration(default_tex_tag)
+                init_w_scatter, init_h_scatter = cfg_scatter.get('width', init_w_scatter), cfg_scatter.get('height', init_h_scatter)
+            dpg.add_image(texture_tag=default_tex_tag or "", 
+                          tag=TAG_OT_SCATTER_PLOT_IMAGE_UNI, show=True, 
+                          width=init_w_scatter, height=init_h_scatter)
+            # Scatter Plot 이미지와 버튼 사이 간격은 버튼 추가 시 _generate 함수 내에서 처리
+
         dpg.add_spacer(height=5)
 
         dpg.add_text("3. Configure Univariate Outlier Treatment", color=[255, 255, 0])
+        # ... (Treatment Table 및 관련 버튼 UI는 기존과 동일) ...
         with dpg.table(tag=TAG_OT_TREATMENT_TABLE_UNI, header_row=True, resizable=True,
-                       policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=150, scrollX=True, # 높이 및 가로 스크롤
+                       policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=150, scrollX=True, 
                        borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
             dpg.add_table_column(label="Info", parent=TAG_OT_TREATMENT_TABLE_UNI, width_stretch=True)
             with dpg.table_row(parent=TAG_OT_TREATMENT_TABLE_UNI):
                 dpg.add_text("Run univariate detection to configure treatments.", parent=dpg.last_item())
         
         with dpg.group(horizontal=True):
-            dpg.add_button(label="Set Recommended Treatments", tag=TAG_OT_RECOMMEND_TREATMENTS_BUTTON_UNI, width=-1, height=30, callback=_set_uni_recommended_treatments_logic)
-            dpg.add_button(label="Reset Treatment Selections", tag=TAG_OT_RESET_TREATMENTS_BUTTON_UNI, width=-1, height=30, callback=_reset_uni_treatment_selections_to_default)
-            dpg.add_button(label="Apply Selected Treatments", tag=TAG_OT_APPLY_TREATMENT_BUTTON_UNI, width=-1, height=30, callback=_apply_uni_outlier_treatment_logic)
+            treatment_button_width = 190 
+            dpg.add_button(label="Set Recommended Treatments", tag=TAG_OT_RECOMMEND_TREATMENTS_BUTTON_UNI, 
+                           width=treatment_button_width, height=30, callback=_set_uni_recommended_treatments_logic)
+            dpg.add_button(label="Reset Treatment Selections", tag=TAG_OT_RESET_TREATMENTS_BUTTON_UNI, 
+                           width=treatment_button_width, height=30, callback=_reset_uni_treatment_selections_to_default)
+            dpg.add_button(label="Apply Selected Treatments", tag=TAG_OT_APPLY_TREATMENT_BUTTON_UNI, 
+                           width=treatment_button_width, height=30, callback=_apply_uni_outlier_treatment_logic)
+
 
 
 def update_univariate_ui(df_input: Optional[pd.DataFrame], shared_utilities: dict, is_new_data: bool):
