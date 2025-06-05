@@ -225,10 +225,25 @@ def _run_mva_outlier_detection_logic(sender, app_data, user_data):
             try:
                 _log_mva("Attempting to initialize SHAP TreeExplainer...")
                 _log_mva(f"MVA model detector type for SHAP: {type(_mva_model.detector_)}")
-                
-                # df_for_detection의 컬럼 타입을 문자열로 확실하게 변환 (TreeExplainer 호환성)
+
                 df_for_detection_shap = df_for_detection.copy() # 원본 df_for_detection은 유지
                 df_for_detection_shap.columns = df_for_detection_shap.columns.astype(str)
+                
+                # --- 추가된 부분: SHAP에 전달하기 전 데이터 타입을 float으로 명시적 변환 ---
+                _log_mva(f"Data types of df_for_detection_shap BEFORE explicit astype(float):\n{df_for_detection_shap.dtypes.to_string()}")
+                for col in df_for_detection_shap.columns:
+                    try:
+                        # 이전 단계에서 pd.to_numeric 및 NaN 처리가 완료되었다고 가정하고 float으로 변환 시도
+                        df_for_detection_shap[col] = df_for_detection_shap[col].astype(float)
+                    except ValueError as e_astype:
+                        # 만약 astype(float)에서 오류 발생 시, 해당 컬럼을 다시 한번 pd.to_numeric으로 변환 시도
+                        # 이는 이전 단계의 숫자 변환이 불완전했음을 의미할 수 있음
+                        _log_mva(f"Warning: Could not convert column '{col}' to float directly for SHAP. Error: {e_astype}. "
+                                 f"Original dtype in df_for_detection: {df_for_detection[col].dtype}. Trying pd.to_numeric with coerce and fillna(0).")
+                        # df_for_detection 단계에서 이미 NaN 행이 제거되었으므로, 여기서 coerce 후 NaN이 발생하면 안됨.
+                        # fillna(0)은 예비 조치이며, 데이터 특성에 따라 다른 값(예: 평균)이 더 적절할 수 있음.
+                        df_for_detection_shap[col] = pd.to_numeric(df_for_detection_shap[col], errors='coerce').fillna(0)
+                _log_mva(f"Data types of df_for_detection_shap AFTER explicit astype(float):\n{df_for_detection_shap.dtypes.to_string()}")
                 feature_names_for_shap = df_for_detection_shap.columns.tolist()
 
                 _log_mva(f"Data for SHAP explainer (df_for_detection_shap - first 3 rows, shape {df_for_detection_shap.shape}):\n{df_for_detection_shap.head(3).to_string()}")
@@ -366,27 +381,115 @@ def _clear_mva_instance_details():
     _clear_mva_shap_plot()
 
 def _plot_cleanup_and_set(image_widget_tag: str, active_texture_id_var_name: str, new_texture_tag: Optional[str], default_texture_key: str, w: int, h: int):
+    # w와 h는 matplotlib에서 생성된 원본 이미지의 너비와 높이지만,
+    # SHAP 이미지의 경우 이 값을 최종 크기 결정에 사용하지 않습니다.
     global _mva_active_umap_texture_id, _mva_active_pca_texture_id, _mva_active_shap_texture_id
     current_active_texture_id = globals().get(active_texture_id_var_name)
     default_tex = _shared_utils_mva.get(default_texture_key) if _shared_utils_mva else None
-    if current_active_texture_id and current_active_texture_id != default_tex and dpg.does_item_exist(current_active_texture_id):
-        try: dpg.delete_item(current_active_texture_id)
-        except Exception as e: _log_mva(f"Error deleting texture {current_active_texture_id}: {e}")
     
-    if new_texture_tag and w > 0 and h > 0:
+    _log_mva(f"_plot_cleanup_and_set for '{image_widget_tag}'. Matplotlib original w={w}, h={h}. New texture: {new_texture_tag is not None}")
+
+    # 이전 텍스처 삭제 로직 (동일)
+    if current_active_texture_id and current_active_texture_id != default_tex and dpg.does_item_exist(current_active_texture_id):
+        try:
+            dpg.delete_item(current_active_texture_id)
+        except Exception as e:
+            _log_mva(f"Error deleting texture '{current_active_texture_id}': {e}")
+
+    if new_texture_tag: # 새 텍스처가 유효할 때
         globals()[active_texture_id_var_name] = new_texture_tag
-        if dpg.does_item_exist(image_widget_tag):
-            parent_group = dpg.get_item_parent(image_widget_tag)
-            parent_w = dpg.get_item_width(parent_group) if parent_group and dpg.does_item_exist(parent_group) else w
-            display_w = min(w, parent_w - 10 if parent_w > 10 else parent_w)
-            display_h = int(h * (display_w / w)) if w > 0 else h
+        if dpg.is_dearpygui_running() and dpg.does_item_exist(image_widget_tag):
+            
+            display_w: int
+            display_h: int
+
+            if image_widget_tag == TAG_OT_MVA_SHAP_PLOT_IMAGE:
+                # --- SHAP 이미지: 무조건 찌그러뜨려서 영역에 맞춤 ---
+                shap_parent_container_tag = "shap_content_child_window" # 이미지가 실제로 그려질 child_window
+                
+                # 1. 목표 표시 너비 (display_w) 결정:
+                #    shap_parent_container_tag의 현재 너비를 가져오려고 시도.
+                #    실패 시 (0 또는 None), main_app.py 레이아웃 기반의 '예상되는' 너비 사용.
+                container_measured_width = 0
+                if dpg.does_item_exist(shap_parent_container_tag):
+                    container_measured_width = dpg.get_item_width(shap_parent_container_tag)
+                
+                _log_mva(f"SHAP plot: '{shap_parent_container_tag}' measured width: {container_measured_width}")
+
+                if container_measured_width and container_measured_width > 20: # 측정된 너비가 유효하면 사용
+                    display_w = container_measured_width - 10 # 양쪽 여백 5px씩 고려
+                else:
+                    # 측정 실패 시 Fallback: content_area 너비가 1000px이고, SHAP 컬럼이 테이블의 55%를 차지하며,
+                    # 테이블 셀 내부 패딩 등을 고려한 예상 너비. 이 값은 실제 UI와 일치해야 함.
+                    # (1000 * 0.55) - (테이블 셀 패딩 + child_window 내부 패딩 등)
+                    # 이 값을 실제 레이아웃을 보고 정확하게 계산하거나, 여러 번의 테스트를 통해 최적화해야 합니다.
+                    # 예시로, content_area가 1000, 테이블 컬럼 비율 0.55, 내부 여백 총 20px 가정 -> 1000 * 0.55 - 20 = 530
+                    estimated_container_width = 530 # <<-- 이 값을 실제 UI에 맞게 조정하세요!
+                    display_w = estimated_container_width
+                    _log_mva(f"SHAP plot: '{shap_parent_container_tag}' width is {container_measured_width}. Using estimated display_w: {display_w}")
+                
+                # 2. 목표 표시 높이 (display_h) 결정:
+                #    shap_parent_container_tag의 고정 높이(500px)에서, 그 안에 있는 다른 UI 요소들의 높이를 제외.
+                container_fixed_height = 500 # 'shap_content_child_window'의 고정 높이
+                
+                # SHAP 이미지 위젯 위에 있는 'AI 분석 버튼'과 그 아래 'Spacer'의 높이, 그리고 '상태 메시지 텍스트'의 높이를 합산.
+                # 추가적인 상하 내부 패딩/여백도 고려.
+                # 이 값들은 create_multivariate_ui 함수에서 해당 위젯들의 실제 구성에 따라 달라집니다.
+                # get_item_height는 아이템이 그려진 후에 정확하므로, 여기서는 추정치나 고정값을 사용할 수 있습니다.
+                button_tag_above = "mva_shap_plot_ai_analyze_button"
+                spacer_height_above = 5 # 버튼 아래 spacer
+                status_text_tag_above = "mva_shap_status_text"
+                
+                height_of_other_elements = 0
+                if dpg.does_item_exist(button_tag_above) and dpg.is_item_shown(button_tag_above):
+                     height_of_other_elements += (dpg.get_item_height(button_tag_above) or 30) + spacer_height_above
+                
+                if dpg.does_item_exist(status_text_tag_above) and dpg.is_item_shown(status_text_tag_above):
+                    # 상태 텍스트는 내용에 따라 높이가 변할 수 있으므로, 대략적인 최대 예상 높이를 사용하거나,
+                    # 실제 UI에서 차지하는 공간을 보고 값을 정합니다.
+                    height_of_other_elements += (dpg.get_item_height(status_text_tag_above) or 20) 
+                
+                height_of_other_elements += 15 # 이미지 위젯 자체의 상하 여백/패딩 (임의값)
+
+                display_h = container_fixed_height - height_of_other_elements
+                display_h = max(50, display_h) # 최소 높이 50px 보장 (너무 작으면 보이지 않음)
+
+                _log_mva(f"SHAP plot: Calculated height_of_other_elements: {height_of_other_elements}")
+                _log_mva(f"SHAP plot: Forcing display size (찌그러뜨림): display_w={display_w}, display_h={display_h}")
+
+            else:
+                # --- 다른 이미지들(UMAP, PCA 등)의 경우: 기존 로직 (예: 종횡비 유지) ---
+                parent_item_for_other_images = dpg.get_item_parent(image_widget_tag)
+                parent_container_w_others = w # 기본값은 원본 이미지 너비
+                if parent_item_for_other_images and dpg.does_item_exist(parent_item_for_other_images):
+                    parent_container_w_others = dpg.get_item_width(parent_item_for_other_images) or w
+                
+                display_w = min(w, parent_container_w_others - 10 if parent_container_w_others > 10 else parent_container_w_others)
+                if w > 0 : # 원본 이미지 너비가 0보다 클 때만 비율 계산
+                    display_h = int(h * (display_w / w)) # 종횡비 유지
+                else:
+                    parent_container_h_others = 300 # 기본 높이
+                    if parent_item_for_other_images and dpg.does_item_exist(parent_item_for_other_images):
+                         parent_container_h_others = dpg.get_item_height(parent_item_for_other_images) or 300
+                    display_h = parent_container_h_others
+                _log_mva(f"Non-SHAP plot '{image_widget_tag}': Ratio-based size. display_w={display_w}, display_h={display_h}")
+
+            # 최종적으로 display_w, display_h가 너무 작지 않도록 보정
+            display_w = max(10, display_w)
+            display_h = max(10, display_h)
+
+            _log_mva(f"Final DPG configure for '{image_widget_tag}': width={display_w}, height={display_h}, texture_tag='{new_texture_tag}'")
             dpg.configure_item(image_widget_tag, texture_tag=new_texture_tag, width=display_w, height=display_h, show=True)
+
     elif default_tex and dpg.does_item_exist(default_tex) and dpg.does_item_exist(image_widget_tag):
-        cfg = dpg.get_item_configuration(default_tex); def_w, def_h = (cfg.get('width',100), cfg.get('height',30))
+        cfg = dpg.get_item_configuration(default_tex)
+        def_w, def_h = (cfg.get('width', 100), cfg.get('height', 30))
         dpg.configure_item(image_widget_tag, texture_tag=default_tex, width=def_w, height=def_h, show=True)
         globals()[active_texture_id_var_name] = default_tex
-    elif dpg.does_item_exist(image_widget_tag):
+        _log_mva(f"Configuring '{image_widget_tag}' with default texture: width={def_w}, height={def_h}")
+    elif dpg.is_dearpygui_running() and dpg.does_item_exist(image_widget_tag):
          dpg.configure_item(image_widget_tag, show=False)
+         _log_mva(f"Hiding '{image_widget_tag}' as no valid new or default texture and it exists.")
 
 def _clear_mva_umap_plot():
     _remove_old_ai_buttons(TAG_OT_MVA_UMAP_SECTION_GROUP, "MVA_UMAP_AI_Button_")
@@ -477,158 +580,233 @@ def _generate_mva_umap_pca_plots(data_for_reduction: np.ndarray, original_indice
         except Exception as e: _log_mva(f"PCA gen error: {e}\n{traceback.format_exc()}")
 
 def _generate_mva_shap_plot_for_instance(original_idx: Any):
-    global _mva_active_shap_texture_id
-    _log_mva(f"Attempting SHAP for instance {original_idx}")
+    global _mva_active_shap_texture_id # DPG 텍스처 ID 관리를 위함
+    _log_mva(f"Attempting SHAP plot generation for instance {original_idx}")
 
+    # SHAP 분석 버튼 및 상태 메시지 태그 정의
     shap_ai_button_fixed_alias = "mva_shap_plot_ai_analyze_button"
-    status_text_tag = "mva_shap_status_text"
+    status_text_tag = "mva_shap_status_text" # UI 생성 시 이 태그로 add_text가 되어 있어야 함
 
+    # 이전 AI 분석 버튼이 있다면 삭제
     if dpg.is_dearpygui_running() and dpg.does_item_exist(shap_ai_button_fixed_alias):
         try:
             dpg.delete_item(shap_ai_button_fixed_alias)
-        except Exception as e:
-            _log_mva(f"Could not delete old SHAP AI button '{shap_ai_button_fixed_alias}': {e}")
+        except Exception as e_del_btn:
+            _log_mva(f"Could not delete old SHAP AI button '{shap_ai_button_fixed_alias}': {e_del_btn}")
 
-    if dpg.is_dearpygui_running() and not dpg.does_item_exist(status_text_tag):
-        if dpg.does_item_exist(TAG_OT_MVA_SHAP_PARENT_GROUP):
-            _log_mva(f"Warning: SHAP status text item '{status_text_tag}' not found. Creating it (initially hidden).")
-            dpg.add_text("", tag=status_text_tag, parent=TAG_OT_MVA_SHAP_PARENT_GROUP, before=TAG_OT_MVA_SHAP_PLOT_IMAGE, show=False)
-        else:
-            _log_mva(f"Error: Cannot create SHAP status text '{status_text_tag}' as parent '{TAG_OT_MVA_SHAP_PARENT_GROUP}' does not exist.")
+    # 이전 SHAP 플롯 및 상태 메시지 초기화
+    _clear_mva_shap_plot() # 이 함수는 내부적으로 _plot_cleanup_and_set을 호출하여 이미지와 상태 텍스트를 정리
 
-    _clear_mva_shap_plot()
-
+    # 필수 유틸리티 및 데이터 존재 여부 확인
     if not _shared_utils_mva:
-        _log_mva("Shared utils missing for SHAP.")
+        _log_mva("Shared utils missing for SHAP plot generation.")
         if dpg.is_dearpygui_running() and dpg.does_item_exist(status_text_tag):
-            dpg.set_value(status_text_tag, "SHAP Error: Shared utils missing.")
-            dpg.configure_item(status_text_tag, show=True, color=[255,0,0])
+            dpg.set_value(status_text_tag, "SHAP Error: Shared utilities not available.")
+            dpg.configure_item(status_text_tag, show=True, color=[255, 0, 0])
         return
 
-    main_cb, plot_func = _shared_utils_mva.get('main_app_callbacks'), _shared_utils_mva.get('plot_to_dpg_texture_func')
-    current_df_for_shap = _df_with_mva_outliers
+    main_cb = _shared_utils_mva.get('main_app_callbacks')
+    plot_func = _shared_utils_mva.get('plot_to_dpg_texture_func')
+    current_df_for_shap_values = _df_with_mva_outliers # SHAP 값 계산에 사용될 DataFrame (mva_outlier_score 등 포함 가능)
+                                                 # SHAP explainer 학습 시 사용된 특성들이 있어야 함.
 
+    # SHAP 실행을 위한 전제 조건 확인
     prereqs_met = (
-        shap and plot_func and main_cb and
-        current_df_for_shap is not None and
-        original_idx in current_df_for_shap.index and
-        _mva_shap_explainer and
-        _mva_selected_columns_for_detection and
+        shap and plot_func and main_cb and # shap 라이브러리, plot 함수, 메인 콜백
+        current_df_for_shap_values is not None and
+        original_idx in current_df_for_shap_values.index and # 선택된 인스턴스가 DataFrame에 있는지
+        _mva_shap_explainer and # SHAP explainer가 초기화되었는지
+        _mva_selected_columns_for_detection and # MVA 탐지에 사용된 컬럼(SHAP 특성) 목록이 있는지
         len(_mva_selected_columns_for_detection) > 0
     )
 
     if not prereqs_met:
-        _log_mva("SHAP requisites not met. Detailed check:") # 이하 상세 로그는 이전과 동일하게 유지 가능
-        # ... (상세 로그)
+        _log_mva("SHAP plot prerequisites not met. Cannot generate plot.")
         if dpg.is_dearpygui_running() and dpg.does_item_exist(status_text_tag):
-            dpg.set_value(status_text_tag, "SHAP requisites not met. Please run MVA detection with sufficient numeric features and select an outlier instance.")
-            dpg.configure_item(status_text_tag, show=True, color=[200,200,100])
-        if dpg.is_dearpygui_running() and dpg.does_item_exist(TAG_OT_MVA_SHAP_PLOT_IMAGE):
-            dpg.configure_item(TAG_OT_MVA_SHAP_PLOT_IMAGE, show=False)
+            msg = "SHAP prerequisites not met. Possible_reasons:\n"
+            if not shap: msg += "- SHAP library not loaded.\n"
+            if not _mva_shap_explainer: msg += "- SHAP explainer not initialized (run MVA detection).\n"
+            if not _mva_selected_columns_for_detection: msg += "- No features selected for MVA/SHAP.\n"
+            if current_df_for_shap_values is None or original_idx not in current_df_for_shap_values.index:
+                msg += "- Selected instance data not found.\n"
+            dpg.set_value(status_text_tag, msg)
+            dpg.configure_item(status_text_tag, show=True, color=[200, 200, 100])
+        # _clear_mva_shap_plot()가 이미 호출되었으므로, 여기서 이미지 위젯을 숨기거나 기본값으로 설정할 필요 없음
         return
 
-    fig_s = None # fig_s 초기화
+    fig_s = None # Matplotlib Figure 객체 초기화
     try:
-        instance_s = current_df_for_shap.loc[original_idx, _mva_selected_columns_for_detection]
-        instance_df_for_shap_calc = pd.DataFrame([instance_s.values], columns=_mva_selected_columns_for_detection)
+        # 선택된 인스턴스의 데이터 추출 (MVA 탐지에 사용된 특성들만)
+        instance_series = current_df_for_shap_values.loc[original_idx, _mva_selected_columns_for_detection]
+        # SHAP 값 계산을 위해 DataFrame 형태로 변환
+        instance_df_for_shap_calc = pd.DataFrame([instance_series.values], columns=_mva_selected_columns_for_detection)
 
+        # NaN 값 처리 (이론적으로는 MVA 탐지 과정에서 처리되었어야 하나, 안전을 위해 확인)
         if instance_df_for_shap_calc.isnull().values.any():
-            _log_mva("NaNs found in instance_df for SHAP calculation, attempting to fill with means.")
-            base_df_for_means = _shared_utils_mva['get_current_df_func']()
-            if base_df_for_means is None:
-                 for col in instance_df_for_shap_calc.columns:
-                    if instance_df_for_shap_calc[col].isnull().any():
-                        if _current_df_for_mva is not None and col in _current_df_for_mva.columns:
-                             mean_val = _current_df_for_mva[col].dropna().mean()
-                             instance_df_for_shap_calc[col].fillna(mean_val if pd.notna(mean_val) else 0, inplace=True)
-                        else:
-                             instance_df_for_shap_calc[col].fillna(0, inplace=True)
-            else:
-                 for col in instance_df_for_shap_calc.columns:
-                    if instance_df_for_shap_calc[col].isnull().any():
-                        mean_val = base_df_for_means[col].dropna().mean()
-                        instance_df_for_shap_calc[col].fillna(mean_val if pd.notna(mean_val) else 0, inplace=True)
-            _log_mva(f"Instance DataFrame for SHAP after fillna (if any):\n{instance_df_for_shap_calc.to_string()}")
+            _log_mva(f"NaNs found in instance data for SHAP (idx: {original_idx}). Filling with 0 for SHAP calculation. This should ideally not happen.")
+            # MVA 탐지 시 사용했던 'df_for_detection'의 평균 등으로 채우는 것이 더 정확할 수 있으나,
+            # 여기서는 explainer가 이미 학습된 상태이므로, SHAP 값 계산 시 NaN을 허용하지 않는다면 0으로 채움.
+            # IsolationForest는 NaN을 처리하지 못하므로, _mva_shap_explainer 학습 데이터에는 NaN이 없었어야 함.
+            instance_df_for_shap_calc.fillna(0, inplace=True)
 
-        shap_vals_raw = _mva_shap_explainer.shap_values(instance_df_for_shap_calc)
-        shap_vals_for_exp = shap_vals_raw[0,:] if isinstance(shap_vals_raw, np.ndarray) and len(shap_vals_raw.shape) == 2 else shap_vals_raw
+        # SHAP 값 계산
+        # TreeExplainer의 shap_values는 때때로 여러 출력에 대한 값 리스트를 반환할 수 있음 (특히 multi-output 모델).
+        # IsolationForest는 단일 출력이므로, 결과 배열의 형태를 확인하고 적절히 인덱싱 필요.
+        shap_values_raw = _mva_shap_explainer.shap_values(instance_df_for_shap_calc)
         
-        exp_val = _mva_shap_explainer.expected_value
-        if hasattr(exp_val, "__len__") and not isinstance(exp_val, (str,bytes)):
-            exp_val = exp_val[0]
+        # shap_values_raw의 형태에 따라 적절한 SHAP 값 추출
+        # 통상적인 경우 (단일 인스턴스, 단일 출력), shap_values_raw는 (1, num_features) 형태의 2D 배열이거나,
+        # explainer 구현에 따라 (num_outputs, 1, num_features) 또는 리스트 형태일 수 있음.
+        # PyOD IForest의 경우 내부 scikit-learn IsolationForest를 사용하며, shap_values는 보통 (n_samples, n_features)
+        shap_vals_for_exp = shap_values_raw[0, :] if isinstance(shap_values_raw, np.ndarray) and shap_values_raw.ndim == 2 and shap_values_raw.shape[0] == 1 else shap_values_raw
 
-        shap_exp = shap.Explanation(
+        # expected_value (base value) 가져오기
+        # 이 또한 explainer 구현 및 모델에 따라 스칼라 또는 배열일 수 있음
+        expected_value = _mva_shap_explainer.expected_value
+        if hasattr(expected_value, "__len__") and not isinstance(expected_value, (str, bytes)): # 배열 형태인지 확인
+             # IsolationForest의 경우 expected_value가 단일 값 배열(예: [0.5])일 수 있음
+            base_value_for_exp = expected_value[0] if len(expected_value) > 0 else 0.0
+        else:
+            base_value_for_exp = expected_value # 스칼라 값
+
+        # SHAP Explanation 객체 생성
+        shap_explanation_obj = shap.Explanation(
             values=shap_vals_for_exp,
-            base_values=exp_val,
-            data=instance_df_for_shap_calc.iloc[0].values,
+            base_values=base_value_for_exp,
+            data=instance_df_for_shap_calc.iloc[0].values, # 원본 특성 값
             feature_names=_mva_selected_columns_for_detection
         )
         
-        n_feat_disp = min(len(_mva_selected_columns_for_detection), 15)
+        num_features_to_display = min(len(_mva_selected_columns_for_detection), 15) # Waterfall 플롯에 표시할 최대 특성 수
+
+        # --- Matplotlib Figure 크기 동적 설정 ---
+        parent_width_pixels = 400 # DearPyGui 아이템 너비 측정 실패 시 기본값
+        dpi = 90 # plot_to_dpg_texture_func의 기본 DPI와 맞춤
+
+        # Matplotlib 그림 너비 계산 (이전 대화의 개선된 로직 통합)
+        shap_group_tag_for_width = TAG_OT_MVA_SHAP_PARENT_GROUP
+        table_item_tag_for_width = None
+        # SHAP 이미지가 속한 테이블 셀은 전체 테이블 너비의 약 55%를 차지하도록 설정됨
+        if dpg.is_dearpygui_running() and dpg.does_item_exist(shap_group_tag_for_width):
+            cell_item_tag = dpg.get_item_parent(shap_group_tag_for_width)
+            if cell_item_tag and dpg.does_item_exist(cell_item_tag):
+                row_item_tag = dpg.get_item_parent(cell_item_tag)
+                if row_item_tag and dpg.does_item_exist(row_item_tag):
+                    table_item_tag_for_width = dpg.get_item_parent(row_item_tag)
         
-        # --- waterfall_plot 호출 변경 ---
-        # fig_s, ax_s = plt.subplots(figsize=(8, fig_h)) # 이 줄은 필요 없어짐
-        # waterfall_plot이 현재 Figure에 그림을 그린다고 가정
-        
-        # Figure 크기 조정을 위해 먼저 plt.figure()로 Figure 객체를 만들고,
-        # waterfall_plot이 이 Figure를 사용하도록 유도하거나,
-        # plot 이후 plt.gcf()로 현재 Figure를 가져옴.
-        
-        # 전역 Figure 크기 설정 (waterfall_plot 호출 전에)
-        # SHAP은 내부적으로 matplotlib.pyplot을 사용하므로, plt.gcf()로 현재 Figure를 가져올 수 있음
-        # 또는 명시적으로 Figure를 생성하고, SHAP이 그것을 사용하도록 할 수 있다면 좋지만,
-        # waterfall_plot에 ax 인자가 없다면, 전역 상태에 의존할 가능성이 큼.
-        
-        # SHAP 플롯 호출 전에 Figure를 새로 만들거나 현재 Figure를 가져오도록 준비
-        plt.figure(figsize=(8, max(6.0, n_feat_disp * 0.6))) # 플롯 크기 먼저 지정
-        shap.waterfall_plot(shap_exp, max_display=n_feat_disp, show=False) # ax 인자 제거
-        
-        # waterfall_plot 호출 후, 현재 Figure 객체를 가져옴
-        fig_s = plt.gcf() 
-        
-        # 제목 추가 (Figure에 직접 추가하거나, SHAP이 생성한 Axes에 추가)
-        if fig_s.axes: # Figure에 Axes가 있다면
-            fig_s.axes[0].set_title(f"SHAP Waterfall - Instance {original_idx}", fontsize=11)
-        else: # Axes가 없다면 (드문 경우) Figure에 suptitle로 추가
-            fig_s.suptitle(f"SHAP Waterfall - Instance {original_idx}", fontsize=11)
+        calculated_from_table = False
+        if table_item_tag_for_width and dpg.does_item_exist(table_item_tag_for_width) and dpg.get_item_info(table_item_tag_for_width)['type'] == 'mvAppItemType::mvTable':
+            table_width = dpg.get_item_width(table_item_tag_for_width)
+            if table_width and table_width > 0:
+                parent_width_pixels = int(table_width * 0.52) # 55%에서 스크롤바, 내부패딩 등 여유 더 제외
+                calculated_from_table = True
+                _log_mva(f"Matplotlib parent_width_pixels for SHAP based on table '{table_item_tag_for_width}' (table_width {table_width}): {parent_width_pixels}")
+
+        if not calculated_from_table:
+            content_area_tag = "content_area" # main_app.py에 정의된 태그
+            content_area_width = 0
+            if dpg.is_dearpygui_running() and dpg.does_item_exist(content_area_tag):
+                content_area_width = dpg.get_item_width(content_area_tag)
             
-        plt.tight_layout(pad=1.0) # 전체 Figure에 대한 레이아웃 조정
-        # --- waterfall_plot 호출 변경 끝 ---
+            if content_area_width and content_area_width > 0:
+                # content_area 너비의 약 45-50% (SHAP 영역이 차지하는 대략적 비율)
+                parent_width_pixels = int(content_area_width * 0.45)
+                _log_mva(f"Matplotlib parent_width_pixels for SHAP based on '{content_area_tag}' (width {content_area_width}): {parent_width_pixels}")
+            else:
+                parent_width_pixels = 700 # Fallback 값 증가 (이전 400)
+                _log_mva(f"Matplotlib parent_width_pixels for SHAP fallback to: {parent_width_pixels}")
+        _log_mva(f"Final parent_width_pixels for Matplotlib SHAP plot: {parent_width_pixels}")
 
-        res_s = plot_func(fig_s); # plot_func는 fig_s를 받아 DPG 텍스처로 변환
+        fig_width_inches = max(5.0, min(12.0, (parent_width_pixels / dpi) if parent_width_pixels > 0 else 5.0)) # 최소 5인치, 최대 12인치
+
+        # Matplotlib 그림 높이 계산 (이전 대화의 개선된 로직 통합)
+        shap_child_window_actual_height_px = 500 # 'shap_content_child_window'의 고정 높이
+        # 버튼(30), 스페이서(5), 상태텍스트(20 가정), 상하패딩(20*2=40 가정) -> 30+5+20+40 = 95
+        # 실제 이미지 가용 높이는 shap_child_window_actual_height_px - (다른 요소들 높이 합)
+        image_drawable_height_px = shap_child_window_actual_height_px - 100 # 여유 공간 및 기타 UI 요소 높이 제외 (대략적)
+        max_fig_height_inches = image_drawable_height_px / dpi if image_drawable_height_px > 0 else 3.0
+
+        # 특성 수에 따라 높이 계산, 상한선 적용, 계수 조정 (예: 0.3~0.45)
+        calculated_fig_height_inches = max(3.0, num_features_to_display * 0.40) # 최소 3인치
+        fig_height_inches = min(calculated_fig_height_inches, max_fig_height_inches)
+        fig_height_inches = max(fig_height_inches, 3.0) # 최종적으로 최소 3인치 보장
+
+        _log_mva(f"SHAP plot Matplotlib dimensions: {fig_width_inches:.1f}W x {fig_height_inches:.1f}H inches "
+                 f"(n_feat_disp={num_features_to_display}, max_fig_H_inches_allowed={max_fig_height_inches:.1f})")
         
-        t_s,w_s,h_s,b_s = (res_s if res_s and len(res_s)==4 else (None,0,0,None))
+        plt.figure(figsize=(fig_width_inches, fig_height_inches), dpi=dpi) # DPI 명시
+        shap.waterfall_plot(shap_explanation_obj, max_display=num_features_to_display, show=False)
+        
+        fig_s = plt.gcf() # 현재 Figure 객체 가져오기
+        
+        # 플롯 제목 설정
+        title_str = f"SHAP Analysis - Instance {original_idx}"
+        if fig_s.axes: # 축이 있다면 첫 번째 축에 제목 설정
+            fig_s.axes[0].set_title(title_str, fontsize=10)
+        else: # 축이 없다면 Figure 전체에 제목 설정
+            fig_s.suptitle(title_str, fontsize=10)
+            
+        # 내용이 잘리지 않도록 여백 조정 (값은 실험적으로 최적화)
+        # left: 특성 이름, bottom: x축 레이블, right/top: 여유 공간
+        plt.subplots_adjust(left=0.35, right=0.95, top=0.90, bottom=0.15 if num_features_to_display > 3 else 0.10)
+        # 또는 plt.tight_layout(pad=1.2, h_pad=1.0, w_pad=1.0) # tight_layout은 때로 figsize를 변경할 수 있음
 
+        # Matplotlib Figure를 DPG 텍스처로 변환
+        res_s = plot_func(fig_s) # _s5_plot_to_dpg_texture_mva 호출
+        t_s, w_s, h_s, b_s = (res_s if res_s and len(res_s) == 4 else (None, 0, 0, None))
+        _log_mva(f"plot_func for SHAP returned: tex_exists={t_s is not None}, w={w_s}, h={h_s}, bytes_exist={b_s is not None}")
+
+        # AI 분석 버튼 추가 (성공적으로 이미지 바이트가 생성된 경우)
         if b_s and t_s and dpg.is_dearpygui_running() and dpg.does_item_exist(TAG_OT_MVA_SHAP_PARENT_GROUP):
-            act_s = functools.partial(utils.confirm_and_run_ai_analysis,b_s,f"MVA_SHAP_{original_idx}",shap_ai_button_fixed_alias,main_cb)
+            # functools.partial을 사용하여 콜백 함수와 인자들을 미리 준비
+            action_for_ai_button = functools.partial(
+                utils.confirm_and_run_ai_analysis, # utils.py의 함수
+                b_s, # image_bytes
+                f"Outlier_Analysis_SHAP_Instance_{original_idx}", # chart_name
+                shap_ai_button_fixed_alias, # ai_button_tag
+                main_cb # main_callbacks
+            )
+            # 버튼 추가 (SHAP 이미지 위젯 위에 배치)
             dpg.add_button(label="💡 Analyze SHAP Plot", tag=shap_ai_button_fixed_alias,
                            parent=TAG_OT_MVA_SHAP_PARENT_GROUP, width=-1, height=30,
-                           callback=lambda s,a,u:act_s(), before=TAG_OT_MVA_SHAP_PLOT_IMAGE)
+                           callback=lambda sender, app_data, user_data: action_for_ai_button(), 
+                           before=TAG_OT_MVA_SHAP_PLOT_IMAGE) # 이미지 앞에 버튼 추가
+            # 버튼과 이미지 사이에 약간의 간격 추가
             dpg.add_spacer(height=5, parent=TAG_OT_MVA_SHAP_PARENT_GROUP, before=TAG_OT_MVA_SHAP_PLOT_IMAGE)
 
-        _plot_cleanup_and_set(TAG_OT_MVA_SHAP_PLOT_IMAGE, '_mva_active_shap_texture_id', t_s, 'default_shap_plot_texture_tag', w_s, h_s)
+        # DPG 이미지 위젯 업데이트
+        # _plot_cleanup_and_set 함수는 SHAP 이미지의 경우 종횡비를 무시하고 영역에 맞추도록 수정되었다고 가정
+        _plot_cleanup_and_set(
+            image_widget_tag=TAG_OT_MVA_SHAP_PLOT_IMAGE,
+            active_texture_id_var_name='_mva_active_shap_texture_id', # 전역변수 이름
+            new_texture_tag=t_s,
+            default_texture_key='default_shap_plot_texture_tag', # shared_utils_mva에 정의된 키
+            w=w_s, # Matplotlib에서 생성된 이미지의 원본 픽셀 너비
+            h=h_s  # Matplotlib에서 생성된 이미지의 원본 픽셀 높이
+        )
 
-        if t_s:
-            _log_mva("SHAP waterfall plot generated and displayed.")
+        if t_s: # 텍스처가 성공적으로 생성되었다면
+            _log_mva(f"SHAP waterfall plot for instance {original_idx} generated and displayed.")
             if dpg.is_dearpygui_running() and dpg.does_item_exist(status_text_tag):
-                dpg.configure_item(status_text_tag, show=False)
-        else:
-            _log_mva("SHAP waterfall plot texture generation failed.")
+                dpg.configure_item(status_text_tag, show=False) # 성공 메시지 대신 플롯이 보이므로 상태 텍스트 숨김
+        else: # 텍스처 생성 실패
+            _log_mva(f"SHAP waterfall plot texture generation failed for instance {original_idx}.")
             if dpg.is_dearpygui_running() and dpg.does_item_exist(status_text_tag):
                 dpg.set_value(status_text_tag, "SHAP plot generation failed (texture error).")
-                dpg.configure_item(status_text_tag, show=True, color=[255,0,0])
+                dpg.configure_item(status_text_tag, show=True, color=[255, 0, 0])
     
-    except Exception as e:
-        _log_mva(f"SHAP plot error for instance {original_idx}: {e}\n{traceback.format_exc()}")
+    except Exception as e_shap_plot:
+        _log_mva(f"Error during SHAP plot generation for instance {original_idx}: {e_shap_plot}\n{traceback.format_exc()}")
         if dpg.is_dearpygui_running() and dpg.does_item_exist(status_text_tag):
-            error_message_display = f"SHAP Plot Error: {str(e)[:150]}"
+            error_message_display = f"SHAP Plot Error: {str(e_shap_plot)[:150]}" # 오류 메시지 간결화
             dpg.set_value(status_text_tag, error_message_display)
-            dpg.configure_item(status_text_tag, show=True, color=[255,0,0])
-        if dpg.is_dearpygui_running() and dpg.does_item_exist(TAG_OT_MVA_SHAP_PLOT_IMAGE):
-            dpg.configure_item(TAG_OT_MVA_SHAP_PLOT_IMAGE, show=False)
+            dpg.configure_item(status_text_tag, show=True, color=[255, 0, 0])
+        # 오류 발생 시 이미지 위젯을 숨기거나 기본 이미지로 되돌릴 수 있음 (이미 _clear_mva_shap_plot에서 처리)
     finally:
-        if fig_s: # fig_s가 None이 아닐 경우 (즉, plt.gcf() 등으로 할당된 경우)
+        if fig_s: # Matplotlib Figure 객체가 생성되었다면 닫아서 리소스 해제
             plt.close(fig_s)
+            _log_mva(f"Matplotlib figure for SHAP instance {original_idx} closed.")
+
 
 def _find_top_gap_variables_for_boxplot() -> List[str]:
     if _df_with_mva_outliers is None or 'mva_is_outlier' not in _df_with_mva_outliers.columns: return []
@@ -803,7 +981,7 @@ def create_multivariate_ui(parent_tab_bar_tag: str, shared_utilities: dict):
                 dpg.add_separator(parent="mva_tab_details") # 구분선 추가 (선택 사항)
 
                 # SHAP 섹션과 통계 테이블 섹션을 위한 테이블 레이아웃
-                with dpg.table(header_row=False, resizable=True, policy=dpg.mvTable_SizingStretchProp,
+                with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp,
                                borders_innerH=True, borders_outerH=True, # 명확성을 위해 테두리 추가 (선택 사항)
                                parent="mva_tab_details"): # 부모 명시
                     
@@ -814,24 +992,40 @@ def create_multivariate_ui(parent_tab_bar_tag: str, shared_utilities: dict):
                     with dpg.table_row():
                         # --- SHAP 섹션 (왼쪽 셀) ---
                         with dpg.table_cell():
-                            with dpg.group(tag=TAG_OT_MVA_SHAP_PARENT_GROUP): # 이 그룹은 이제 테이블 셀의 너비를 따름
+                            with dpg.group(tag=TAG_OT_MVA_SHAP_PARENT_GROUP):
                                 dpg.add_text("5. SHAP Values for Selected Instance", color=[255, 255, 0])
                                 
-                                # SHAP 상태 메시지 (기존과 동일하게 UI 생성 시 기본 메시지 설정)
-                                default_shap_status_text = "Select an instance to see SHAP details."
-                                if not shap: default_shap_status_text = "SHAP library not available."
-                                dpg.add_text(default_shap_status_text, tag="mva_shap_status_text",
-                                             show=True, color=[200,200,200], wrap=-1) # wrap 활성화
+                                # child_window 생성 - autosize_x=True로 자동 크기 조정
+                                with dpg.child_window(tag="shap_content_child_window", 
+                                                    border=False,
+                                                    autosize_x=True,  # X축 자동 크기
+                                                    autosize_y=False,  # Y축은 고정
+                                                    height=500):
+                                    
+                                    # SHAP 상태 메시지
+                                    default_shap_status_text = "Select an instance to see SHAP details."
+                                    if not shap: default_shap_status_text = "SHAP library not available."
+                                    dpg.add_text(default_shap_status_text, tag="mva_shap_status_text",
+                                                 show=True, color=[200,200,200])
+
+                                    # SHAP 이미지 위젯 - width=-1로 부모에 맞춤
+                                    default_shap_tex = _shared_utils_mva.get('default_shap_plot_texture_tag') if _shared_utils_mva else None
+                                    
+                                    dpg.add_image(texture_tag=default_shap_tex or "", 
+                                                tag=TAG_OT_MVA_SHAP_PLOT_IMAGE,
+                                                width=-1,  # 부모 child_window 너비에 자동 맞춤
+                                                height=-1,  # 높이도 자동
+                                                show=bool(shap))# wrap 활성화
 
                                 # SHAP 이미지 위젯 (크기는 _plot_cleanup_and_set에서 조정됨)
-                                default_shap_tex = _shared_utils_mva.get('default_shap_plot_texture_tag') if _shared_utils_mva else None
-                                cfg_s_w, cfg_s_h = (250, 200) # 초기 플레이스홀더 크기
-                                if default_shap_tex and dpg.does_item_exist(default_shap_tex):
-                                    cfg_s = dpg.get_item_configuration(default_shap_tex)
-                                    cfg_s_w, cfg_s_h = cfg_s.get('width',250), cfg_s.get('height',200)
+                                # default_shap_tex = _shared_utils_mva.get('default_shap_plot_texture_tag') if _shared_utils_mva else None
+                                # cfg_s_w, cfg_s_h = (250, 200) # 초기 플레이스홀더 크기
+                                # if default_shap_tex and dpg.does_item_exist(default_shap_tex):
+                                #     cfg_s = dpg.get_item_configuration(default_shap_tex)
+                                #     cfg_s_w, cfg_s_h = cfg_s.get('width',250), cfg_s.get('height',200)
                                 
-                                dpg.add_image(texture_tag=default_shap_tex or "", tag=TAG_OT_MVA_SHAP_PLOT_IMAGE,
-                                              width=cfg_s_w, height=cfg_s_h, show=bool(shap))
+                                # dpg.add_image(texture_tag=default_shap_tex or "", tag=TAG_OT_MVA_SHAP_PLOT_IMAGE,
+                                #               width=cfg_s_w, height=cfg_s_h, show=bool(shap))
                                 # AI 분석 버튼은 _generate_mva_shap_plot_for_instance에서 TAG_OT_MVA_SHAP_PARENT_GROUP에 추가됨
                                 # 버튼의 width=-1은 TAG_OT_MVA_SHAP_PARENT_GROUP (즉, 이 테이블 셀)의 너비를 채우게 됨.
 
