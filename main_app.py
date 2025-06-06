@@ -11,7 +11,8 @@ import step_02b_mva
 import step_03_preprocessing 
 import step_04_missing_values
 import step_05_outlier_treatment
-import step_06_standardization # Step 6 모듈 임포트
+import step_06_standardization
+import step_07_feature_engineering
 import traceback
 import hashlib
 import json
@@ -29,7 +30,8 @@ class AppState:
         self.df_after_step3 = None 
         self.df_after_step4 = None 
         self.df_after_step5 = None
-        self.df_after_step6 = None # Step 6 결과 DataFrame 추가
+        self.df_after_step6 = None
+        self.df_after_step7 = None
         self.loaded_file_path = None
         self.selected_target_variable = None
         self.selected_target_variable_type = "Continuous"
@@ -58,8 +60,9 @@ ANALYSIS_STEPS = [
     "3. Preprocessing (Node Editor)",
     "4. Missing Value Treatment",         
     "5. Outlier Treatment",
-    "6. Standardization", # Step 6 추가
-]
+    "6. Standardization", 
+    "7. Feature Engineering",
+    ]
 
 _MODAL_ID_SIMPLE_MESSAGE = "main_simple_modal_message_id"
 try:
@@ -351,10 +354,43 @@ def step6_standardization_complete(processed_df: pd.DataFrame):
 
     update_target_variable_combo()
     
-    # If there's a step 7, trigger its update here
-    # if len(ANALYSIS_STEPS) > 6 and ANALYSIS_STEPS[6] in app_state.module_ui_updaters:
-    #     print(f"Triggering UI update for subsequent step: {ANALYSIS_STEPS[6]}")
-    #     trigger_specific_module_update(ANALYSIS_STEPS[6])
+def step7_feature_engineering_complete(processed_df: pd.DataFrame):
+    """Step 7 (Feature Engineering) 처리 완료 시 호출되는 콜백입니다."""
+    if processed_df is None:
+        print("Step 7 (Feature Engineering) returned no DataFrame.")
+        # 이전 단계 데이터로 폴백
+        if app_state.df_after_step6 is not None:
+            app_state.current_df = app_state.df_after_step6.copy()
+        elif app_state.df_after_step5 is not None:
+            app_state.current_df = app_state.df_after_step5.copy()
+        elif app_state.df_after_step4 is not None:
+            app_state.current_df = app_state.df_after_step4.copy()
+        elif app_state.df_after_step3 is not None:
+            app_state.current_df = app_state.df_after_step3.copy()
+        elif app_state.df_after_step1 is not None:
+            app_state.current_df = app_state.df_after_step1.copy()
+        else:
+            app_state.current_df = None
+        app_state.df_after_step7 = None
+    else:
+        print("Step 7 (Feature Engineering) processing complete. Updating app_state.")
+        app_state.df_after_step7 = processed_df.copy()
+        app_state.current_df = app_state.df_after_step7.copy()
+
+    # 타겟 변수 관련 UI 업데이트
+    if app_state.selected_target_variable and \
+       (app_state.current_df is None or app_state.selected_target_variable not in app_state.current_df.columns):
+        app_state.selected_target_variable = None
+        if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
+        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
+        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
+
+    update_target_variable_combo()
+    
+    # 만약 8단계가 있다면, 여기서 UI 업데이트를 트리거합니다.
+    # if len(ANALYSIS_STEPS) > 7 and ANALYSIS_STEPS[7] in app_state.module_ui_updaters:
+    #     print(f"Triggering UI update for subsequent step: {ANALYSIS_STEPS[7]}")
+    #     trigger_specific_module_update(ANALYSIS_STEPS[7])
 
 
 def trigger_specific_module_update(module_name_key: str):
@@ -428,6 +464,26 @@ def trigger_specific_module_update(module_name_key: str):
         if module_name_key in app_state.module_ui_updaters:
             updater = app_state.module_ui_updaters[module_name_key]
             if hasattr(step_06_standardization, 'update_ui'):
+                 updater(df_to_use_for_module, main_app_callbacks)
+                 print(f"Module UI updated for: '{module_name_key}'")
+        return
+    
+    elif module_name_key == ANALYSIS_STEPS[6]: # << ADDED: 7. Feature Engineering
+        # Input is from step 6, else step 5, else step 4, ...
+        if app_state.df_after_step6 is not None:
+            df_to_use_for_module = app_state.df_after_step6
+        elif app_state.df_after_step5 is not None:
+            df_to_use_for_module = app_state.df_after_step5
+        elif app_state.df_after_step4 is not None:
+            df_to_use_for_module = app_state.df_after_step4
+        elif app_state.df_after_step3 is not None:
+            df_to_use_for_module = app_state.df_after_step3
+        else:
+            df_to_use_for_module = app_state.df_after_step1
+        
+        if module_name_key in app_state.module_ui_updaters:
+            updater = app_state.module_ui_updaters[module_name_key]
+            if hasattr(step_07_feature_engineering, 'update_ui'):
                  updater(df_to_use_for_module, main_app_callbacks)
                  print(f"Module UI updated for: '{module_name_key}'")
         return
@@ -704,7 +760,9 @@ def reset_application_state(clear_df_completely=True):
     app_state.df_after_step3 = None
     app_state.df_after_step4 = None
     app_state.df_after_step5 = None
-    app_state.df_after_step6 = None # Reset Step 6 df
+    app_state.df_after_step6 = None
+    app_state.df_after_step7 = None # << ADDED: Reset Step 7 df
+
 
     app_state.selected_target_variable = None
     app_state.selected_target_variable_type = "Continuous"
@@ -720,7 +778,9 @@ def reset_application_state(clear_df_completely=True):
     if hasattr(step_03_preprocessing, 'reset_preprocessing_state'): step_03_preprocessing.reset_preprocessing_state()
     if hasattr(step_04_missing_values, 'reset_missing_values_state'): step_04_missing_values.reset_missing_values_state()
     if hasattr(step_05_outlier_treatment, 'reset_outlier_treatment_state'): step_05_outlier_treatment.reset_outlier_treatment_state()
-    if hasattr(step_06_standardization, 'reset_step6_state'): step_06_standardization.reset_step6_state() # Reset Step 6
+    if hasattr(step_06_standardization, 'reset_step6_state'): step_06_standardization.reset_step6_state()
+    if hasattr(step_07_feature_engineering, 'reset_state'): step_07_feature_engineering.reset_state() # << ADDED
+
 
     if clear_df_completely:
         app_state.active_step_name = None
@@ -841,7 +901,8 @@ def gather_current_settings() -> dict:
         'step_03_preprocessing_settings': {},
         'step_04_missing_values_settings': {},
         'step_05_outlier_treatment_settings': {},
-        'step_06_standardization_settings': {}, # Step 6 설정 추가
+        'step_06_standardization_settings': {},
+        'step_07_feature_engineering_settings': {},
     }
     if hasattr(step_01_data_loading, 'get_step1_settings_for_saving'):
         settings['step_01_settings'] = step_01_data_loading.get_step1_settings_for_saving()
@@ -866,6 +927,9 @@ def gather_current_settings() -> dict:
     
     if hasattr(step_06_standardization, 'get_step6_settings_for_saving'): # Step 6 설정 저장
         settings['step_06_standardization_settings'] = step_06_standardization.get_step6_settings_for_saving()
+    
+    if hasattr(step_07_feature_engineering, 'get_settings_for_saving'): # << ADDED
+        settings['step_07_feature_engineering_settings'] = step_07_feature_engineering.get_settings_for_saving()
     
     return settings
 
@@ -936,14 +1000,23 @@ def apply_settings(settings_dict: dict):
     if s05_settings and hasattr(step_05_outlier_treatment, 'apply_outlier_treatment_settings_and_process') and df_input_for_step5 is not None:
         step_05_outlier_treatment.apply_outlier_treatment_settings_and_process(df_input_for_step5, s05_settings, main_app_callbacks)
     
-    app_state.df_after_step6 = None # Step 6 df reset
+    app_state.df_after_step6 = None
     s06_settings = settings_dict.get('step_06_standardization_settings', {})
     df_input_for_step6 = app_state.df_after_step5 if app_state.df_after_step5 is not None else \
                          (app_state.df_after_step4 if app_state.df_after_step4 is not None else \
                          (app_state.df_after_step3 if app_state.df_after_step3 is not None else app_state.df_after_step1))
     if s06_settings and hasattr(step_06_standardization, 'apply_step6_settings_and_process') and df_input_for_step6 is not None:
         step_06_standardization.apply_step6_settings_and_process(df_input_for_step6, s06_settings, main_app_callbacks)
-            
+
+    app_state.df_after_step7 = None
+    s07_settings = settings_dict.get('step_07_feature_engineering_settings', {})
+    df_input_for_step7 = app_state.df_after_step6 if app_state.df_after_step6 is not None else \
+                         (app_state.df_after_step5 if app_state.df_after_step5 is not None else \
+                         (app_state.df_after_step4 if app_state.df_after_step4 is not None else \
+                         (app_state.df_after_step3 if app_state.df_after_step3 is not None else app_state.df_after_step1)))
+    if s07_settings and hasattr(step_07_feature_engineering, 'apply_settings_and_process') and df_input_for_step7 is not None:
+        step_07_feature_engineering.apply_settings_and_process(df_input_for_step7, s07_settings, main_app_callbacks)
+
     trigger_all_module_updates()
     
     restored_active_step = settings_dict.get('active_step_name', ANALYSIS_STEPS[0] if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0 else None)
@@ -1020,7 +1093,9 @@ main_app_callbacks = {
     'get_df_after_step3': lambda: app_state.df_after_step3,
     'get_df_after_step4': lambda: app_state.df_after_step4,
     'get_df_after_step5': lambda: app_state.df_after_step5,
-    'get_df_after_step6': lambda: app_state.df_after_step6, # Step 6 df getter
+    'get_df_after_step6': lambda: app_state.df_after_step6,
+    'get_df_after_step7': lambda: app_state.df_after_step7, # << ADDED
+
     'get_loaded_file_path': lambda: app_state.loaded_file_path,
     'get_util_funcs': lambda: util_functions_for_modules,
     'show_file_dialog': lambda: dpg.show_item("file_dialog_id"),
@@ -1039,7 +1114,8 @@ main_app_callbacks = {
     'step3_processing_complete': step3_processing_complete,
     'step4_missing_value_processing_complete': step4_missing_value_processing_complete,
     'step5_outlier_treatment_complete': step5_outlier_treatment_complete,
-    'step6_standardization_complete': step6_standardization_complete, # Step 6 callback
+    'step6_standardization_complete': step6_standardization_complete,
+    'step7_feature_engineering_complete': step7_feature_engineering_complete, # << ADDED
     'add_ai_log': add_ai_log_message,
 }
 
@@ -1112,6 +1188,11 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
                 elif step_name_create == ANALYSIS_STEPS[5]: # Step 6 UI 생성
                     if hasattr(step_06_standardization, 'create_ui'):
                         step_06_standardization.create_ui(step_name_create, "content_area", main_app_callbacks)
+
+                elif step_name_create == ANALYSIS_STEPS[6]: # << ADDED: Step 7 UI 생성
+                    if hasattr(step_07_feature_engineering, 'create_ui'):
+                        step_07_feature_engineering.create_ui(step_name_create, "content_area", main_app_callbacks)
+
 
 
             if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0 and not app_state.active_step_name:
