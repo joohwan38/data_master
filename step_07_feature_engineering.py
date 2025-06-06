@@ -236,7 +236,7 @@ def create_ui(step_name: str, parent_tag: str, main_app_callbacks: Dict[str, Any
                                     dpg.add_plot_axis(dpg.mvXAxis, tag=TAG_S7_BINNING_PLOT_XAXIS); dpg.add_plot_axis(dpg.mvYAxis, tag=TAG_S7_BINNING_PLOT_YAXIS)
                             dpg.add_input_text(label="New Variable Name", tag=TAG_S7_BINNING_NEW_COL_INPUT)
                             dpg.add_radio_button(label="Method", items=["Equal Frequency (qcut)", "Equal Width (cut)"], tag=TAG_S7_BINNING_METHOD_RADIO, horizontal=True, default_value="Equal Frequency (qcut)")
-                            dpg.add_input_text(label="Bins / Quantiles", hint="e.g., 4 or [0,25,50,100]", tag=TAG_S7_BINNING_BINS_INPUT)
+                            dpg.add_input_text(label="Bins / Quantiles", hint="e.g., 4 or [0,25,50,100]", tag=TAG_S7_BINNING_BINS_INPUT, callback=_auto_generate_bin_labels)
                             dpg.add_input_text(label="Labels (optional)", hint="Auto-generated if empty", tag=TAG_S7_BINNING_LABELS_INPUT)
                             dpg.add_button(label="Add Binning Op to List", width=-1, callback=_add_binning_op)
 
@@ -274,14 +274,125 @@ def create_ui(step_name: str, parent_tag: str, main_app_callbacks: Dict[str, Any
                                 dpg.add_button(label="Export to Excel", callback=_export_categorical_mapping, height=30)
                             with dpg.table(tag=TAG_S7_CATGROUP_MAPPING_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=250): pass
                             dpg.add_button(label="Add Mapping Op to List", width=-1, callback=_add_categorical_grouping_op)
+
+                    with dpg.tab(label="transform", tag="step7_transform_tab"):
+                        with dpg.group(tag="step7_transform_group", show=False):
+                            dpg.add_text(tag="step7_transform_selected_var_text")
+                            dpg.add_separator()
+                            dpg.add_text("적용할 변환을 선택하세요:")
+                            
+                            # 변환 버튼들을 테이블 형태로 깔끔하게 정렬
+                            with dpg.table(header_row=False):
+                                dpg.add_table_column()
+                                dpg.add_table_column()
+                                dpg.add_table_column()
+
+                                with dpg.table_row():
+                                    dpg.add_button(label="Log (x+1)", width=-1, callback=lambda: _add_transform_op('log1p'))
+                                    dpg.add_button(label="Square Root (√x)", width=-1, callback=lambda: _add_transform_op('sqrt'))
+                                    dpg.add_button(label="Square (x²)", width=-1, callback=lambda: _add_transform_op('square'))
+                                
+                                with dpg.table_row():
+                                    dpg.add_button(label="Reciprocal (1/x)", width=-1, callback=lambda: _add_transform_op('reciprocal'))
+                                    dpg.add_button(label="Absolute (abs)", width=-1, callback=lambda: _add_transform_op('abs'))
+                                    dpg.add_button(label="Sign (-1, 0, 1)", width=-1, callback=lambda: _add_transform_op('sign'))
+
+                                with dpg.table_row():
+                                    dpg.add_button(label="Z-Score Scaling", width=-1, callback=lambda: _add_transform_op('zscore'))
+                                    dpg.add_button(label="Min-Max Scaling", width=-1, callback=lambda: _add_transform_op('minmax'))
+                                    dpg.add_button(label="Rank", width=-1, callback=lambda: _add_transform_op('rank'))
+
                     
                     with dpg.tab(label="Advanced Syntax", tag=TAG_S7_ADV_SYNTAX_TAB):
                         dpg.add_button(label="Import Pipeline to Code", width=-1, callback=_import_pipeline_to_code)
                         dpg.add_input_text(tag=TAG_S7_ADV_SYNTAX_INPUT, multiline=True, width=-1, height=390, hint="Visually built pipeline appears here for fine-tuning...")
 
-# --- 이하 함수들은 이전 답변과 대부분 동일하나, 일부 수정된 부분이 포함되어 있습니다. ---
-# (이전 답변의 함수들을 이 아래 부분으로 모두 복사/붙여넣기 하시면 됩니다.)
-# ... (이전 답변의 나머지 모든 함수들)
+def _add_transform_op(op_type: str):
+    """선택된 수치형 변수에 수학적 변환을 적용하는 작업을 파이프라인에 추가합니다."""
+    # 현재 선택된 변수 이름에서 'Selected: ' 부분을 제외하고 가져옵니다.
+    selected_text = dpg.get_value("step7_transform_selected_var_text")
+    if not selected_text.startswith("Selected: "):
+        return
+    var = selected_text.replace("Selected: ", "")
+
+    new_col = f"{var}_{op_type}"
+    syntax = ""
+    epsilon = 1e-6 # 0으로 나누는 것을 방지하기 위한 아주 작은 값
+
+    transform_map = {
+        'log1p': f"df['{new_col}'] = np.log1p(df['{var}'])",
+        'sqrt': f"df['{new_col}'] = np.sqrt(df.loc[df['{var}'] >= 0, '{var}']) # 음수는 NaN으로 처리",
+        'square': f"df['{new_col}'] = df['{var}'] ** 2",
+        'reciprocal': f"df['{new_col}'] = 1 / (df['{var}'] + {epsilon})",
+        'abs': f"df['{new_col}'] = df['{var}'].abs()",
+        'sign': f"df['{new_col}'] = np.sign(df['{var}'])",
+        'zscore': f"df['{new_col}'] = (df['{var}'] - df['{var}'].mean()) / df['{var}'].std(ddof=0)",
+        'minmax': f"df['{new_col}'] = (df['{var}'] - df['{var}'].min()) / (df['{var}'].max() - df['{var}'].min())",
+        'rank': f"df['{new_col}'] = df['{var}'].rank()"
+    }
+    
+    syntax = transform_map.get(op_type)
+
+    if syntax:
+        _add_to_execution_list(new_col, f"Transform ({op_type})", syntax, show_preview=True)
+
+def _auto_generate_bin_labels(sender, app_data, user_data):
+    """'Bins / Quantiles' 입력값과 선택된 메소드에 따라 실제 데이터 구간을 반영한 라벨을 자동으로 생성합니다."""
+    # 1. 필요한 모든 UI의 현재 값을 가져옵니다.
+    bin_count_str = app_data
+    var = dpg.get_value(TAG_S7_BINNING_SELECTED_VAR_TEXT)
+    method = dpg.get_value(TAG_S7_BINNING_METHOD_RADIO)
+
+    if _current_df_input is None or not var:
+        return
+
+    try:
+        bin_count = int(bin_count_str)
+        if bin_count <= 0:
+            dpg.set_value(TAG_S7_BINNING_LABELS_INPUT, "")
+            return
+    except (ValueError, TypeError):
+        dpg.set_value(TAG_S7_BINNING_LABELS_INPUT, "")
+        return
+
+    labels = []
+    
+    # 2. 'Equal Frequency (qcut)' 로직
+    if method == 'Equal Frequency (qcut)':
+        quantiles = np.linspace(0, 1, bin_count + 1)
+        for i in range(bin_count):
+            start_p = int(quantiles[i] * 100)
+            end_p = int(quantiles[i+1] * 100)
+            # ★★★ 수정사항: 라벨에 따옴표를 직접 추가하지 않습니다.
+            label = f'q{i+1}_{start_p}-{end_p}%'
+            labels.append(label)
+
+    # 3. 'Equal Width (cut)' 로직
+    elif method == 'Equal Width (cut)':
+        series = _current_df_input[var].dropna()
+        if series.empty:
+            return
+
+        min_val = series.min()
+        max_val = series.max()
+        bins = np.linspace(min_val, max_val, bin_count + 1)
+        
+        for i in range(bin_count):
+            start_v = bins[i]
+            end_v = bins[i+1]
+            # ★★★ 수정사항: 라벨에 따옴표를 직접 추가하지 않습니다.
+            if i == bin_count - 1:
+                label = f'c{i+1}_{int(start_v)}_{int(end_v)}'
+            else:
+                label = f'c{i+1}_{int(start_v)}_{int(end_v - 1)}'
+            labels.append(label)
+
+    # 4. 생성된 라벨이 있으면 UI에 적용합니다.
+    if labels:
+        # 따옴표 없이 쉼표로만 구분된 문자열을 생성합니다.
+        labels_str = ", ".join(labels)
+        dpg.set_value(TAG_S7_BINNING_LABELS_INPUT, labels_str)
+
 def _run_ai_categorization():
     if not ollama_analyzer:
         _util_funcs['_show_simple_modal_message']("AI Error", "Ollama analyzer module not found.")
@@ -408,11 +519,11 @@ def _add_categorical_grouping_op():
         proceed_with_fill()
 
 def _on_sidebar_variable_double_clicked(sender, app_data, user_data):
-    # --- ★★★ 최종 수정사항 ★★★ ---
-    # app_data에 원하는 정보가 없으므로, 리스트박스에서 직접 값을 가져옵니다.
     selected_item_str = dpg.get_value(TAG_S7_SIDEBAR_LISTBOX)
+    
+    # get_value()는 숫자 ID를 반환합니다.
+    active_tab_id = dpg.get_value(TAG_S7_MAIN_TAB_BAR)
 
-    # 이후 로직은 이전에 수정한 내용과 동일합니다.
     if not selected_item_str:
         return
     
@@ -423,10 +534,10 @@ def _on_sidebar_variable_double_clicked(sender, app_data, user_data):
         return
         
     is_derived = var_name in _derived_columns
-    active_tab = dpg.get_value(TAG_S7_MAIN_TAB_BAR)
     
-    # 1. Arithmetic 탭이 활성화된 경우
-    if active_tab == dpg.get_item_alias(TAG_S7_ARITH_TAB):
+    # ★★★ 최종 수정사항 ★★★
+    # 숫자 ID를 문자열 별명으로 변환하여, 문자열끼리 비교합니다.
+    if dpg.get_item_alias(active_tab_id) == TAG_S7_ARITH_TAB:
         current_formula = dpg.get_value(TAG_S7_ARITH_FORMULA_TEXT)
         operator = dpg.get_value(TAG_S7_ARITH_OPERATOR_COMBO)
         
@@ -436,15 +547,12 @@ def _on_sidebar_variable_double_clicked(sender, app_data, user_data):
             new_formula = f"{current_formula}{operator}df['{var_name}']"
         
         dpg.set_value(TAG_S7_ARITH_FORMULA_TEXT, new_formula.strip())
-        
-        # Arithmetic 탭의 작업을 완료했으므로, 여기서 함수를 완전히 종료합니다.
         return
 
-    # 2. 다른 탭들이 활성화된 경우
-    if is_derived:
-        if active_tab != dpg.get_item_alias(TAG_S7_ARITH_TAB):
-             _util_funcs['_show_simple_modal_message']("Info", f"'{var_name}' is a derived variable.\nIt can be used in Arithmetic formulas, but not as an input for other operations.")
-        return
+    # --- 이하 다른 탭 로직 (기존과 동일) ---
+    # if is_derived:
+    #     _util_funcs['_show_simple_modal_message']("Info", f"'{var_name}' is a derived variable.\nIt can be used in Arithmetic formulas, but not as an input for other operations.")
+    #     return
     
     numeric_types = ['int64', 'float64', 'int32', 'float32']
     datetime_types = ['datetime', 'timestamp']
@@ -455,6 +563,8 @@ def _on_sidebar_variable_double_clicked(sender, app_data, user_data):
     dpg.configure_item(TAG_S7_IF_GROUP, show=is_numeric)
     dpg.configure_item(TAG_S7_DATETIME_GROUP, show=is_datetime)
     dpg.configure_item(TAG_S7_CATGROUP_GROUP, show=not (is_numeric or is_datetime))
+    dpg.configure_item("step7_transform_group", show=is_numeric)
+
 
     if is_numeric:
         dpg.set_value(TAG_S7_BINNING_SELECTED_VAR_TEXT, var_name)
@@ -463,6 +573,7 @@ def _on_sidebar_variable_double_clicked(sender, app_data, user_data):
         dpg.set_value(TAG_S7_IF_SELECTED_VAR_TEXT, var_name)
         dpg.set_value(TAG_S7_IF_NEW_COL_INPUT, f"{var_name}_if")
         _update_stats_and_plot('step7_if', var_name, _current_df_input)
+        dpg.set_value("step7_transform_selected_var_text", f"Selected: {var_name}")
         all_numeric_cols = [c.split(' (')[0] for c in _available_columns_list if any(ntype in c for ntype in numeric_types)]
         dpg.configure_item(TAG_S7_IF_VAR_COMBO, items=all_numeric_cols, default_value=var_name)
     elif is_datetime:
@@ -563,6 +674,7 @@ def _refresh_sidebar():
         _available_columns_list = input_cols + derived_cols_info; _derived_columns = new_derived_columns
     if dpg.is_dearpygui_running() and dpg.does_item_exist(TAG_S7_SIDEBAR_LISTBOX):
         dpg.configure_item(TAG_S7_SIDEBAR_LISTBOX, items=_available_columns_list)
+
 def _update_stats_and_plot(group_tag, selected_var, df):
     stats_text_tag, plot_tag = f"{group_tag}_stats_text", f"{group_tag}_plot"
     plot_xaxis_tag, plot_yaxis_tag = f"{plot_tag}_xaxis", f"{plot_tag}_yaxis"
@@ -578,15 +690,38 @@ def _add_arithmetic_op():
     if not formula.strip(): return
     _add_to_execution_list("arith_var", "Arithmetic", f"df['arith_var'] = {formula}", show_preview=True); dpg.set_value(TAG_S7_ARITH_FORMULA_TEXT, "")
 def _add_binning_op():
-    var, new_col, method, bins_input, user_labels = dpg.get_value(TAG_S7_BINNING_SELECTED_VAR_TEXT), dpg.get_value(TAG_S7_BINNING_NEW_COL_INPUT), dpg.get_value(TAG_S7_BINNING_METHOD_RADIO), dpg.get_value(TAG_S7_BINNING_BINS_INPUT), dpg.get_value(TAG_S7_BINNING_LABELS_INPUT)
-    if not var: return
+    var, new_col, method, bins_input, user_labels = (
+        dpg.get_value(TAG_S7_BINNING_SELECTED_VAR_TEXT),
+        dpg.get_value(TAG_S7_BINNING_NEW_COL_INPUT),
+        dpg.get_value(TAG_S7_BINNING_METHOD_RADIO),
+        dpg.get_value(TAG_S7_BINNING_BINS_INPUT),
+        dpg.get_value(TAG_S7_BINNING_LABELS_INPUT),
+    )
+    if not var:
+        return
+
     try:
-        if not bins_input.strip(): raise ValueError("Bins/Quantiles input cannot be empty.")
-        labels_str = f"labels=[{user_labels}]" if user_labels.strip() else ""
-        if method == 'Equal Frequency (qcut)': syntax = f"df['{new_col}'] = pd.qcut(df['{var}'], q={bins_input}, {labels_str}, duplicates='drop')"
-        else: syntax = f"df['{new_col}'] = pd.cut(df['{var}'], bins={bins_input}, {labels_str}, right=False)"
+        if not bins_input.strip():
+            raise ValueError("Bins/Quantiles input cannot be empty.")
+        
+        labels_str = ""
+        # 라벨이 입력되었을 경우, 자동으로 따옴표를 붙여주는 처리
+        if user_labels.strip():
+            # 사용자가 'a, b, c' 형식으로 입력해도 ['"a"', '"b"', '"c"'] 형태로 변환
+            labels_list = [f'"{label.strip()}"' for label in user_labels.split(',')]
+            labels_str = f"labels=[{', '.join(labels_list)}]"
+
+        # Equal Frequency (qcut) 또는 Equal Width (cut)에 대한 구문 생성
+        if method == 'Equal Frequency (qcut)':
+            syntax = f"df['{new_col}'] = pd.qcut(df['{var}'], q={bins_input}, {labels_str}, duplicates='drop')"
+        else:
+            syntax = f"df['{new_col}'] = pd.cut(df['{var}'], bins={bins_input}, {labels_str}, right=False)"
+        
         _add_to_execution_list(new_col, f"Binning ({method.split(' ')[0]})", syntax, show_preview=True)
-    except Exception as e: _util_funcs['_show_simple_modal_message']("Error", f"Failed to create binning operation:\n{e}")
+
+    except Exception as e:
+        _util_funcs['_show_simple_modal_message']("Error", f"Failed to create binning operation:\n{e}")
+
 def _add_if_condition_row():
     var, op, val, res = dpg.get_value(TAG_S7_IF_VAR_COMBO), dpg.get_value(TAG_S7_IF_OP_COMBO), dpg.get_value(TAG_S7_IF_VAL_INPUT), dpg.get_value(TAG_S7_IF_RES_INPUT)
     if not all([var, op, str(val), res]): _util_funcs['_show_simple_modal_message']("Error", "All fields for a condition are required."); return
