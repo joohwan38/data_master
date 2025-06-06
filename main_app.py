@@ -4,7 +4,7 @@ import pandas as pd
 import platform
 import os
 import utils
-from typing import Optional
+from typing import Optional, Dict
 import step_01_data_loading
 import step_02a_sva
 import step_02b_mva
@@ -13,6 +13,7 @@ import step_04_missing_values
 import step_05_outlier_treatment
 import step_06_standardization
 import step_07_feature_engineering
+import step_08_derivation
 import traceback
 import hashlib
 import json
@@ -32,6 +33,7 @@ class AppState:
         self.df_after_step5 = None
         self.df_after_step6 = None
         self.df_after_step7 = None
+        self.derived_dfs: Dict[str, pd.DataFrame] = {} # << ADDED
         self.loaded_file_path = None
         self.selected_target_variable = None
         self.selected_target_variable_type = "Continuous"
@@ -62,6 +64,7 @@ ANALYSIS_STEPS = [
     "5. Outlier Treatment",
     "6. Standardization", 
     "7. Feature Engineering",
+    "8. Derive DataFrames", # << ADDED
     ]
 
 _MODAL_ID_SIMPLE_MESSAGE = "main_simple_modal_message_id"
@@ -387,6 +390,31 @@ def step7_feature_engineering_complete(processed_df: pd.DataFrame):
 
     update_target_variable_combo()
     
+    # Step 8 UI 업데이트 트리거
+    if len(ANALYSIS_STEPS) > 7 and ANALYSIS_STEPS[7] in app_state.module_ui_updaters: # << CHANGED
+        print(f"Triggering UI update for subsequent step: {ANALYSIS_STEPS[7]}")
+        trigger_specific_module_update(ANALYSIS_STEPS[7])
+
+# << ADDED >>: Step 8에서 파생 DF 생성이 완료되었을 때 호출되는 콜백
+def step8_derivation_complete(name: str, df: pd.DataFrame):
+    """Step 8 (Derive DataFrames) 처리 완료 시 호출되는 콜백입니다."""
+    app_state.derived_dfs[name] = df
+    print(f"Derived DataFrame '{name}' (shape: {df.shape}) added/updated.")
+    # Step 8 UI를 다시 그려서 목록을 갱신하도록 트리거
+    if ANALYSIS_STEPS[7] in app_state.module_ui_updaters:
+        trigger_specific_module_update(ANALYSIS_STEPS[7])
+
+
+    # 타겟 변수 관련 UI 업데이트
+    if app_state.selected_target_variable and \
+       (app_state.current_df is None or app_state.selected_target_variable not in app_state.current_df.columns):
+        app_state.selected_target_variable = None
+        if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
+        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
+        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
+
+    update_target_variable_combo()
+    
     # 만약 8단계가 있다면, 여기서 UI 업데이트를 트리거합니다.
     # if len(ANALYSIS_STEPS) > 7 and ANALYSIS_STEPS[7] in app_state.module_ui_updaters:
     #     print(f"Triggering UI update for subsequent step: {ANALYSIS_STEPS[7]}")
@@ -487,6 +515,14 @@ def trigger_specific_module_update(module_name_key: str):
                  updater(df_to_use_for_module, main_app_callbacks)
                  print(f"Module UI updated for: '{module_name_key}'")
         return
+    
+    elif module_name_key == ANALYSIS_STEPS[7]: # << ADDED: 8. Derive DataFrames
+        if module_name_key in app_state.module_ui_updaters:
+            updater = app_state.module_ui_updaters[module_name_key]
+            if hasattr(step_08_derivation, 'update_ui'):
+                 updater() # Step 8's updater gets its data via callbacks
+                 print(f"Module UI updated for: '{module_name_key}'")
+        return
 
     # Generic fallback (should ideally be covered by specific cases above)
     if module_name_key in app_state.module_ui_updaters:
@@ -544,13 +580,16 @@ def load_data_from_file(file_path: str) -> bool:
         app_state.df_after_step4 = None
         app_state.df_after_step5 = None
         app_state.df_after_step6 = None # Reset Step 6 df
+        app_state.df_after_step7 = None # << ADDED
+        app_state.derived_dfs.clear() # << ADDED
         app_state.loaded_file_path = file_path
         if dpg.does_item_exist(MAIN_FILE_PATH_DISPLAY_TAG):
             dpg.set_value(MAIN_FILE_PATH_DISPLAY_TAG, f"File: {os.path.basename(file_path)} (Shape: {app_state.original_df.shape if app_state.original_df is not None else 'N/A'})")
         success = True
     except Exception as e:
         app_state.current_df = None; app_state.original_df = None; app_state.loaded_file_path = None
-        app_state.df_after_step1 = None; app_state.df_after_step3 = None; app_state.df_after_step4 = None; app_state.df_after_step5 = None; app_state.df_after_step6 = None
+        app_state.df_after_step1 = None; app_state.df_after_step3 = None; app_state.df_after_step4 = None; app_state.df_after_step5 = None; app_state.df_after_step6 = None; app_state.df_after_step7 = None
+        app_state.derived_dfs.clear()
         if dpg.does_item_exist(MAIN_FILE_PATH_DISPLAY_TAG):
             dpg.set_value(MAIN_FILE_PATH_DISPLAY_TAG, f"Error loading file: {os.path.basename(file_path)}")
         _show_simple_modal_message("File Load Error", f"Failed to load data from '{os.path.basename(file_path)}'.\nError: {e}")
@@ -683,7 +722,8 @@ def switch_step_view(sender, app_data, user_data_step_name: str):
                 if step_name_iter == ANALYSIS_STEPS[0]: # Step 1
                     app_state.current_df = app_state.df_after_step1 if app_state.df_after_step1 is not None else app_state.original_df
                 elif step_name_iter == ANALYSIS_STEPS[1]: # Step 2 (EDA) - uses latest available
-                    if app_state.df_after_step6 is not None: app_state.current_df = app_state.df_after_step6
+                    if app_state.df_after_step7 is not None: app_state.current_df = app_state.df_after_step7 # << CHANGED
+                    elif app_state.df_after_step6 is not None: app_state.current_df = app_state.df_after_step6
                     elif app_state.df_after_step5 is not None: app_state.current_df = app_state.df_after_step5
                     elif app_state.df_after_step4 is not None: app_state.current_df = app_state.df_after_step4
                     elif app_state.df_after_step3 is not None: app_state.current_df = app_state.df_after_step3
@@ -702,8 +742,31 @@ def switch_step_view(sender, app_data, user_data_step_name: str):
                     elif app_state.df_after_step4 is not None: app_state.current_df = app_state.df_after_step4
                     elif app_state.df_after_step3 is not None: app_state.current_df = app_state.df_after_step3
                     else: app_state.current_df = app_state.df_after_step1
+
+                elif step_name_iter == ANALYSIS_STEPS[6]: # Step 7 (Feature Engineering)
+                    if app_state.df_after_step6 is not None: 
+                        app_state.current_df = app_state.df_after_step6
+                    elif app_state.df_after_step5 is not None: 
+                        app_state.current_df = app_state.df_after_step5
+                    elif app_state.df_after_step4 is not None: 
+                        app_state.current_df = app_state.df_after_step4
+                    elif app_state.df_after_step3 is not None: 
+                        app_state.current_df = app_state.df_after_step3
+                    else: 
+                        app_state.current_df = app_state.df_after_step1
+
+                elif step_name_iter == ANALYSIS_STEPS[7]: # << ADDED: Step 8
+                    # Step 8은 자체적으로 DF를 선택하므로 current_df를 특정 DF로 고정할 필요 없음
+                    # 하지만 다른 모듈과의 일관성을 위해 최신 DF를 설정
+                    if app_state.df_after_step7 is not None: app_state.current_df = app_state.df_after_step7
+                    elif app_state.df_after_step6 is not None: app_state.current_df = app_state.df_after_step6
+                    elif app_state.df_after_step5 is not None: app_state.current_df = app_state.df_after_step5
+                    elif app_state.df_after_step4 is not None: app_state.current_df = app_state.df_after_step4
+                    elif app_state.df_after_step3 is not None: app_state.current_df = app_state.df_after_step3
+                    elif app_state.df_after_step1 is not None: app_state.current_df = app_state.df_after_step1
+                    else: app_state.current_df = app_state.original_df
                 else: # Default for any other future steps
-                    app_state.current_df = app_state.original_df # Fallback, should be more specific if more steps are added
+                    app_state.current_df = app_state.original_df
                 
                 print(f"Switched to {step_name_iter}. AppState.current_df is now set for this context (shape: {app_state.current_df.shape if app_state.current_df is not None else 'None'}).")
                 trigger_specific_module_update(step_name_iter)
@@ -762,6 +825,7 @@ def reset_application_state(clear_df_completely=True):
     app_state.df_after_step5 = None
     app_state.df_after_step6 = None
     app_state.df_after_step7 = None # << ADDED: Reset Step 7 df
+    app_state.derived_dfs.clear() # << ADDED
 
 
     app_state.selected_target_variable = None
@@ -780,7 +844,7 @@ def reset_application_state(clear_df_completely=True):
     if hasattr(step_05_outlier_treatment, 'reset_outlier_treatment_state'): step_05_outlier_treatment.reset_outlier_treatment_state()
     if hasattr(step_06_standardization, 'reset_step6_state'): step_06_standardization.reset_step6_state()
     if hasattr(step_07_feature_engineering, 'reset_state'): step_07_feature_engineering.reset_state() # << ADDED
-
+    if hasattr(step_08_derivation, 'reset_state'): step_08_derivation.reset_state() # << ADDED
 
     if clear_df_completely:
         app_state.active_step_name = None
@@ -820,7 +884,10 @@ def export_to_parquet_callback():
     df_to_export = None
     export_source_step = ""
 
-    if app_state.df_after_step6 is not None: # Check Step 6 first
+    if app_state.df_after_step7 is not None:
+        df_to_export = app_state.df_after_step7
+        export_source_step = "Step 7 (Feature Engineering)"
+    elif app_state.df_after_step6 is not None:
         df_to_export = app_state.df_after_step6
         export_source_step = "Step 6 (Standardization)"
     elif app_state.df_after_step5 is not None:
@@ -1014,9 +1081,11 @@ def apply_settings(settings_dict: dict):
                          (app_state.df_after_step5 if app_state.df_after_step5 is not None else \
                          (app_state.df_after_step4 if app_state.df_after_step4 is not None else \
                          (app_state.df_after_step3 if app_state.df_after_step3 is not None else app_state.df_after_step1)))
+    
+    app_state.derived_dfs.clear()
     if s07_settings and hasattr(step_07_feature_engineering, 'apply_settings_and_process') and df_input_for_step7 is not None:
         step_07_feature_engineering.apply_settings_and_process(df_input_for_step7, s07_settings, main_app_callbacks)
-
+    
     trigger_all_module_updates()
     
     restored_active_step = settings_dict.get('active_step_name', ANALYSIS_STEPS[0] if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0 else None)
@@ -1026,6 +1095,34 @@ def apply_settings(settings_dict: dict):
     elif ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0 :
         switch_step_view(None, None, ANALYSIS_STEPS[0])
 
+def get_all_available_dfs_callback() -> Dict[str, pd.DataFrame]:
+    """Step 8 모듈에서 사용할 수 있는 모든 DF 소스를 딕셔너리로 반환합니다."""
+    available_dfs = {}
+    if app_state.df_after_step1 is not None:
+        available_dfs['From Step 1 (Types Applied)'] = app_state.df_after_step1
+    if app_state.df_after_step3 is not None:
+        available_dfs['From Step 3 (Preprocessed)'] = app_state.df_after_step3
+    if app_state.df_after_step4 is not None:
+        available_dfs['From Step 4 (Missing Imputed)'] = app_state.df_after_step4
+    if app_state.df_after_step5 is not None:
+        available_dfs['From Step 5 (Outliers Treated)'] = app_state.df_after_step5
+    if app_state.df_after_step6 is not None:
+        available_dfs['From Step 6 (Standardized)'] = app_state.df_after_step6
+    if app_state.df_after_step7 is not None:
+        available_dfs['From Step 7 (Features Engineered)'] = app_state.df_after_step7
+    
+    # 파생 DF들도 소스로 추가 (자기 자신을 소스로 사용하는 것을 막기 위해 복사)
+    available_dfs.update(app_state.derived_dfs.copy())
+    
+    return available_dfs
+
+def add_or_update_derived_df_callback(name: str, df: pd.DataFrame):
+    app_state.derived_dfs[name] = df
+
+def delete_derived_df_callback(name: str):
+    if name in app_state.derived_dfs:
+        del app_state.derived_dfs[name]
+        print(f"Derived DataFrame '{name}' deleted.")
 
 def initial_load_on_startup():
     """애플리케이션 시작 시 이전 세션 정보를 로드합니다."""
@@ -1095,6 +1192,8 @@ main_app_callbacks = {
     'get_df_after_step5': lambda: app_state.df_after_step5,
     'get_df_after_step6': lambda: app_state.df_after_step6,
     'get_df_after_step7': lambda: app_state.df_after_step7, # << ADDED
+    'get_derived_dfs': lambda: app_state.derived_dfs.copy(), # << ADDED
+    'get_all_available_dfs': get_all_available_dfs_callback, # << ADDED
 
     'get_loaded_file_path': lambda: app_state.loaded_file_path,
     'get_util_funcs': lambda: util_functions_for_modules,
@@ -1116,6 +1215,8 @@ main_app_callbacks = {
     'step5_outlier_treatment_complete': step5_outlier_treatment_complete,
     'step6_standardization_complete': step6_standardization_complete,
     'step7_feature_engineering_complete': step7_feature_engineering_complete, # << ADDED
+    'step8_derivation_complete': step8_derivation_complete, # << ADDED
+    'delete_derived_df': delete_derived_df_callback, # << ADDED
     'add_ai_log': add_ai_log_message,
 }
 
@@ -1195,7 +1296,9 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
                     if hasattr(step_07_feature_engineering, 'create_ui'):
                         step_07_feature_engineering.create_ui(step_name_create, "content_area", main_app_callbacks)
 
-
+                elif step_name_create == ANALYSIS_STEPS[7]: # << ADDED: Step 8 UI 생성
+                    if hasattr(step_08_derivation, 'create_ui'):
+                        step_08_derivation.create_ui(step_name_create, "content_area", main_app_callbacks)
 
             if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0 and not app_state.active_step_name:
                 first_step = ANALYSIS_STEPS[0]

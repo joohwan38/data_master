@@ -510,3 +510,51 @@ def _get_top_n_correlated_with_target(df: pd.DataFrame, target_col: str, numeric
     correlations.sort(key=lambda x: x[1], reverse=True)
     top_n_cols = [col_name for col_name, corr_val in correlations[:top_n]]
     return top_n_cols
+
+def create_table_with_large_data_preview(table_tag: str, df: pd.DataFrame, 
+                                         max_rows: int = 25, max_cols: int = 20):
+    """
+    대용량 데이터프레임을 Jupyter Notebook 스타일로 미리보는 테이블을 생성합니다.
+    행/열이 max 값을 초과하면 앞/뒤 일부만 보여주고 중간은 '...'로 생략합니다.
+    """
+    if not dpg.is_dearpygui_running() or not dpg.does_item_exist(table_tag):
+        print(f"Error: Table '{table_tag}' not exist.")
+        return
+        
+    if df is None:
+        create_table_with_data(table_tag, pd.DataFrame({"Info": ["No data to display."]}))
+        return
+    if df.empty:
+        create_table_with_data(table_tag, pd.DataFrame({"Info": ["DataFrame is empty."]}))
+        return
+
+    display_df = df
+
+    # 행 축소 로직
+    if len(df) > max_rows:
+        head_rows = max_rows // 2
+        tail_rows = max_rows - head_rows
+        head_df = df.head(head_rows)
+        tail_df = df.tail(tail_rows)
+        
+        # '...' 행 생성
+        separator_data = {col: '...' for col in df.columns}
+        separator_df = pd.DataFrame([separator_data])
+        
+        display_df = pd.concat([head_df, separator_df, tail_df], ignore_index=True)
+
+    # 열 축소 로직
+    if len(display_df.columns) > max_cols:
+        head_cols_count = max_cols // 2
+        tail_cols_count = max_cols - head_cols_count
+        
+        head_cols = display_df.iloc[:, :head_cols_count]
+        tail_cols = display_df.iloc[:, -tail_cols_count:]
+        
+        # '...' 열 생성
+        ellipsis_col = pd.Series(['...'] * len(display_df), name='...')
+        
+        display_df = pd.concat([head_cols, ellipsis_col, tail_cols], axis=1)
+
+    # 최종적으로 기존 테이블 생성 함수 호출
+    create_table_with_data(table_tag, display_df)
