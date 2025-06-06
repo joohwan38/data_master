@@ -6,6 +6,9 @@ from typing import Dict, Any, Optional, List
 import traceback
 import re
 import json
+import tkinter as tk
+from tkinter import filedialog
+
 try:
     import ollama_analyzer
 except ImportError:
@@ -30,6 +33,7 @@ TAG_S7_SOURCE_DF_INFO_TEXT = "step7_source_df_info_text"
 TAG_S7_MAIN_TAB_BAR = "step7_main_tab_bar"
 _MODAL_ID_PREVIEW = "step7_preview_modal"
 _EXCEL_IMPORT_DIALOG_ID = "step7_excel_import_file_dialog"
+_EXEC_PREVIEW_MODAL_ID = "step7_exec_preview_modal" # NEW
 
 TAG_S7_ARITH_TAB = "step7_arith_tab"
 TAG_S7_ARITH_FORMULA_TEXT = "step7_arith_formula_text"
@@ -69,10 +73,215 @@ TAG_S7_CATGROUP_NEW_COL_INPUT = "step7_catgroup_new_col_input"
 TAG_S7_CATGROUP_MAPPING_TABLE = "step7_catgroup_mapping_table"
 TAG_S7_ADV_SYNTAX_TAB = "step7_adv_syntax_tab"
 TAG_S7_ADV_SYNTAX_INPUT = "step7_adv_syntax_input"
+TAG_S7_LISTBOX_HANDLER_REG = "s7_listbox_handler_registry" # NEW
+
 
 def _log(message: str): print(f"[Step7 FE] {message}")
 
-# --- NEW: AI Categorization ---
+# --- NEW: Export Categorical Mapping ---
+def _export_categorical_mapping():
+    var = dpg.get_value(TAG_S7_CATGROUP_SELECTED_VAR_TEXT)
+    if not var:
+        _util_funcs['_show_simple_modal_message']("Error", "No variable selected to export.")
+        return
+    if not _categorical_mapping_state:
+        _util_funcs['_show_simple_modal_message']("Info", "There is no mapping data to export.")
+        return
+
+    root = tk.Tk()
+    root.withdraw()
+    file_path = filedialog.asksaveasfilename(
+        defaultextension=".xlsx",
+        filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+        title="Save Categorical Mapping",
+        initialfile=f"{var}_mapping.xlsx"
+    )
+
+    if not file_path:
+        return # User cancelled
+
+    try:
+        mapping_list = list(_categorical_mapping_state.items())
+        df_to_export = pd.DataFrame(mapping_list, columns=['original_value', 'category'])
+        df_to_export['var_name'] = var
+        df_to_export = df_to_export[['var_name', 'original_value', 'category']]
+        
+        df_to_export.to_excel(file_path, index=False)
+        _util_funcs['_show_simple_modal_message']("Success", f"Mapping exported successfully to:\n{file_path}")
+    except Exception as e:
+        _util_funcs['_show_simple_modal_message']("Export Error", f"Failed to export mapping:\n{e}", width=450, height=200)
+
+# --- NEW: Execution List Preview ---
+def _show_execution_preview_popup(sender, app_data, user_data_index):
+    if _current_df_input is None: return
+
+    try:
+        temp_df = _current_df_input.copy()
+        exec_scope = {'df': temp_df, 'pd': pd, 'np': np}
+        
+        for i in range(user_data_index + 1):
+            exec(_execution_list[i]['syntax'], exec_scope)
+        
+        final_df = exec_scope['df']
+        output_col = _execution_list[user_data_index]['output_col']
+
+        if output_col not in final_df.columns:
+            raise ValueError(f"Column '{output_col}' not found after executing step.")
+
+        preview_data = final_df[[output_col]].head(10)
+        
+        if dpg.does_item_exist(_EXEC_PREVIEW_MODAL_ID):
+            dpg.delete_item(_EXEC_PREVIEW_MODAL_ID)
+
+        with dpg.window(label=f"Preview for '{output_col}'", modal=True, show=True, id=_EXEC_PREVIEW_MODAL_ID, no_close=True, autosize=True):
+            dpg.add_text(f"Showing first 10 rows of '{output_col}':")
+            with dpg.table(header_row=True, borders_innerV=True, borders_outerH=True, resizable=True, policy=dpg.mvTable_SizingStretchProp):
+                dpg.add_table_column(label="Index")
+                dpg.add_table_column(label=output_col)
+                for index, row in preview_data.iterrows():
+                    with dpg.table_row():
+                        dpg.add_text(str(index))
+                        dpg.add_text(str(row[output_col]))
+            dpg.add_button(label="Close", width=-1, callback=lambda: dpg.configure_item(_EXEC_PREVIEW_MODAL_ID, show=False))
+
+    except Exception as e:
+        _util_funcs['_show_simple_modal_message']("Preview Error", f"Could not generate preview for step {user_data_index + 1}.\n\nError: {e}", width=500, height=250)
+
+
+# --- MODIFIED: Execution List Table Update ---
+def _update_execution_list_table():
+    if not dpg.is_dearpygui_running() or not dpg.does_item_exist(TAG_S7_EXECUTION_TABLE): return
+    dpg.delete_item(TAG_S7_EXECUTION_TABLE, children_only=True)
+    
+    dpg.add_table_column(label="Output Variable", parent=TAG_S7_EXECUTION_TABLE, width_stretch=True, init_width_or_weight=0.20)
+    dpg.add_table_column(label="Method", parent=TAG_S7_EXECUTION_TABLE, width_stretch=True, init_width_or_weight=0.15)
+    dpg.add_table_column(label="Definition", parent=TAG_S7_EXECUTION_TABLE, width_stretch=True, init_width_or_weight=0.50)
+    dpg.add_table_column(label="Preview", parent=TAG_S7_EXECUTION_TABLE, width_fixed=True, init_width_or_weight=70)
+    dpg.add_table_column(label="Delete", parent=TAG_S7_EXECUTION_TABLE, width_fixed=True, init_width_or_weight=65)
+
+    for i, op in enumerate(_execution_list):
+        with dpg.table_row(parent=TAG_S7_EXECUTION_TABLE):
+            dpg.add_text(op.get("output_col", "N/A"))
+            dpg.add_text(op.get("method", "N/A"))
+            dpg.add_text(op.get("syntax", "N/A"))
+            dpg.add_button(label="Preview", user_data=i, callback=_show_execution_preview_popup)
+            dpg.add_button(label="Delete", user_data=i, callback=_delete_operation)
+
+# --- MODIFIED: Create UI ---
+def create_ui(step_name: str, parent_tag: str, main_app_callbacks: Dict[str, Any]):
+    global _main_app_callbacks, _util_funcs
+    _main_app_callbacks, _util_funcs = main_app_callbacks, main_app_callbacks.get('get_util_funcs', lambda: {})()
+    main_app_callbacks['register_step_group_tag'](step_name, TAG_S7_MAIN_GROUP)
+    main_app_callbacks['register_module_updater'](step_name, update_ui)
+
+    # *** 수정 사항: 더블 클릭 이벤트를 처리할 핸들러 레지스트리를 먼저 생성합니다. ***
+    with dpg.item_handler_registry(tag=TAG_S7_LISTBOX_HANDLER_REG):
+        dpg.add_item_double_clicked_handler(callback=_on_sidebar_variable_double_clicked)
+    
+    # Excel 가져오기를 위한 파일 다이얼로그
+    with dpg.file_dialog(
+        directory_selector=False, show=False, callback=_process_excel_file, 
+        id=_EXCEL_IMPORT_DIALOG_ID, width=700, height=400, modal=True
+    ):
+        dpg.add_file_extension(".xlsx")
+
+    with dpg.group(tag=TAG_S7_MAIN_GROUP, parent=parent_tag, show=False):
+        dpg.add_text(f"--- {step_name} ---", color=[255, 255, 0]); dpg.add_separator()
+        with dpg.group(horizontal=True):
+            with dpg.child_window(width=200):
+                dpg.add_text("Variable Explorer")
+                dpg.add_button(label="Refresh List", width=-1, callback=_refresh_sidebar)
+                dpg.add_radio_button(
+                    items=["All", "Numeric", "Non-Numeric"], 
+                    horizontal=False, 
+                    default_value="All",
+                    tag="sidebar_filter_radio",
+                    callback=lambda: _filter_sidebar_list()
+                )
+                
+                # 콜백 없이 리스트박스를 생성합니다.
+                dpg.add_listbox(
+                    items=[], 
+                    tag=TAG_S7_SIDEBAR_LISTBOX, 
+                    num_items=25, 
+                    width=-1
+                )
+                
+                # *** 수정 사항: 위에서 만든 핸들러 레지스트리를 리스트박스에 연결(바인딩)합니다. ***
+                dpg.bind_item_handler_registry(TAG_S7_SIDEBAR_LISTBOX, TAG_S7_LISTBOX_HANDLER_REG)
+
+            with dpg.group(width=-1):
+                dpg.add_text("Source DataFrame: N/A", tag=TAG_S7_SOURCE_DF_INFO_TEXT)
+                dpg.add_button(label="▶️ Run Feature Engineering Pipeline", width=-1, height=30, callback=_run_pipeline)
+                dpg.add_text("Execution List (Pipeline Steps):")
+                dpg.add_table(tag=TAG_S7_EXECUTION_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=180, borders_innerV=True)
+                dpg.add_separator()
+
+                with dpg.tab_bar(tag=TAG_S7_MAIN_TAB_BAR):
+                    # (이하 탭 부분은 이전 답변과 동일)
+                    with dpg.tab(label="Arithmetic", tag=TAG_S7_ARITH_TAB):
+                        dpg.add_text("Build formula by double-clicking variables."); 
+                        with dpg.group(horizontal=True):
+                            dpg.add_input_text(tag=TAG_S7_ARITH_FORMULA_TEXT, hint="Formula appears here...", width=-150)
+                            dpg.add_combo(items=[' + ', ' - ', ' * ', ' / '], tag=TAG_S7_ARITH_OPERATOR_COMBO, default_value=' + ', width=60)
+                            dpg.add_button(label="Add to List", callback=_add_arithmetic_op)
+
+                    with dpg.tab(label="Binning", tag=TAG_S7_BINNING_TAB):
+                        with dpg.group(tag=TAG_S7_BINNING_GROUP, show=False):
+                            with dpg.group(horizontal=True):
+                                with dpg.group(width=200):
+                                    dpg.add_text(tag=TAG_S7_BINNING_SELECTED_VAR_TEXT); dpg.add_spacer(height=5)
+                                    dpg.add_text(tag=TAG_S7_BINNING_STATS_TEXT)
+                                with dpg.plot(label="Distribution", height=150, width=-1, tag=TAG_S7_BINNING_PLOT):
+                                    dpg.add_plot_axis(dpg.mvXAxis, tag=TAG_S7_BINNING_PLOT_XAXIS); dpg.add_plot_axis(dpg.mvYAxis, tag=TAG_S7_BINNING_PLOT_YAXIS)
+                            dpg.add_input_text(label="New Variable Name", tag=TAG_S7_BINNING_NEW_COL_INPUT)
+                            dpg.add_radio_button(label="Method", items=["Equal Frequency (qcut)", "Equal Width (cut)"], tag=TAG_S7_BINNING_METHOD_RADIO, horizontal=True, default_value="Equal Frequency (qcut)")
+                            dpg.add_input_text(label="Bins / Quantiles", hint="e.g., 4 or [0,25,50,100]", tag=TAG_S7_BINNING_BINS_INPUT)
+                            dpg.add_input_text(label="Labels (optional)", hint="Auto-generated if empty", tag=TAG_S7_BINNING_LABELS_INPUT)
+                            dpg.add_button(label="Add Binning Op to List", width=-1, callback=_add_binning_op)
+
+                    with dpg.tab(label="If Builder", tag=TAG_S7_IF_TAB):
+                        with dpg.group(tag=TAG_S7_IF_GROUP, show=False):
+                            with dpg.group(horizontal=True):
+                                with dpg.group(width=200):
+                                    dpg.add_text(tag=TAG_S7_IF_SELECTED_VAR_TEXT); dpg.add_spacer(height=5)
+                                    dpg.add_text(tag=TAG_S7_IF_STATS_TEXT)
+                                with dpg.plot(label="Distribution", height=120, width=-1, tag=TAG_S7_IF_PLOT):
+                                    dpg.add_plot_axis(dpg.mvXAxis, tag=TAG_S7_IF_PLOT_XAXIS); dpg.add_plot_axis(dpg.mvYAxis, tag=TAG_S7_IF_PLOT_YAXIS)
+                            dpg.add_input_text(label="New Variable Name", tag=TAG_S7_IF_NEW_COL_INPUT)
+                            with dpg.table(tag=TAG_S7_IF_BUILDER_TABLE, header_row=True, borders_innerV=True): pass
+                            with dpg.group(horizontal=True):
+                                dpg.add_combo(items=[], tag=TAG_S7_IF_VAR_COMBO, width=120, label="If"); dpg.add_combo(items=['>', '<', '>=', '<=', '==', '!='], tag=TAG_S7_IF_OP_COMBO, width=60, default_value='>')
+                                dpg.add_input_text(hint="Value", tag=TAG_S7_IF_VAL_INPUT, width=100); dpg.add_text("then"); dpg.add_input_text(hint="Result", tag=TAG_S7_IF_RES_INPUT, width=150)
+                                dpg.add_button(label="Add", callback=_add_if_condition_row)
+                            dpg.add_input_text(label="Else (Default)", tag=TAG_S7_IF_DEFAULT_INPUT); dpg.add_button(label="Add 'If' Op to List", width=-1, callback=_add_if_builder_op)
+                    
+                    with dpg.tab(label="Datetime", tag=TAG_S7_DATETIME_TAB):
+                        with dpg.group(tag=TAG_S7_DATETIME_GROUP, show=False):
+                            dpg.add_text(tag=TAG_S7_DATETIME_SELECTED_VAR_TEXT)
+                            dpg.add_text("Select features to extract:")
+                            with dpg.group(horizontal=True):
+                                features = ['Year', 'Month', 'Day', 'Hour', 'DayOfWeek', 'IsWeekend']
+                                for feat in features: dpg.add_checkbox(label=feat, tag=f"dt_check_{feat}")
+                            dpg.add_button(label="Add Datetime Features to List", width=-1, callback=_add_datetime_features_op)
+                    
+                    with dpg.tab(label="Categorical", tag=TAG_S7_CATGROUP_TAB):
+                        with dpg.group(tag=TAG_S7_CATGROUP_GROUP, show=False):
+                            dpg.add_text(tag=TAG_S7_CATGROUP_SELECTED_VAR_TEXT); dpg.add_input_text(label="New Variable Name", tag=TAG_S7_CATGROUP_NEW_COL_INPUT)
+                            with dpg.group(horizontal=True):
+                                dpg.add_button(label="AI Auto-Categorization", callback=_run_ai_categorization, height=30)
+                                dpg.add_button(label="Import from Excel", callback=lambda: dpg.show_item(_EXCEL_IMPORT_DIALOG_ID), height=30)
+                                dpg.add_button(label="Export to Excel", callback=_export_categorical_mapping, height=30)
+                            with dpg.table(tag=TAG_S7_CATGROUP_MAPPING_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=250): pass
+                            dpg.add_button(label="Add Mapping Op to List", width=-1, callback=_add_categorical_grouping_op)
+                    
+                    with dpg.tab(label="Advanced Syntax", tag=TAG_S7_ADV_SYNTAX_TAB):
+                        dpg.add_button(label="Import Pipeline to Code", width=-1, callback=_import_pipeline_to_code)
+                        dpg.add_input_text(tag=TAG_S7_ADV_SYNTAX_INPUT, multiline=True, width=-1, height=390, hint="Visually built pipeline appears here for fine-tuning...")
+
+# --- 이하 함수들은 이전 답변과 대부분 동일하나, 일부 수정된 부분이 포함되어 있습니다. ---
+# (이전 답변의 함수들을 이 아래 부분으로 모두 복사/붙여넣기 하시면 됩니다.)
+# ... (이전 답변의 나머지 모든 함수들)
 def _run_ai_categorization():
     if not ollama_analyzer:
         _util_funcs['_show_simple_modal_message']("AI Error", "Ollama analyzer module not found.")
@@ -103,7 +312,6 @@ Do not provide any other text, explanation, or markdown formatting. Just the raw
         
         _main_app_callbacks['add_ai_log']("AI Response Received. Parsing and applying.", chart_context="AI Categorization", mode="stream_chunk_append")
         
-        # Clean up response to find JSON
         json_match = re.search(r'\{.*\}', full_response, re.DOTALL)
         if not json_match:
             raise json.JSONDecodeError("No JSON object found in AI response.", full_response, 0)
@@ -111,7 +319,6 @@ Do not provide any other text, explanation, or markdown formatting. Just the raw
         json_str = json_match.group(0)
         mapping = json.loads(json_str)
 
-        # Apply mapping to UI
         for original_val, new_cat in mapping.items():
             if original_val in _categorical_input_tags:
                 tag = _categorical_input_tags[original_val]
@@ -126,7 +333,6 @@ Do not provide any other text, explanation, or markdown formatting. Just the raw
         _util_funcs['_show_simple_modal_message']("AI Error", error_msg, width=500, height=300)
         _main_app_callbacks['add_ai_log'](f"\nError during AI categorization: {e}", chart_context="AI Categorization", mode="stream_chunk_append")
 
-# --- NEW: Excel Import ---
 def _process_excel_file(sender, app_data):
     file_path = app_data.get('file_path_name')
     if not file_path: return
@@ -169,20 +375,17 @@ def _process_excel_file(sender, app_data):
     except Exception as e:
         _util_funcs['_show_simple_modal_message']("Excel Error", f"Failed to process Excel file:\n{e}")
 
-# --- MODIFIED: Add Categorical Grouping Operation with Warning ---
 def _add_categorical_grouping_op():
     var = dpg.get_value(TAG_S7_CATGROUP_SELECTED_VAR_TEXT)
     if not var or _current_df_input is None: return
 
     new_col = dpg.get_value(TAG_S7_CATGROUP_NEW_COL_INPUT)
-    # Get mapping for non-empty new categories
     mapping_dict = {k: v for k, v in _categorical_mapping_state.items() if v}
     
     if not mapping_dict:
         _util_funcs['_show_simple_modal_message']("Info", "No new categories have been defined.")
         return
 
-    # Check for unmapped values among those displayed in the table
     displayed_values = set(_categorical_mapping_state.keys())
     mapped_values = set(mapping_dict.keys())
     unmapped_values = displayed_values - mapped_values
@@ -197,52 +400,47 @@ def _add_categorical_grouping_op():
 
     if unmapped_values:
         _util_funcs['show_confirmation_modal'](
-            title="Unspecified Categories",
-            message="There are category values that have not been specified.\nShould they be filled with NaN (missing value)?\n\n(Choosing 'No' will keep the original value instead of NaN).",
-            yes_callback=proceed_with_nan,
-            no_callback=proceed_with_fill # Add no_callback functionality if utils supports it. Let's assume it does. Or just use yes/no
-        )
-        # Re-reading utils.py, it seems it only has a yes_callback. I'll re-think.
-        # Ok, I'll re-purpose the confirmation modal logic inside this function.
-        _util_funcs['show_confirmation_modal'](
-            title="Warning: Undefined Categories",
-            message="지정되지 않은 카테고리 값이 있습니다.\n해당 값들을 NaN으로 채울까요? \n\n('아니오'를 선택하면 원래 값으로 유지됩니다.)",
-            yes_callback=proceed_with_nan,
-            # Let's assume the 'no' button just closes the modal and does nothing. The user must decide.
-            # No, the prompt says "yes(진행) / no(취소)". So 'no' should cancel the whole operation.
-            # Let's re-read again. "전부 NaN 으로 채울까요? [yes(진행) / no(취소)]"
-        )
-        # The prompt is ambiguous. Let's go with the safest interpretation: Yes proceeds, No cancels.
-        _util_funcs['show_confirmation_modal'](
             title="미지정 카테고리",
             message="지정되지 않은 카테고리 값이 있습니다. 전부 NaN 으로 채울까요?",
-            yes_callback=proceed_with_nan
+            yes_callback=proceed_with_nan,
         )
-
-    else: # No unmapped values
+    else:
         proceed_with_fill()
 
-
-# --- MODIFIED: Sidebar Double-Click ---
 def _on_sidebar_variable_double_clicked(sender, app_data, user_data):
-    if not app_data: return
+    # --- ★★★ 최종 수정사항 ★★★ ---
+    # app_data에 원하는 정보가 없으므로, 리스트박스에서 직접 값을 가져옵니다.
+    selected_item_str = dpg.get_value(TAG_S7_SIDEBAR_LISTBOX)
+
+    # 이후 로직은 이전에 수정한 내용과 동일합니다.
+    if not selected_item_str:
+        return
+    
     try:
-        var_name, var_type_str = app_data.rsplit(' (', 1)
+        var_name, var_type_str = selected_item_str.rsplit(' (', 1)
         var_type = var_type_str[:-1]
-    except ValueError: return
+    except ValueError:
+        return
         
     is_derived = var_name in _derived_columns
     active_tab = dpg.get_value(TAG_S7_MAIN_TAB_BAR)
     
+    # 1. Arithmetic 탭이 활성화된 경우
     if active_tab == dpg.get_item_alias(TAG_S7_ARITH_TAB):
         current_formula = dpg.get_value(TAG_S7_ARITH_FORMULA_TEXT)
         operator = dpg.get_value(TAG_S7_ARITH_OPERATOR_COMBO)
+        
         if not current_formula or current_formula.strip().endswith(('+', '-', '*', '/')):
             new_formula = f"{current_formula} df['{var_name}']"
         else:
             new_formula = f"{current_formula}{operator}df['{var_name}']"
+        
         dpg.set_value(TAG_S7_ARITH_FORMULA_TEXT, new_formula.strip())
+        
+        # Arithmetic 탭의 작업을 완료했으므로, 여기서 함수를 완전히 종료합니다.
+        return
 
+    # 2. 다른 탭들이 활성화된 경우
     if is_derived:
         if active_tab != dpg.get_item_alias(TAG_S7_ARITH_TAB):
              _util_funcs['_show_simple_modal_message']("Info", f"'{var_name}' is a derived variable.\nIt can be used in Arithmetic formulas, but not as an input for other operations.")
@@ -271,10 +469,10 @@ def _on_sidebar_variable_double_clicked(sender, app_data, user_data):
         dpg.set_value(TAG_S7_DATETIME_SELECTED_VAR_TEXT, var_name)
     else: # Categorical
         dpg.set_value(TAG_S7_CATGROUP_SELECTED_VAR_TEXT, var_name)
-        dpg.set_value(TAG_S7_CATGROUP_NEW_COL_INPUT, f"{var_name}_cat1") # NEW: Set default name
+        dpg.set_value(TAG_S7_CATGROUP_NEW_COL_INPUT, f"{var_name}_cat1")
         _update_categorical_mapping_table()
 
-# --- MODIFIED: Update Categorical Mapping Table ---
+
 def _update_categorical_mapping_table():
     global _categorical_mapping_state, _categorical_input_tags
     var = dpg.get_value(TAG_S7_CATGROUP_SELECTED_VAR_TEXT)
@@ -288,7 +486,6 @@ def _update_categorical_mapping_table():
     value_counts_top50 = value_counts.head(50).reset_index()
     value_counts_top50.columns = ['value', 'count']
     
-    # Clean up old info text if it exists
     if dpg.does_item_exist("cat_info_text"): dpg.delete_item("cat_info_text")
     dpg.add_text(f"Showing Top 50 of {total_unique} unique values.", parent=TAG_S7_CATGROUP_GROUP, tag="cat_info_text", before=TAG_S7_CATGROUP_MAPPING_TABLE)
 
@@ -301,114 +498,10 @@ def _update_categorical_mapping_table():
     for _, row in value_counts_top50.iterrows():
         original_value_str = str(row['value'])
         with dpg.table_row(parent=TAG_S7_CATGROUP_MAPPING_TABLE):
-            dpg.add_text(original_value_str)
-            dpg.add_text(str(row['count']))
-            # Create input text and store its tag
+            dpg.add_text(original_value_str); dpg.add_text(str(row['count']))
             input_tag = dpg.add_input_text(default_value="", user_data={'raw_value': original_value_str}, callback=lambda s, a, u: _categorical_mapping_state.update({u['raw_value']: a}), width=-1)
             _categorical_input_tags[original_value_str] = input_tag
 
-def create_ui(step_name: str, parent_tag: str, main_app_callbacks: Dict[str, Any]):
-    global _main_app_callbacks, _util_funcs
-    _main_app_callbacks, _util_funcs = main_app_callbacks, main_app_callbacks.get('get_util_funcs', lambda: {})()
-    main_app_callbacks['register_step_group_tag'](step_name, TAG_S7_MAIN_GROUP)
-    main_app_callbacks['register_module_updater'](step_name, update_ui)
-    
-    # --- NEW: File dialog for Excel import ---
-    with dpg.file_dialog(
-        directory_selector=False, show=False, callback=_process_excel_file, 
-        id=_EXCEL_IMPORT_DIALOG_ID, width=700, height=400, modal=True
-    ):
-        dpg.add_file_extension(".xlsx")
-
-    with dpg.group(tag=TAG_S7_MAIN_GROUP, parent=parent_tag, show=False):
-        dpg.add_text(f"--- {step_name} ---", color=[255, 255, 0]); dpg.add_separator()
-        with dpg.group(horizontal=True):
-            # ... (Sidebar remains the same as modified previously) ...
-            with dpg.child_window(width=200):
-                 dpg.add_text("Variable Explorer"); dpg.add_button(label="Refresh List", width=-1, callback=_refresh_sidebar)
-                 dpg.add_radio_button(items=["All", "Numeric", "Non-Numeric"], horizontal=False, default_value="All",tag="sidebar_filter_radio",callback=lambda: _filter_sidebar_list())
-                 dpg.add_listbox(items=[], tag=TAG_S7_SIDEBAR_LISTBOX, callback=_on_sidebar_variable_double_clicked, num_items=25, width=-1)
-            
-            with dpg.group(width=-1):
-                # ... (Execution list and other tabs remain the same as modified previously) ...
-                dpg.add_text("Source DataFrame: N/A", tag=TAG_S7_SOURCE_DF_INFO_TEXT)
-                dpg.add_button(label="▶️ Run Feature Engineering Pipeline", width=-1, height=30, callback=_run_pipeline)
-                dpg.add_text("Execution List (Pipeline Steps):")
-                dpg.add_table(tag=TAG_S7_EXECUTION_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=180, borders_innerV=True)
-                dpg.add_separator()
-
-                with dpg.tab_bar(tag=TAG_S7_MAIN_TAB_BAR):
-                    # ... (Arithmetic, Binning, If Builder, Datetime tabs are unchanged) ...
-                    with dpg.tab(label="Arithmetic", tag=TAG_S7_ARITH_TAB):
-                        dpg.add_text("Build formula by double-clicking variables."); 
-                        with dpg.group(horizontal=True):
-                            dpg.add_input_text(tag=TAG_S7_ARITH_FORMULA_TEXT, hint="Formula appears here...", width=-150)
-                            dpg.add_combo(items=[' + ', ' - ', ' * ', ' / '], tag=TAG_S7_ARITH_OPERATOR_COMBO, default_value=' + ', width=60)
-                            dpg.add_button(label="Add to List", callback=_add_arithmetic_op)
-
-                    with dpg.tab(label="Binning", tag=TAG_S7_BINNING_TAB):
-                        with dpg.group(tag=TAG_S7_BINNING_GROUP, show=False):
-                            with dpg.group(horizontal=True):
-                                with dpg.group(width=200):
-                                    dpg.add_text(tag=TAG_S7_BINNING_SELECTED_VAR_TEXT)
-                                    dpg.add_spacer(height=5)
-                                    dpg.add_text(tag=TAG_S7_BINNING_STATS_TEXT)
-                                with dpg.plot(label="Distribution", height=150, width=-1, tag=TAG_S7_BINNING_PLOT):
-                                    dpg.add_plot_axis(dpg.mvXAxis, tag=TAG_S7_BINNING_PLOT_XAXIS)
-                                    dpg.add_plot_axis(dpg.mvYAxis, tag=TAG_S7_BINNING_PLOT_YAXIS)
-                            dpg.add_input_text(label="New Variable Name", tag=TAG_S7_BINNING_NEW_COL_INPUT)
-                            dpg.add_radio_button(label="Method", items=["Equal Frequency (qcut)", "Equal Width (cut)"], tag=TAG_S7_BINNING_METHOD_RADIO, horizontal=True, default_value="Equal Frequency (qcut)")
-                            dpg.add_input_text(label="Bins / Quantiles", hint="e.g., 4 or [0,25,50,100]", tag=TAG_S7_BINNING_BINS_INPUT)
-                            dpg.add_input_text(label="Labels (optional)", hint="Auto-generated if empty", tag=TAG_S7_BINNING_LABELS_INPUT)
-                            dpg.add_button(label="Add Binning Op to List", width=-1, callback=_add_binning_op)
-
-                    with dpg.tab(label="If Builder", tag=TAG_S7_IF_TAB):
-                        with dpg.group(tag=TAG_S7_IF_GROUP, show=False):
-                            with dpg.group(horizontal=True):
-                                with dpg.group(width=200):
-                                    dpg.add_text(tag=TAG_S7_IF_SELECTED_VAR_TEXT)
-                                    dpg.add_spacer(height=5)
-                                    dpg.add_text(tag=TAG_S7_IF_STATS_TEXT)
-                                with dpg.plot(label="Distribution", height=120, width=-1, tag=TAG_S7_IF_PLOT):
-                                    dpg.add_plot_axis(dpg.mvXAxis, tag=TAG_S7_IF_PLOT_XAXIS)
-                                    dpg.add_plot_axis(dpg.mvYAxis, tag=TAG_S7_IF_PLOT_YAXIS)
-                            dpg.add_input_text(label="New Variable Name", tag=TAG_S7_IF_NEW_COL_INPUT)
-                            with dpg.table(tag=TAG_S7_IF_BUILDER_TABLE, header_row=True, borders_innerV=True): pass
-                            with dpg.group(horizontal=True):
-                                dpg.add_combo(items=[], tag=TAG_S7_IF_VAR_COMBO, width=120, label="If"); dpg.add_combo(items=['>', '<', '>=', '<=', '==', '!='], tag=TAG_S7_IF_OP_COMBO, width=60, default_value='>')
-                                dpg.add_input_text(hint="Value", tag=TAG_S7_IF_VAL_INPUT, width=100); dpg.add_text("then"); dpg.add_input_text(hint="Result", tag=TAG_S7_IF_RES_INPUT, width=150)
-                                dpg.add_button(label="Add", callback=_add_if_condition_row)
-                            dpg.add_input_text(label="Else (Default)", tag=TAG_S7_IF_DEFAULT_INPUT); dpg.add_button(label="Add 'If' Op to List", width=-1, callback=_add_if_builder_op)
-                    
-                    with dpg.tab(label="Datetime", tag=TAG_S7_DATETIME_TAB):
-                        with dpg.group(tag=TAG_S7_DATETIME_GROUP, show=False):
-                            dpg.add_text(tag=TAG_S7_DATETIME_SELECTED_VAR_TEXT)
-                            dpg.add_text("Select features to extract:")
-                            with dpg.group(horizontal=True):
-                                features = ['Year', 'Month', 'Day', 'Hour', 'DayOfWeek', 'IsWeekend']
-                                for feat in features: dpg.add_checkbox(label=feat, tag=f"dt_check_{feat}")
-                            dpg.add_button(label="Add Datetime Features to List", width=-1, callback=_add_datetime_features_op)
-
-                    # --- MODIFIED: Categorical Tab ---
-                    with dpg.tab(label="Categorical", tag=TAG_S7_CATGROUP_TAB):
-                        with dpg.group(tag=TAG_S7_CATGROUP_GROUP, show=False):
-                            dpg.add_text(tag=TAG_S7_CATGROUP_SELECTED_VAR_TEXT)
-                            dpg.add_input_text(label="New Variable Name", tag=TAG_S7_CATGROUP_NEW_COL_INPUT)
-                            
-                            with dpg.group(horizontal=True):
-                                dpg.add_button(label="AI Auto-Categorization", callback=_run_ai_categorization, height=30)
-                                dpg.add_button(label="Import from Excel", callback=lambda: dpg.show_item(_EXCEL_IMPORT_DIALOG_ID), height=30)
-                            
-                            with dpg.table(tag=TAG_S7_CATGROUP_MAPPING_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=250): pass
-                            dpg.add_button(label="Add Mapping Op to List", width=-1, callback=_add_categorical_grouping_op)
-                    
-                    with dpg.tab(label="Advanced Syntax", tag=TAG_S7_ADV_SYNTAX_TAB):
-                        dpg.add_button(label="Import Pipeline to Code", width=-1, callback=_import_pipeline_to_code)
-                        dpg.add_input_text(tag=TAG_S7_ADV_SYNTAX_INPUT, multiline=True, width=-1, height=390, hint="Visually built pipeline appears here for fine-tuning...")
-
-
-# --- Other functions remain largely the same, only the ones modified are shown above ---
-# (Placeholders for brevity)
 def _generate_unique_col_name(base_name: str) -> str:
     all_names = [item.split(' (')[0] for item in _available_columns_list]
     clean_base_name = re.sub(r'[^A-Za-z0-9_]+', '', base_name)
@@ -437,29 +530,15 @@ def _add_to_execution_list(output_col: str, method: str, syntax: str, show_previ
     if unique_output_col != output_col:
         syntax = syntax.replace(f"df['{output_col}']", f"df['{unique_output_col}']", 1)
     _execution_list.append({"output_col": unique_output_col, "method": method, "syntax": syntax})
-    _refresh_sidebar()
-    _update_execution_list_table()
+    _refresh_sidebar(); _update_execution_list_table()
     if show_preview and _current_df_input is not None:
         temp_df = _current_df_input.copy()
         exec(syntax, {'df': temp_df, 'pd': pd, 'np': np})
         input_vars = re.findall(r"df\[['\"](.*?)['\"]\]", syntax.split('=', 1)[1])
         _show_preview_modal(temp_df, input_vars, unique_output_col)
 
-def _update_execution_list_table():
-    if not dpg.is_dearpygui_running() or not dpg.does_item_exist(TAG_S7_EXECUTION_TABLE): return
-    dpg.delete_item(TAG_S7_EXECUTION_TABLE, children_only=True)
-    dpg.add_table_column(label="Output Variable", parent=TAG_S7_EXECUTION_TABLE, width_stretch=True, init_width_or_weight=0.25)
-    dpg.add_table_column(label="Method", parent=TAG_S7_EXECUTION_TABLE, width_stretch=True, init_width_or_weight=0.15)
-    dpg.add_table_column(label="Definition", parent=TAG_S7_EXECUTION_TABLE, width_stretch=True, init_width_or_weight=0.50)
-    dpg.add_table_column(label="Action", parent=TAG_S7_EXECUTION_TABLE, width_fixed=True, init_width_or_weight=65)
-    for i, op in enumerate(_execution_list):
-        with dpg.table_row(parent=TAG_S7_EXECUTION_TABLE):
-            dpg.add_text(op.get("output_col", "N/A")); dpg.add_text(op.get("method", "N/A"))
-            dpg.add_text(op.get("syntax", "N/A")); dpg.add_button(label="Delete", user_data=i, callback=_delete_operation)
-
 def _delete_operation(sender, app_data, user_data):
-    _execution_list.pop(user_data)
-    _refresh_sidebar(); _update_execution_list_table()
+    _execution_list.pop(user_data); _refresh_sidebar(); _update_execution_list_table()
 def _filter_sidebar_list():
     if not dpg.is_dearpygui_running(): return
     filter_type = dpg.get_value("sidebar_filter_radio")
@@ -478,12 +557,10 @@ def _refresh_sidebar():
         for op in _execution_list:
             try:
                 exec(op['syntax'], exec_scope)
-                col_name = op['output_col']; dtype = exec_scope['df'][col_name].dtype
+                col_name, dtype = op['output_col'], exec_scope['df'][op['output_col']].dtype
                 derived_cols_info.append(f"{col_name} ({dtype})"); new_derived_columns.append(col_name)
-            except Exception:
-                derived_cols_info.append(f"{op['output_col']} (error)"); new_derived_columns.append(op['output_col'])
-        _available_columns_list = input_cols + derived_cols_info
-        _derived_columns = new_derived_columns
+            except Exception: derived_cols_info.append(f"{op['output_col']} (error)"); new_derived_columns.append(op['output_col'])
+        _available_columns_list = input_cols + derived_cols_info; _derived_columns = new_derived_columns
     if dpg.is_dearpygui_running() and dpg.does_item_exist(TAG_S7_SIDEBAR_LISTBOX):
         dpg.configure_item(TAG_S7_SIDEBAR_LISTBOX, items=_available_columns_list)
 def _update_stats_and_plot(group_tag, selected_var, df):
@@ -499,14 +576,12 @@ def _update_stats_and_plot(group_tag, selected_var, df):
 def _add_arithmetic_op():
     formula = dpg.get_value(TAG_S7_ARITH_FORMULA_TEXT)
     if not formula.strip(): return
-    _add_to_execution_list("arith_var", "Arithmetic", f"df['arith_var'] = {formula}", show_preview=True)
-    dpg.set_value(TAG_S7_ARITH_FORMULA_TEXT, "")
+    _add_to_execution_list("arith_var", "Arithmetic", f"df['arith_var'] = {formula}", show_preview=True); dpg.set_value(TAG_S7_ARITH_FORMULA_TEXT, "")
 def _add_binning_op():
     var, new_col, method, bins_input, user_labels = dpg.get_value(TAG_S7_BINNING_SELECTED_VAR_TEXT), dpg.get_value(TAG_S7_BINNING_NEW_COL_INPUT), dpg.get_value(TAG_S7_BINNING_METHOD_RADIO), dpg.get_value(TAG_S7_BINNING_BINS_INPUT), dpg.get_value(TAG_S7_BINNING_LABELS_INPUT)
     if not var: return
     try:
         if not bins_input.strip(): raise ValueError("Bins/Quantiles input cannot be empty.")
-        series = _current_df_input[var]
         labels_str = f"labels=[{user_labels}]" if user_labels.strip() else ""
         if method == 'Equal Frequency (qcut)': syntax = f"df['{new_col}'] = pd.qcut(df['{var}'], q={bins_input}, {labels_str}, duplicates='drop')"
         else: syntax = f"df['{new_col}'] = pd.cut(df['{var}'], bins={bins_input}, {labels_str}, right=False)"
@@ -518,8 +593,7 @@ def _add_if_condition_row():
     new_condition = {'var': var, 'op': op, 'val': val, 'res': res}
     if new_condition in _if_conditions_list: _util_funcs['_show_simple_modal_message']("Error", "This exact condition already exists."); return
     _if_conditions_list.append(new_condition); _update_if_builder_table()
-def _delete_if_condition_row(sender, app_data, user_data):
-    _if_conditions_list.pop(user_data); _update_if_builder_table()
+def _delete_if_condition_row(sender, app_data, user_data): _if_conditions_list.pop(user_data); _update_if_builder_table()
 def _update_if_builder_table():
     if not dpg.is_dearpygui_running() or not dpg.does_item_exist(TAG_S7_IF_BUILDER_TABLE): return
     dpg.delete_item(TAG_S7_IF_BUILDER_TABLE, children_only=True)
@@ -532,8 +606,7 @@ def _add_if_builder_op():
     var, new_col, default_val = dpg.get_value(TAG_S7_IF_SELECTED_VAR_TEXT), dpg.get_value(TAG_S7_IF_NEW_COL_INPUT), dpg.get_value(TAG_S7_IF_DEFAULT_INPUT)
     if not var or not _if_conditions_list: return
     try:
-        conditions = [f"(df['{item['var']}'] {item['op']} {item['val']})" for item in _if_conditions_list]
-        results, default_val_str = [f"'{item['res']}'" for item in _if_conditions_list], f"'{default_val}'"
+        conditions, results, default_val_str = [f"(df['{item['var']}'] {item['op']} {item['val']})" for item in _if_conditions_list], [f"'{item['res']}'" for item in _if_conditions_list], f"'{default_val}'"
         syntax = f"conditions = [{', '.join(conditions)}]\nresults = [{', '.join(results)}]\ndf['{new_col}'] = np.select(conditions, results, default={default_val_str})"
         _add_to_execution_list(new_col, "If Builder", syntax, show_preview=True)
         _if_conditions_list.clear(); _update_if_builder_table()
@@ -545,8 +618,7 @@ def _add_datetime_features_op():
     for feature, syntax_part in features.items():
         if dpg.get_value(f"dt_check_{feature}"):
             new_col_name = f"{var}_{feature.lower()}"
-            if feature == 'IsWeekend': syntax = f"df['{new_col_name}'] = pd.to_datetime(df['{var}']).dt.dayofweek >= 5"
-            else: syntax = f"df['{new_col_name}'] = pd.to_datetime(df['{var}']).dt.{feature.lower()}"
+            syntax = f"df['{new_col_name}'] = pd.to_datetime(df['{var}']).dt.dayofweek >= 5" if feature == 'IsWeekend' else f"df['{new_col_name}'] = pd.to_datetime(df['{var}']).dt.{feature.lower()}"
             _add_to_execution_list(new_col_name, "Datetime Feature", syntax)
     _util_funcs['_show_simple_modal_message']("Success", "Datetime features added to the execution list.")
 def _import_pipeline_to_code():
@@ -556,7 +628,7 @@ def _import_pipeline_to_code():
     dpg.set_value(TAG_S7_ADV_SYNTAX_INPUT, full_code)
 def _run_pipeline():
     if _current_df_input is None: return
-    df, exec_scope = _current_df_input.copy(), {'df': df, 'pd': pd, 'np': np}
+    df, exec_scope = _current_df_input.copy(), {'df': _current_df_input.copy(), 'pd': pd, 'np': np}
     try:
         active_tab = dpg.get_value(TAG_S7_MAIN_TAB_BAR)
         if active_tab == dpg.get_item_alias(TAG_S7_ADV_SYNTAX_TAB):
@@ -574,13 +646,14 @@ def update_ui(df_input: Optional[pd.DataFrame], main_app_callbacks: Dict[str, An
     _main_app_callbacks, _current_df_input = main_app_callbacks, df_input
     if df_input is None: reset_state(); return
     if dpg.is_dearpygui_running():
-        dpg.set_value("step7_source_df_info_text", f"Source DataFrame: (Shape: {df_input.shape})")
+        dpg.set_value(TAG_S7_SOURCE_DF_INFO_TEXT, f"Source DataFrame: (Shape: {df_input.shape})")
         _refresh_sidebar(); _update_execution_list_table()
         _if_conditions_list.clear(); _update_if_builder_table()
         dpg.configure_item(TAG_S7_BINNING_GROUP, show=False); dpg.configure_item(TAG_S7_IF_GROUP, show=False); dpg.configure_item(TAG_S7_DATETIME_GROUP, show=False); dpg.configure_item(TAG_S7_CATGROUP_GROUP, show=False)
 def reset_state():
-    global _execution_list, _if_conditions_list, _available_columns_list, _derived_columns
+    global _execution_list, _if_conditions_list, _available_columns_list, _derived_columns, _categorical_mapping_state, _categorical_input_tags
     _execution_list, _if_conditions_list, _available_columns_list, _derived_columns = [], [], [], []
+    _categorical_mapping_state, _categorical_input_tags = {}, {}
     if dpg.is_dearpygui_running(): _refresh_sidebar(); _update_execution_list_table(); _update_if_builder_table()
 def get_settings_for_saving() -> dict: return {"execution_list": _execution_list}
 def apply_settings_and_process(df_input: pd.DataFrame, settings: dict, main_app_callbacks: Dict[str, Any]):
