@@ -1152,8 +1152,10 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
             dpg.add_text("Analysis Steps", color=[255,255,0]); dpg.add_separator()
             for step_name_nav in ANALYSIS_STEPS:
                 dpg.add_button(label=step_name_nav, callback=switch_step_view, user_data=step_name_nav, width=-1, height=30)
-        content_area_width = 1000
+
         ai_log_panel_width = 400
+        content_area_width = -(ai_log_panel_width)
+
 
         with dpg.child_window(tag="content_area", border=True, parent="main_layout_group", width=content_area_width):
             for step_name_create in ANALYSIS_STEPS:
