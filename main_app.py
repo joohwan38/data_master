@@ -997,7 +997,7 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
             for step_name_nav in ANALYSIS_STEPS:
                 dpg.add_button(label=step_name_nav, callback=switch_step_view, user_data=step_name_nav, width=-1, height=30)
 
-        ai_log_panel_width = 400
+        ai_log_panel_width = 350
         content_area_width = -(ai_log_panel_width)
 
 
