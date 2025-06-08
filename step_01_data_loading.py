@@ -113,22 +113,19 @@ def _apply_type_changes_and_process():
         print("Error: Main callbacks not set in step_01_data_loading for apply_type_changes.")
         return
 
-    # In Step 1, type changes are applied to the original_df to create df_after_step1
-    original_df = _module_main_callbacks.get('get_original_df', lambda: None)()
-    
-    if original_df is None:
-        if _util_funcs and '_show_simple_modal_message' in _util_funcs: # Check _util_funcs
+    original_df_ref = _module_main_callbacks.get('get_original_df', lambda: None)()
+
+    if original_df_ref is None:
+        if _util_funcs and '_show_simple_modal_message' in _util_funcs:
             _util_funcs['_show_simple_modal_message']("Error", "Original data not available to apply type changes.")
-        else:
-            print("Error: Original data not available to apply type changes.")
-        _module_main_callbacks['step1_processing_complete'](None) # Pass None if no data
+        _module_main_callbacks['step1_processing_complete'](None)
         return
 
-    df_processed = original_df.copy() # Start with a fresh copy of original_df
+    # --- 수정된 부분: .copy(deep=True)를 사용하여 깊은 복사본 생성 ---
+    df_processed = original_df_ref.copy(deep=True) 
 
     if not _type_selections:
         print("No type changes selected in _type_selections. Passing a copy of original_df.")
-
         _module_main_callbacks['step1_processing_complete'](df_processed)
         return
 
@@ -136,15 +133,15 @@ def _apply_type_changes_and_process():
         if col_name not in df_processed.columns:
             continue
         try:
-            df_processed[col_name] = _convert_column_type(original_df[col_name].copy(), new_type_key, original_df) # Apply to a copy of the original series
+            # _convert_column_type 함수에 전달하는 series도 df_processed에서 가져오도록 수정
+            df_processed[col_name] = _convert_column_type(df_processed[col_name], new_type_key, df_processed)
         except Exception as e:
             error_message = f"Error converting column '{col_name}' to type '{new_type_key}': {e}"
             print(error_message)
             if _util_funcs and '_show_simple_modal_message' in _util_funcs:
                  _util_funcs['_show_simple_modal_message']("Type Conversion Error", error_message)
-            # Keep the column as is in df_processed if conversion fails for this column
-            df_processed[col_name] = original_df[col_name].copy()
-
+            # 변환 실패 시, 원본 데이터로 되돌리는 대신 현재 복사본 상태 유지
+            df_processed[col_name] = original_df_ref[col_name].copy(deep=True)
 
     _module_main_callbacks['step1_processing_complete'](df_processed)
     print("Type changes applied from Step 1 and step1_processing_complete called.")

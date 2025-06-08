@@ -108,7 +108,7 @@ def _on_custom_fill_value_change(sender, app_data_fill_value: str, user_data_col
 
 def _execute_imputation_logic():
     global _main_app_callbacks, _df_after_nan_conversion, _current_df_for_this_step, _util_funcs, _df_after_imputation
-    
+
     df_to_process = _df_after_nan_conversion if _df_after_nan_conversion is not None else _current_df_for_this_step
 
     if not _main_app_callbacks or df_to_process is None:
@@ -119,17 +119,34 @@ def _execute_imputation_logic():
         return
 
     log_messages = ["--- Executing Selected Imputations (Step 4) ---"]
-    df_processed = df_to_process.copy() 
-    imputation_applied_any = False
-    
-    use_iterative_imputer = any(method == "Iterative Imputer (MICE)" for col, (method, _) in _imputation_method_selections.items())
-    
+    df_processed = df_to_process.copy()
+
+    # --- 수정된 부분 시작 ---
+    imputation_applied_to_any_column = False
+    total_imputed_count = 0
+
+    # 처리할 메소드가 선택되었는지 먼저 확인
+    methods_to_run = {col: (method, val) for col, (method, val) in _imputation_method_selections.items() if method != "Do Not Impute"}
+    if not methods_to_run:
+        log_messages.append("No imputation methods (other than 'Do Not Impute') were selected.")
+        log_messages.append("--- Imputation execution finished with no changes. ---")
+        if dpg.does_item_exist(TAG_MV_LOG_TEXT):
+            dpg.set_value(TAG_MV_LOG_TEXT, "\n".join(log_messages))
+        if _util_funcs and '_show_simple_modal_message' in _util_funcs:
+            _util_funcs['_show_simple_modal_message']("Notice", "No changes were made as no imputation methods were selected.")
+        # 변경이 없으므로 콜백을 호출하되, 원본을 그대로 전달하거나 None을 전달하여 상태를 유지
+        _main_app_callbacks['step4_missing_value_processing_complete'](df_to_process)
+        return
+    # --- 수정된 부분 끝 ---
+
+    use_iterative_imputer = any(method == "Iterative Imputer (MICE)" for col, (method, _) in methods_to_run.items())
+
     if use_iterative_imputer:
         log_messages.append("Iterative Imputer (MICE) selected for one or more columns.")
         log_messages.append("  └─ Applying IterativeImputer to all numeric columns with missing values.")
-        
+
         numeric_cols_original_order = [col for col in df_processed.columns if pd.api.types.is_numeric_dtype(df_processed[col])]
-        
+
         if not numeric_cols_original_order:
             log_messages.append("  └─ No numeric columns found to apply IterativeImputer.")
         else:
@@ -141,49 +158,52 @@ def _execute_imputation_logic():
                     iter_imputer = IterativeImputer(random_state=0, max_iter=10) 
                     df_numeric_imputed_values = iter_imputer.fit_transform(df_numeric_for_imputation)
                     df_numeric_imputed = pd.DataFrame(df_numeric_imputed_values, columns=numeric_cols_original_order, index=df_numeric_for_imputation.index)
-                    
+
                     for col_name_iter in numeric_cols_original_order:
                         df_processed[col_name_iter] = df_numeric_imputed[col_name_iter]
 
                     missing_in_numeric_after_iter = df_processed[numeric_cols_original_order].isnull().sum().sum()
                     imputed_count_iter = missing_in_numeric_before_iter - missing_in_numeric_after_iter
+                    total_imputed_count += imputed_count_iter
                     log_messages.append(f"  └─ IterativeImputer successfully applied to numeric columns. {imputed_count_iter} missing values imputed.")
-                    imputation_applied_any = True
+                    if imputed_count_iter > 0:
+                        imputation_applied_to_any_column = True
                 except Exception as e_iter:
                     log_messages.append(f"  └─ Error during IterativeImputer: {e_iter}")
             else:
                 log_messages.append("  └─ No missing values found in numeric columns for IterativeImputer.")
 
-    for col_name, (method, custom_value_str) in _imputation_method_selections.items():
+    for col_name, (method, custom_value_str) in methods_to_run.items():
         if col_name not in df_processed.columns:
             continue
-        
-        if method == "Iterative Imputer (MICE)" and pd.api.types.is_numeric_dtype(df_processed[col_name].dtype):
-            log_messages.append(f"Column '{col_name}' was processed by Iterative Imputer (MICE).")
-            continue 
-        elif method == "Iterative Imputer (MICE)" and not pd.api.types.is_numeric_dtype(df_processed[col_name].dtype):
-            log_messages.append(f"Column '{col_name}': Iterative Imputer (MICE) selected but column is non-numeric. Skipped by MICE.")
-            continue
 
-        if method == "Do Not Impute":
+        if method == "Iterative Imputer (MICE)":
+             # 위에서 이미 처리되었으므로 건너뛰거나, 로그만 남김
+            if pd.api.types.is_numeric_dtype(df_processed[col_name].dtype):
+                log_messages.append(f"Column '{col_name}' was processed by the global Iterative Imputer.")
+            else:
+                log_messages.append(f"Column '{col_name}': Iterative Imputer selected but column is non-numeric. Skipped.")
             continue
 
         log_messages.append(f"Processing Column '{col_name}' with method '{method}':")
         original_missing_count_col = df_processed[col_name].isnull().sum()
 
+        if original_missing_count_col == 0:
+            log_messages.append(f"  └─ No missing values to impute in '{col_name}'.")
+            continue
+
         try:
             if method == "Remove Rows with Missing":
-                if original_missing_count_col > 0:
-                    rows_before = len(df_processed)
-                    df_processed.dropna(subset=[col_name], inplace=True) 
-                    rows_after = len(df_processed)
-                    log_messages.append(f"  └─ Removed {rows_before - rows_after} rows with missing values in '{col_name}'.")
-                    imputation_applied_any = True
-                else:
-                    log_messages.append(f"  └─ No missing values to remove in '{col_name}'.")
-            
-            elif original_missing_count_col > 0: 
-                series_to_impute_df = df_processed[[col_name]] 
+                rows_before = len(df_processed)
+                df_processed.dropna(subset=[col_name], inplace=True)
+                rows_after = len(df_processed)
+                removed_count = rows_before - rows_after
+                log_messages.append(f"  └─ Removed {removed_count} rows with missing values in '{col_name}'.")
+                if removed_count > 0:
+                    imputation_applied_to_any_column = True
+
+            else: # Imputation methods
+                series_to_impute_df = df_processed[[col_name]]
                 imputer = None
 
                 if method == "Impute with 0":
@@ -216,48 +236,45 @@ def _execute_imputation_logic():
                             else: raise ValueError("Boolean custom value must be 'true' or 'false'")
                         elif pd.api.types.is_datetime64_any_dtype(original_col_dtype):
                             fill_val_typed = pd.to_datetime(custom_value_str)
-                    except ValueError as ve:
+                    except (ValueError, TypeError) as ve:
                         log_messages.append(f"  └─ Warning: Custom value '{custom_value_str}' for column '{col_name}' (dtype: {original_col_dtype}) caused conversion error: {ve}. Using as string if applicable, or imputation might fail.")
                     imputer = SimpleImputer(strategy='constant', fill_value=fill_val_typed)
 
                 if imputer:
                     transformed_col = imputer.fit_transform(series_to_impute_df)
-                    df_processed[col_name] = transformed_col 
-                    imputation_applied_any = True
-                    
+                    df_processed[col_name] = transformed_col
+                    if original_missing_count_col > 0:
+                        imputation_applied_to_any_column = True
+                        total_imputed_count += original_missing_count_col
+
                     applied_stat_info = ""
                     if hasattr(imputer, 'statistics_') and len(imputer.statistics_) > 0:
                         stat_val = imputer.statistics_[0]
                         if isinstance(stat_val, float): applied_stat_info = f" (applied: {stat_val:.2f})"
                         else: applied_stat_info = f" (applied: '{stat_val}')"
                     log_messages.append(f"  └─ Imputed {original_missing_count_col} missing values{applied_stat_info}.")
-            else: 
-                 log_messages.append(f"  └─ No missing values to impute in '{col_name}'.")
         except Exception as e:
             log_messages.append(f"  └─ Error during {method} for '{col_name}': {e}")
 
-    if not imputation_applied_any:
-        log_messages.append("No imputation methods selected or applied.")
-    else:
-        log_messages.append("--- Imputation execution finished. ---")
+    log_messages.append("--- Imputation execution finished. ---")
 
     if dpg.does_item_exist(TAG_MV_LOG_TEXT):
         dpg.set_value(TAG_MV_LOG_TEXT, "\n".join(log_messages))
-    
+
     _df_after_imputation = df_processed.copy() 
 
     if dpg.does_item_exist(TAG_MV_METHOD_SELECTION_TABLE) and _df_after_imputation is not None:
-        _populate_method_selection_table(_df_after_imputation) 
+        _populate_method_selection_table(_df_after_imputation)
 
     _show_simple_modal_message_func = _util_funcs.get('_show_simple_modal_message') if _util_funcs else None
     if _show_simple_modal_message_func:
-        if imputation_applied_any:
-             _show_simple_modal_message_func("Imputation Complete", "Selected missing value treatments have been applied.\nCheck the 'Select Imputation Method & View Status' table and logs for details.")
+        if imputation_applied_to_any_column:
+             modal_msg = f"Imputation complete. A total of {total_imputed_count} values were imputed or rows removed."
+             _show_simple_modal_message_func("Imputation Complete", modal_msg)
         else:
-             _show_simple_modal_message_func("Notice", "No imputation methods were selected or applied.")
-    
-    _main_app_callbacks['step4_missing_value_processing_complete'](_df_after_imputation)
+             _show_simple_modal_message_func("Notice", "Processing finished, but no actual changes were made to the data.")
 
+    _main_app_callbacks['step4_missing_value_processing_complete'](_df_after_imputation)
 
 def _populate_method_selection_table(df: pd.DataFrame):
     """결측치 처리 방법 선택 테이블을 채웁니다. 현재 df에서 결측치가 있는 컬럼만 표시합니다.""" # 설명 수정

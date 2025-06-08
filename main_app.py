@@ -201,206 +201,67 @@ def update_target_variable_combo():
             if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
 
 
+def trigger_all_module_updates():
+    """등록된 모든 모듈의 UI를 업데이트합니다."""
+    print("Updating all module UIs...")
+    for step_key_or_name in ANALYSIS_STEPS:
+        trigger_specific_module_update(step_key_or_name)
+    print("All module UIs update process finished.")
+
+def _update_pipeline_state(step_name: str, result_df: Optional[pd.DataFrame]):
+    """
+    파이프라인의 상태를 중앙에서 업데이트하는 헬퍼 함수.
+    current_df와 df_after_step*을 업데이트하고 모든 UI를 새로고침합니다.
+    """
+    if result_df is None:
+        print(f"Processing for {step_name} returned None. State not updated.")
+        return
+
+    print(f"Updating pipeline state after: {step_name}")
+
+    # 각 단계에 맞는 app_state 변수에 결과 저장
+    if step_name == ANALYSIS_STEPS[0]: # "1. Data Loading & Overview"
+        app_state.df_after_step1 = result_df.copy(deep=True)
+        app_state.current_df = app_state.df_after_step1.copy(deep=True)
+    elif step_name == ANALYSIS_STEPS[3]: # "4. Missing Value Treatment"
+        app_state.df_after_step4 = result_df.copy(deep=True)
+        app_state.current_df = app_state.df_after_step4.copy(deep=True)
+    elif step_name == ANALYSIS_STEPS[4]: # "5. Outlier Treatment"
+        app_state.df_after_step5 = result_df.copy(deep=True)
+        app_state.current_df = app_state.df_after_step5.copy(deep=True)
+    elif step_name == ANALYSIS_STEPS[5]: # "6. Standardization"
+        app_state.df_after_step6 = result_df.copy(deep=True)
+        app_state.current_df = app_state.df_after_step6.copy(deep=True)
+    elif step_name == ANALYSIS_STEPS[6]: # "7. Feature Engineering"
+        app_state.df_after_step7 = result_df.copy(deep=True)
+        app_state.current_df = app_state.df_after_step7.copy(deep=True)
+
+    # 이 단계 이후의 모든 후속 단계 상태는 초기화
+    step_index = ANALYSIS_STEPS.index(step_name)
+    if step_index < 3: app_state.df_after_step4 = None
+    if step_index < 4: app_state.df_after_step5 = None
+    if step_index < 5: app_state.df_after_step6 = None
+    if step_index < 6: app_state.df_after_step7 = None
+
+    # 타겟 변수 콤보박스와 모든 모듈 UI 업데이트
+    update_target_variable_combo()
+    trigger_all_module_updates()
+
+
 def step1_processing_complete(processed_df: pd.DataFrame):
-    """Step 1 (Data Loading & Overview) 처리 완료 시 호출되는 콜백입니다."""
-    if processed_df is None:
-        print("Step 1 returned no DataFrame.")
-        _show_simple_modal_message("Step 1 Error", "Data processing in Step 1 did not return a valid dataset.")
-        app_state.df_after_step1 = None
-        app_state.current_df = None
-    else:
-        print("Step 1 processing complete. Updating app_state.df_after_step1 and current_df.")
-        app_state.df_after_step1 = processed_df.copy()
-        app_state.current_df = app_state.df_after_step1.copy()
-    
-    app_state.df_after_step3 = None
-    app_state.df_after_step4 = None
-    app_state.df_after_step5 = None
-    app_state.df_after_step6 = None # Reset Step 6
-
-    if app_state.selected_target_variable and \
-       (app_state.df_after_step1 is None or app_state.selected_target_variable not in app_state.df_after_step1.columns):
-        app_state.selected_target_variable = None
-        if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
-        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
-        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
-    
-    update_target_variable_combo()
-    
-    if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0 and ANALYSIS_STEPS[0] in app_state.module_ui_updaters:
-        print(f"Explicitly triggering UI update for Step 1: {ANALYSIS_STEPS[0]}")
-        trigger_specific_module_update(ANALYSIS_STEPS[0])
-    
-    trigger_all_module_updates_except_step1()
-
-
-def step3_processing_complete(processed_df: pd.DataFrame):
-    """Step 3 (Node Editor) 처리 완료 시 호출되는 콜백입니다."""
-    if processed_df is None:
-        print("Step 3 (Node Editor) returned no DataFrame.")
-        app_state.current_df = app_state.df_after_step1.copy() if app_state.df_after_step1 is not None else None
-        app_state.df_after_step3 = None
-    else:
-        print("Step 3 (Node Editor) processing complete. Updating app_state.")
-        app_state.df_after_step3 = processed_df.copy()
-        app_state.current_df = app_state.df_after_step3.copy()
-    
-    app_state.df_after_step4 = None
-    app_state.df_after_step5 = None
-    app_state.df_after_step6 = None # Reset Step 6
-
-    if app_state.selected_target_variable and \
-       (app_state.current_df is None or app_state.selected_target_variable not in app_state.current_df.columns):
-        app_state.selected_target_variable = None
-        if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
-        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
-        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
-    
-    update_target_variable_combo()
-    
-    if len(ANALYSIS_STEPS) > 3 and ANALYSIS_STEPS[3] in app_state.module_ui_updaters: # Update step 4
-        print(f"Triggering UI update for subsequent step: {ANALYSIS_STEPS[3]}")
-        trigger_specific_module_update(ANALYSIS_STEPS[3])
-
+    _update_pipeline_state(ANALYSIS_STEPS[0], processed_df)
 
 def step4_missing_value_processing_complete(processed_df: pd.DataFrame):
-    """Step 4 (Missing Value Treatment) 처리 완료 시 호출되는 콜백입니다."""
-    if processed_df is None:
-        print("Step 4 (Missing Values) returned no DataFrame.")
-        if app_state.df_after_step3 is not None:
-            app_state.current_df = app_state.df_after_step3.copy()
-        elif app_state.df_after_step1 is not None:
-            app_state.current_df = app_state.df_after_step1.copy()
-        else: 
-            app_state.current_df = None
-        app_state.df_after_step4 = None
-    else:
-        print("Step 4 (Missing Values) processing complete. Updating app_state.")
-        app_state.df_after_step4 = processed_df.copy()
-        app_state.current_df = app_state.df_after_step4.copy()
-    
-    app_state.df_after_step5 = None
-    app_state.df_after_step6 = None # Reset Step 6
-
-    if app_state.selected_target_variable and \
-       (app_state.current_df is None or app_state.selected_target_variable not in app_state.current_df.columns):
-        app_state.selected_target_variable = None
-        if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
-        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
-        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
-    
-    update_target_variable_combo()
-    
-    if len(ANALYSIS_STEPS) > 4 and ANALYSIS_STEPS[4] in app_state.module_ui_updaters: # Update step 5
-        print(f"Triggering UI update for subsequent step: {ANALYSIS_STEPS[4]}")
-        trigger_specific_module_update(ANALYSIS_STEPS[4])
+    _update_pipeline_state(ANALYSIS_STEPS[3], processed_df)
 
 def step5_outlier_treatment_complete(processed_df: pd.DataFrame):
-    """Step 5 (Outlier Treatment) 처리 완료 시 호출되는 콜백입니다."""
-    if processed_df is None:
-        print("Step 5 (Outlier Treatment) returned no DataFrame.")
-        # Fallback to previous step's data if treatment wasn't successful or didn't change df
-        if app_state.df_after_step4 is not None:
-            app_state.current_df = app_state.df_after_step4.copy()
-        elif app_state.df_after_step3 is not None:
-            app_state.current_df = app_state.df_after_step3.copy()
-        elif app_state.df_after_step1 is not None:
-            app_state.current_df = app_state.df_after_step1.copy()
-        else:
-            app_state.current_df = None
-        app_state.df_after_step5 = None
-    else:
-        print("Step 5 (Outlier Treatment) processing complete. Updating app_state.")
-        app_state.df_after_step5 = processed_df.copy()
-        app_state.current_df = app_state.df_after_step5.copy()
-    
-    app_state.df_after_step6 = None # Reset Step 6
-
-    if app_state.selected_target_variable and \
-       (app_state.current_df is None or app_state.selected_target_variable not in app_state.current_df.columns):
-        app_state.selected_target_variable = None
-        if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
-        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
-        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
-
-    update_target_variable_combo()
-    
-    if len(ANALYSIS_STEPS) > 5 and ANALYSIS_STEPS[5] in app_state.module_ui_updaters: # Update step 6
-        print(f"Triggering UI update for subsequent step: {ANALYSIS_STEPS[5]}")
-        trigger_specific_module_update(ANALYSIS_STEPS[5])
-
+    _update_pipeline_state(ANALYSIS_STEPS[4], processed_df)
 
 def step6_standardization_complete(processed_df: pd.DataFrame):
-    """Step 6 (Standardization) 처리 완료 시 호출되는 콜백입니다."""
-    if processed_df is None:
-        print("Step 6 (Standardization) returned no DataFrame.")
-        if app_state.df_after_step5 is not None:
-            app_state.current_df = app_state.df_after_step5.copy()
-        elif app_state.df_after_step4 is not None:
-            app_state.current_df = app_state.df_after_step4.copy()
-        elif app_state.df_after_step3 is not None:
-            app_state.current_df = app_state.df_after_step3.copy()
-        elif app_state.df_after_step1 is not None:
-            app_state.current_df = app_state.df_after_step1.copy()
-        else:
-            app_state.current_df = None
-        app_state.df_after_step6 = None
-    else:
-        print("Step 6 (Standardization) processing complete. Updating app_state.")
-        app_state.df_after_step6 = processed_df.copy()
-        app_state.current_df = app_state.df_after_step6.copy()
+    _update_pipeline_state(ANALYSIS_STEPS[5], processed_df)
 
-    if app_state.selected_target_variable and \
-       (app_state.current_df is None or app_state.selected_target_variable not in app_state.current_df.columns):
-        app_state.selected_target_variable = None
-        if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
-        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
-        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
-
-    update_target_variable_combo()
-    
 def step7_feature_engineering_complete(processed_df: pd.DataFrame):
-    """Step 7 (Feature Engineering) 처리 완료 시 호출되는 콜백입니다."""
-    if processed_df is None:
-        print("Step 7 (Feature Engineering) returned no DataFrame.")
-        # 이전 단계 데이터로 폴백
-        if app_state.df_after_step6 is not None:
-            app_state.current_df = app_state.df_after_step6.copy()
-        elif app_state.df_after_step5 is not None:
-            app_state.current_df = app_state.df_after_step5.copy()
-        elif app_state.df_after_step4 is not None:
-            app_state.current_df = app_state.df_after_step4.copy()
-        elif app_state.df_after_step3 is not None:
-            app_state.current_df = app_state.df_after_step3.copy()
-        elif app_state.df_after_step1 is not None:
-            app_state.current_df = app_state.df_after_step1.copy()
-        else:
-            app_state.current_df = None
-        app_state.df_after_step7 = None
-    else:
-        print("Step 7 (Feature Engineering) processing complete. Updating app_state.")
-        app_state.df_after_step7 = processed_df.copy()
-        app_state.current_df = app_state.df_after_step7.copy()
-
-    # 타겟 변수 관련 UI 업데이트
-    if app_state.selected_target_variable and \
-       (app_state.current_df is None or app_state.selected_target_variable not in app_state.current_df.columns):
-        app_state.selected_target_variable = None
-        if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
-        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
-        if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
-
-    update_target_variable_combo()
-    
-    # Step 8 UI 업데이트 트리거
-    if len(ANALYSIS_STEPS) > 7 and ANALYSIS_STEPS[7] in app_state.module_ui_updaters:
-        print(f"Triggering UI update for subsequent step: {ANALYSIS_STEPS[7]}")
-        trigger_specific_module_update(ANALYSIS_STEPS[7])
-
-    # << NEW >>: Step 9 (DataFrame Viewer) UI도 함께 업데이트하도록 신호 추가
-    if len(ANALYSIS_STEPS) > 8 and ANALYSIS_STEPS[8] in app_state.module_ui_updaters:
-        print(f"Triggering UI update for DataFrame Viewer: {ANALYSIS_STEPS[8]}")
-        trigger_specific_module_update(ANALYSIS_STEPS[8])
+    _update_pipeline_state(ANALYSIS_STEPS[6], processed_df)
 
 # << ADDED >>: Step 8에서 파생 DF 생성이 완료되었을 때 호출되는 콜백
 def step8_derivation_complete(name: str, df: pd.DataFrame):
@@ -435,117 +296,36 @@ def step8_derivation_complete(name: str, df: pd.DataFrame):
 
 def trigger_specific_module_update(module_name_key: str):
     """특정 모듈의 UI를 업데이트합니다. 모듈별로 필요한 DataFrame을 전달합니다."""
-    df_to_use_for_module: Optional[pd.DataFrame] = None
-
-    if module_name_key == ANALYSIS_STEPS[0]: # 1. Data Loading & Overview
-        if module_name_key in app_state.module_ui_updaters:
-            updater = app_state.module_ui_updaters[module_name_key]
-            if hasattr(step_01_data_loading, 'update_ui'):
-                updater(app_state.df_after_step1, app_state.original_df, util_functions_for_modules, app_state.loaded_file_path)
-                print(f"Module UI updated for: '{module_name_key}'")
-        return 
-
-    elif module_name_key == ANALYSIS_STEPS[1]: # 2. EDA
-        # EDA should use the most up-to-date df (current_df)
-        df_to_use_for_module = app_state.current_df
-        if SVA_STEP_KEY in app_state.module_ui_updaters:
-            app_state.module_ui_updaters[SVA_STEP_KEY](df_to_use_for_module, main_app_callbacks)
-        if MVA_STEP_KEY in app_state.module_ui_updaters:
-            app_state.module_ui_updaters[MVA_STEP_KEY](df_to_use_for_module, main_app_callbacks)
-        print(f"Module UI updated for: '{module_name_key}' and its sub-modules (SVA/MVA)")
-        return 
-
-    elif module_name_key == ANALYSIS_STEPS[2]: # 3. Preprocessing
-        df_to_use_for_module = app_state.df_after_step1 # Preprocessing starts from step 1 output
-        if module_name_key in app_state.module_ui_updaters:
-            updater = app_state.module_ui_updaters[module_name_key]
-            if hasattr(step_03_preprocessing, 'update_ui'):
-                 updater(df_to_use_for_module, main_app_callbacks)
-                 print(f"Module UI updated for: '{module_name_key}'")
-        return 
-        
-    elif module_name_key == ANALYSIS_STEPS[3]: # 4. Missing Value Treatment
-        # Input is from step 3 if available, else step 1
-        df_to_use_for_module = app_state.df_after_step3 if app_state.df_after_step3 is not None else app_state.df_after_step1
-        if module_name_key in app_state.module_ui_updaters:
-            updater = app_state.module_ui_updaters[module_name_key]
-            if hasattr(step_04_missing_values, 'update_ui'):
-                 updater(df_to_use_for_module, main_app_callbacks)
-                 print(f"Module UI updated for: '{module_name_key}'")
-        return 
-
-    elif module_name_key == ANALYSIS_STEPS[4]: # 5. Outlier Treatment
-        # Input is from step 4 if available, else step 3, else step 1
-        if app_state.df_after_step4 is not None:
-            df_to_use_for_module = app_state.df_after_step4
-        elif app_state.df_after_step3 is not None:
-            df_to_use_for_module = app_state.df_after_step3
-        else:
-            df_to_use_for_module = app_state.df_after_step1
-        
-        if module_name_key in app_state.module_ui_updaters:
-            updater = app_state.module_ui_updaters[module_name_key]
-            if hasattr(step_05_outlier_treatment, 'update_ui'):
-                 updater(df_to_use_for_module, main_app_callbacks)
-                 print(f"Module UI updated for: '{module_name_key}'")
-        return
-        
-    elif module_name_key == ANALYSIS_STEPS[5]: # 6. Standardization
-        # Input is from step 5, else step 4, else step 3, else step 1
-        if app_state.df_after_step5 is not None:
-            df_to_use_for_module = app_state.df_after_step5
-        elif app_state.df_after_step4 is not None:
-            df_to_use_for_module = app_state.df_after_step4
-        elif app_state.df_after_step3 is not None:
-            df_to_use_for_module = app_state.df_after_step3
-        else:
-            df_to_use_for_module = app_state.df_after_step1
-        
-        if module_name_key in app_state.module_ui_updaters:
-            updater = app_state.module_ui_updaters[module_name_key]
-            if hasattr(step_06_standardization, 'update_ui'):
-                 updater(df_to_use_for_module, main_app_callbacks)
-                 print(f"Module UI updated for: '{module_name_key}'")
-        return
-    
-    elif module_name_key == ANALYSIS_STEPS[6]: # << ADDED: 7. Feature Engineering
-        # Input is from step 6, else step 5, else step 4, ...
-        if app_state.df_after_step6 is not None:
-            df_to_use_for_module = app_state.df_after_step6
-        elif app_state.df_after_step5 is not None:
-            df_to_use_for_module = app_state.df_after_step5
-        elif app_state.df_after_step4 is not None:
-            df_to_use_for_module = app_state.df_after_step4
-        elif app_state.df_after_step3 is not None:
-            df_to_use_for_module = app_state.df_after_step3
-        else:
-            df_to_use_for_module = app_state.df_after_step1
-        
-        if module_name_key in app_state.module_ui_updaters:
-            updater = app_state.module_ui_updaters[module_name_key]
-            if hasattr(step_07_feature_engineering, 'update_ui'):
-                 updater(df_to_use_for_module, main_app_callbacks)
-                 print(f"Module UI updated for: '{module_name_key}'")
-        return
-    
-    elif module_name_key == ANALYSIS_STEPS[7]: # << ADDED: 8. Derive DataFrames
-        if module_name_key in app_state.module_ui_updaters:
-            updater = app_state.module_ui_updaters[module_name_key]
-            if hasattr(step_08_derivation, 'update_ui'):
-                 updater() # Step 8's updater gets its data via callbacks
-                 print(f"Module UI updated for: '{module_name_key}'")
+    if not dpg.is_dearpygui_running() or module_name_key not in app_state.module_ui_updaters:
         return
 
-    # Generic fallback (should ideally be covered by specific cases above)
-    if module_name_key in app_state.module_ui_updaters:
-        df_to_use_for_module = app_state.current_df
-        updater = app_state.module_ui_updaters[module_name_key]
-        try:
-            updater(df_to_use_for_module, main_app_callbacks)
-            print(f"Module UI updated for: '{module_name_key}' (using generic current_df)")
-        except TypeError: 
-             print(f"Warning: Could not update UI for '{module_name_key}' due to argument mismatch or missing df. Using current_df: {app_state.current_df is not None}")
+    updater = app_state.module_ui_updaters[module_name_key]
+    df_to_use = app_state.current_df # 기본적으로 모든 단계는 current_df를 사용합니다.
 
+    # --- 각 단계별로 호출 방식 및 전달 데이터 재정의 ---
+    try:
+        if module_name_key == ANALYSIS_STEPS[0]: # Step 1 (Data Loading)
+            # Step 1은 original_df와 df_after_step1을 모두 필요로 하는 특별한 케이스
+            updater(app_state.df_after_step1, app_state.original_df, util_functions_for_modules, app_state.loaded_file_path)
+
+        elif module_name_key in [ANALYSIS_STEPS[7], ANALYSIS_STEPS[8]]: # Step 8, 9
+            # 이 단계들의 update_ui는 인자를 받지 않음
+            updater()
+
+        else: # Step 2, 4, 5, 6, 7 및 기타 모든 일반 단계
+            # 항상 최신 상태인 current_df를 전달
+            updater(df_to_use, main_app_callbacks)
+
+        print(f"Module UI updated successfully for: '{module_name_key}'")
+
+    except TypeError as e:
+        # TypeError 발생 시 상세 로그 출력
+        print(f"ERROR: Could not update UI for '{module_name_key}' due to TypeError.")
+        print(f"       Function signature might be incorrect. Error: {e}")
+        print(f"       Traceback: {traceback.format_exc()}")
+    except Exception as e:
+        print(f"ERROR: An unexpected error occurred while updating UI for '{module_name_key}': {e}")
+        print(f"       Traceback: {traceback.format_exc()}")
 
 def trigger_all_module_updates():
     """등록된 모든 모듈의 UI를 업데이트합니다."""
@@ -553,16 +333,6 @@ def trigger_all_module_updates():
     for step_key_or_name in ANALYSIS_STEPS:
         trigger_specific_module_update(step_key_or_name)
     print("All module UIs update process finished.")
-
-
-def trigger_all_module_updates_except_step1():
-    """Step 1을 제외한 모든 모듈의 UI를 업데이트합니다."""
-    print("Updating all module UIs except Step 1...")
-    for step_name_iter in ANALYSIS_STEPS:
-        if step_name_iter == ANALYSIS_STEPS[0]:
-            continue
-        trigger_specific_module_update(step_name_iter)
-    print("Finished updating module UIs (except Step 1).")
 
 
 def load_data_from_file(file_path: str) -> bool:
@@ -723,66 +493,24 @@ def target_variable_selected_callback(sender, app_data, user_data):
 
 
 def switch_step_view(sender, app_data, user_data_step_name: str):
-    """분석 단계를 전환하고 해당 단계의 UI를 표시합니다."""
+    """
+    분석 단계를 전환하고 해당 단계의 UI를 표시합니다.
+    이 함수는 더 이상 current_df의 상태를 직접 변경하지 않습니다.
+    """
     for step_name_iter, group_tag in app_state.step_group_tags.items():
         if dpg.does_item_exist(group_tag):
             is_active_step = (step_name_iter == user_data_step_name)
+            # 1. 해당 단계의 UI 그룹을 보여주거나 숨깁니다.
             dpg.configure_item(group_tag, show=is_active_step)
+
             if is_active_step:
+                # 2. 현재 활성화된 스텝 이름만 기록합니다.
                 app_state.active_step_name = step_name_iter
-                # Determine current_df based on the new active step
-                if step_name_iter == ANALYSIS_STEPS[0]: # Step 1
-                    app_state.current_df = app_state.df_after_step1 if app_state.df_after_step1 is not None else app_state.original_df
-                elif step_name_iter == ANALYSIS_STEPS[1]: # Step 2 (EDA) - uses latest available
-                    if app_state.df_after_step7 is not None: app_state.current_df = app_state.df_after_step7 # << CHANGED
-                    elif app_state.df_after_step6 is not None: app_state.current_df = app_state.df_after_step6
-                    elif app_state.df_after_step5 is not None: app_state.current_df = app_state.df_after_step5
-                    elif app_state.df_after_step4 is not None: app_state.current_df = app_state.df_after_step4
-                    elif app_state.df_after_step3 is not None: app_state.current_df = app_state.df_after_step3
-                    elif app_state.df_after_step1 is not None: app_state.current_df = app_state.df_after_step1
-                    else: app_state.current_df = app_state.original_df
-                elif step_name_iter == ANALYSIS_STEPS[2]: # Step 3 (Preprocessing)
-                    app_state.current_df = app_state.df_after_step1 # Input is from step 1
-                elif step_name_iter == ANALYSIS_STEPS[3]: # Step 4 (Missing Values)
-                    app_state.current_df = app_state.df_after_step3 if app_state.df_after_step3 is not None else app_state.df_after_step1
-                elif step_name_iter == ANALYSIS_STEPS[4]: # Step 5 (Outlier Treatment)
-                    if app_state.df_after_step4 is not None: app_state.current_df = app_state.df_after_step4
-                    elif app_state.df_after_step3 is not None: app_state.current_df = app_state.df_after_step3
-                    else: app_state.current_df = app_state.df_after_step1
-                elif step_name_iter == ANALYSIS_STEPS[5]: # Step 6 (Standardization)
-                    if app_state.df_after_step5 is not None: app_state.current_df = app_state.df_after_step5
-                    elif app_state.df_after_step4 is not None: app_state.current_df = app_state.df_after_step4
-                    elif app_state.df_after_step3 is not None: app_state.current_df = app_state.df_after_step3
-                    else: app_state.current_df = app_state.df_after_step1
+                print(f"Switched to view: {step_name_iter}. Triggering UI update with existing current_df.")
 
-                elif step_name_iter == ANALYSIS_STEPS[6]: # Step 7 (Feature Engineering)
-                    if app_state.df_after_step6 is not None: 
-                        app_state.current_df = app_state.df_after_step6
-                    elif app_state.df_after_step5 is not None: 
-                        app_state.current_df = app_state.df_after_step5
-                    elif app_state.df_after_step4 is not None: 
-                        app_state.current_df = app_state.df_after_step4
-                    elif app_state.df_after_step3 is not None: 
-                        app_state.current_df = app_state.df_after_step3
-                    else: 
-                        app_state.current_df = app_state.df_after_step1
-
-                elif step_name_iter == ANALYSIS_STEPS[7]: # << ADDED: Step 8
-                    # Step 8은 자체적으로 DF를 선택하므로 current_df를 특정 DF로 고정할 필요 없음
-                    # 하지만 다른 모듈과의 일관성을 위해 최신 DF를 설정
-                    if app_state.df_after_step7 is not None: app_state.current_df = app_state.df_after_step7
-                    elif app_state.df_after_step6 is not None: app_state.current_df = app_state.df_after_step6
-                    elif app_state.df_after_step5 is not None: app_state.current_df = app_state.df_after_step5
-                    elif app_state.df_after_step4 is not None: app_state.current_df = app_state.df_after_step4
-                    elif app_state.df_after_step3 is not None: app_state.current_df = app_state.df_after_step3
-                    elif app_state.df_after_step1 is not None: app_state.current_df = app_state.df_after_step1
-                    else: app_state.current_df = app_state.original_df
-                else: # Default for any other future steps
-                    app_state.current_df = app_state.original_df
-                
-                print(f"Switched to {step_name_iter}. AppState.current_df is now set for this context (shape: {app_state.current_df.shape if app_state.current_df is not None else 'None'}).")
+                # 3. 해당 스텝의 UI가 최신 current_df를 기반으로 내용을 새로고침하도록 신호를 보냅니다.
                 trigger_specific_module_update(step_name_iter)
-                update_target_variable_combo() # Update combo based on new current_df
+                update_target_variable_combo()
 
 
 def file_load_callback(sender, app_data):
@@ -1022,21 +750,19 @@ def apply_settings(settings_dict: dict):
 
     app_state.selected_target_variable = settings_dict.get('selected_target_variable')
     app_state.selected_target_variable_type = settings_dict.get('selected_target_variable_type', "Continuous")
-    
+
     s01_settings = settings_dict.get('step_01_settings', {})
     if hasattr(step_01_data_loading, 'apply_step1_settings_and_process'):
         step_01_data_loading.apply_step1_settings_and_process(app_state.original_df, s01_settings, main_app_callbacks)
-    # else: # No original_df means step1_processing_complete was called with None, so df_after_step1 is None
-    #    main_app_callbacks['step1_processing_complete'](None) # Ensure flow continues if original_df was None
 
     update_target_variable_combo()
     if app_state.selected_target_variable and \
        app_state.df_after_step1 is not None and \
        app_state.selected_target_variable in app_state.df_after_step1.columns:
-        
+
         s1_types_from_settings = s01_settings.get('type_selections', {})
         guessed_type = utils._guess_target_type(app_state.df_after_step1, app_state.selected_target_variable, s1_types_from_settings)
-        
+
         final_target_type = settings_dict.get('selected_target_variable_type', guessed_type)
         app_state.selected_target_variable_type = final_target_type
 
@@ -1046,7 +772,7 @@ def apply_settings(settings_dict: dict):
             dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=True)
         if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
             dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=True)
-    else: 
+    else:
         if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG):
             dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
         if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
@@ -1056,35 +782,29 @@ def apply_settings(settings_dict: dict):
     s02a_settings = settings_dict.get('step_02a_sva_settings', {})
     if hasattr(step_02a_sva, 'apply_sva_settings_from_loaded') and app_state.df_after_step1 is not None:
         step_02a_sva.apply_sva_settings_from_loaded(s02a_settings, app_state.df_after_step1, main_app_callbacks)
-        
+
     s02b_settings = settings_dict.get('step_02b_mva_settings', {})
     if hasattr(step_02b_mva, 'apply_mva_settings_from_loaded') and app_state.df_after_step1 is not None:
         step_02b_mva.apply_mva_settings_from_loaded(s02b_settings, app_state.df_after_step1, main_app_callbacks)
 
-    app_state.df_after_step3 = None
-    if STEP_03_SAVE_LOAD_ENABLED:
-        s03_settings = settings_dict.get('step_03_preprocessing_settings', {})
-        if s03_settings and hasattr(step_03_preprocessing, 'apply_preprocessing_settings_and_process') and app_state.df_after_step1 is not None:
-            step_03_preprocessing.apply_preprocessing_settings_and_process(app_state.df_after_step1, s03_settings, main_app_callbacks)
-    
+    app_state.df_after_step3 = None # Step 3 상태는 항상 None
+
     app_state.df_after_step4 = None
     s04_settings = settings_dict.get('step_04_missing_values_settings', {})
-    df_input_for_step4 = app_state.df_after_step3 if app_state.df_after_step3 is not None else app_state.df_after_step1
+    df_input_for_step4 = app_state.df_after_step1 # Step 3 의존성 제거
     if s04_settings and hasattr(step_04_missing_values, 'apply_missing_values_settings_and_process') and df_input_for_step4 is not None:
         step_04_missing_values.apply_missing_values_settings_and_process(df_input_for_step4, s04_settings, main_app_callbacks)
 
     app_state.df_after_step5 = None
     s05_settings = settings_dict.get('step_05_outlier_treatment_settings', {})
-    df_input_for_step5 = app_state.df_after_step4 if app_state.df_after_step4 is not None else \
-                         (app_state.df_after_step3 if app_state.df_after_step3 is not None else app_state.df_after_step1)
+    df_input_for_step5 = app_state.df_after_step4 if app_state.df_after_step4 is not None else app_state.df_after_step1 # Step 3 의존성 제거
     if s05_settings and hasattr(step_05_outlier_treatment, 'apply_outlier_treatment_settings_and_process') and df_input_for_step5 is not None:
         step_05_outlier_treatment.apply_outlier_treatment_settings_and_process(df_input_for_step5, s05_settings, main_app_callbacks)
-    
+
     app_state.df_after_step6 = None
     s06_settings = settings_dict.get('step_06_standardization_settings', {})
     df_input_for_step6 = app_state.df_after_step5 if app_state.df_after_step5 is not None else \
-                         (app_state.df_after_step4 if app_state.df_after_step4 is not None else \
-                         (app_state.df_after_step3 if app_state.df_after_step3 is not None else app_state.df_after_step1))
+                         (app_state.df_after_step4 if app_state.df_after_step4 is not None else app_state.df_after_step1) # Step 3 의존성 제거
     if s06_settings and hasattr(step_06_standardization, 'apply_step6_settings_and_process') and df_input_for_step6 is not None:
         step_06_standardization.apply_step6_settings_and_process(df_input_for_step6, s06_settings, main_app_callbacks)
 
@@ -1092,15 +812,14 @@ def apply_settings(settings_dict: dict):
     s07_settings = settings_dict.get('step_07_feature_engineering_settings', {})
     df_input_for_step7 = app_state.df_after_step6 if app_state.df_after_step6 is not None else \
                          (app_state.df_after_step5 if app_state.df_after_step5 is not None else \
-                         (app_state.df_after_step4 if app_state.df_after_step4 is not None else \
-                         (app_state.df_after_step3 if app_state.df_after_step3 is not None else app_state.df_after_step1)))
-    
+                         (app_state.df_after_step4 if app_state.df_after_step4 is not None else app_state.df_after_step1)) # Step 3 의존성 제거
+
     app_state.derived_dfs.clear()
     if s07_settings and hasattr(step_07_feature_engineering, 'apply_settings_and_process') and df_input_for_step7 is not None:
         step_07_feature_engineering.apply_settings_and_process(df_input_for_step7, s07_settings, main_app_callbacks)
-    
+
     trigger_all_module_updates()
-    
+
     restored_active_step = settings_dict.get('active_step_name', ANALYSIS_STEPS[0] if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0 else None)
     if restored_active_step and restored_active_step in app_state.step_group_tags and \
        dpg.does_item_exist(app_state.step_group_tags[restored_active_step]):
@@ -1111,14 +830,20 @@ def apply_settings(settings_dict: dict):
 def get_all_available_dfs_callback() -> Dict[str, pd.DataFrame]:
     """Step 8, 9 모듈에서 사용할 수 있는 모든 DF 소스를 딕셔너리로 반환합니다."""
     available_dfs = {}
-    # << NEW >>: 원본 데이터를 목록에 추가
+
+    # 0. 원본 데이터
     if app_state.original_df is not None:
         available_dfs['0. Original Data'] = app_state.original_df
 
+    # ★★★ 추가된 부분: current_df를 최상단에 추가 ★★★
+    if app_state.current_df is not None:
+        # 다른 DF와 이름이 겹치지 않도록 고유한 이름 부여
+        available_dfs['★ Current Working DF'] = app_state.current_df
+
+    # 1. 단계별 데이터
     if app_state.df_after_step1 is not None:
         available_dfs['1. After Type Conversion'] = app_state.df_after_step1
-    if app_state.df_after_step3 is not None:
-        available_dfs['3. After Preprocessing'] = app_state.df_after_step3
+    # Step 3은 제거되었으므로 df_after_step3 참조는 없음
     if app_state.df_after_step4 is not None:
         available_dfs['4. After Missing Value Imputation'] = app_state.df_after_step4
     if app_state.df_after_step5 is not None:
@@ -1128,8 +853,7 @@ def get_all_available_dfs_callback() -> Dict[str, pd.DataFrame]:
     if app_state.df_after_step7 is not None:
         available_dfs['7. After Feature Engineering'] = app_state.df_after_step7
 
-    # 8단계에서 생성된 파생 DF들을 추가
-    # 이름을 명확하게 하기 위해 접두사 추가
+    # 2. 파생 데이터
     for name, df in app_state.derived_dfs.items():
         available_dfs[f"Derived: {name}"] = df
 
@@ -1230,7 +954,6 @@ main_app_callbacks = {
     'update_target_variable_combo_items': update_target_variable_combo,
     'get_column_analysis_types': lambda: step_01_data_loading._type_selections.copy() if hasattr(step_01_data_loading, '_type_selections') else {},
     'step1_processing_complete': step1_processing_complete,
-    'step3_processing_complete': step3_processing_complete,
     'step4_missing_value_processing_complete': step4_missing_value_processing_complete,
     'step5_outlier_treatment_complete': step5_outlier_treatment_complete,
     'step6_standardization_complete': step6_standardization_complete,
