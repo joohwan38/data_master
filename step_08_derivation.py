@@ -147,8 +147,8 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
 
     with dpg.group(tag=TAG_S8_GROUP, parent=parent_container_tag, show=False):
         with dpg.group(horizontal=True):
-            with dpg.child_window(width=250, border=True):
-                dpg.add_text("Variables")
+            with dpg.child_window(width=200, border=True):
+                dpg.add_text("Variables(Drag&Drop)")
                 dpg.add_input_text(tag=TAG_S8_VAR_SEARCH_INPUT, hint="Search variables...", callback=lambda: _update_ui_variable_list(), width=-1)
                 dpg.add_separator()
                 with dpg.child_window(tag=TAG_S8_VAR_LIST_WINDOW): pass
