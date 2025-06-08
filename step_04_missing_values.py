@@ -472,9 +472,9 @@ def get_missing_values_settings_for_saving() -> dict:
 
 def apply_missing_values_settings_and_process(df_input: pd.DataFrame, settings: dict, main_callbacks: dict):
     global _imputation_method_selections, _selected_predefined_nans, _main_app_callbacks, _current_df_for_this_step, _df_after_nan_conversion, _df_after_imputation
-    
+
     if not _main_app_callbacks: _main_app_callbacks = main_callbacks
-    
+
     _current_df_for_this_step = df_input 
     _df_after_nan_conversion = None 
     _df_after_imputation = None 
@@ -485,12 +485,16 @@ def apply_missing_values_settings_and_process(df_input: pd.DataFrame, settings: 
     loaded_predefined_nans = settings.get("selected_predefined_nans_for_step4", {})
     _selected_predefined_nans = loaded_predefined_nans.copy()
 
+    # UI 업데이트 (기존과 동일)
     if dpg.is_dearpygui_running():
         for i, nan_str_iter in enumerate(PREDEFINED_NAN_STRINGS):
             cb_tag = f"nan_cb_s4_{i}"
             if dpg.does_item_exist(cb_tag):
                 dpg.set_value(cb_tag, _selected_predefined_nans.get(nan_str_iter, False))
-    
-    update_ui(df_input, main_callbacks)
-    print("Step 4 Missing Values settings applied. UI updated. User needs to click 'Convert' or 'Apply' manually.")
 
+    update_ui(df_input, main_callbacks)
+    print("Step 4 Missing Values settings applied. UI updated.")
+
+    # --- 추가된 부분: 데이터 처리 강제 실행 ---
+    print("Force-running Step 4 processing after applying settings...")
+    _execute_imputation_logic()

@@ -255,19 +255,16 @@ def get_outlier_treatment_settings_for_saving() -> dict:
     return settings
 
 def apply_outlier_treatment_settings_and_process(df_input: pd.DataFrame, settings: dict, main_callbacks: dict):
-    # 이 함수는 저장된 설정을 불러와 각 하위 모듈에 전달하여 상태를 복원하는 역할
-    # 실제 "처리(process)"는 사용자가 버튼을 눌러 수동으로 진행하는 현재의 흐름을 유지
     global _current_df_for_this_step_parent, _main_app_callbacks_parent, _step_05_shared_utilities
 
-    if not _main_app_callbacks_parent: _main_app_callbacks_parent = main_callbacks # 콜백 설정
+    if not _main_app_callbacks_parent: _main_app_callbacks_parent = main_callbacks
 
-    _current_df_for_this_step_parent = df_input # 입력 DF 설정
+    _current_df_for_this_step_parent = df_input
 
-    # _step_05_shared_utilities가 최신 콜백과 df getter를 참조하도록 보장
     if _step_05_shared_utilities:
         _step_05_shared_utilities["main_app_callbacks"] = _main_app_callbacks_parent
         _step_05_shared_utilities["get_current_df_func"] = lambda: _current_df_for_this_step_parent
-    else: # 초기화되지 않은 경우를 대비 (create_ui가 먼저 호출되는 것이 일반적)
+    else:
          _step_05_shared_utilities = {
             "main_app_callbacks": _main_app_callbacks_parent,
             "util_funcs_common": _main_app_callbacks_parent['get_util_funcs']() if 'get_util_funcs' in _main_app_callbacks_parent else {},
@@ -278,20 +275,22 @@ def apply_outlier_treatment_settings_and_process(df_input: pd.DataFrame, setting
             "default_mva_plot_texture_tag": TAG_OT_DEFAULT_PLOT_TEXTURE_MVA,
         }
 
-
     uni_settings = settings.get("univariate", {})
     if hasattr(uni_module, 'apply_univariate_settings'):
+        # 단변량 설정 복원
         uni_module.apply_univariate_settings(df_input, uni_settings, _step_05_shared_utilities)
-    
+
+        # --- 추가된 부분: 단변량 이상치 탐지 및 처리 강제 실행 ---
+        # 저장된 설정으로 이상치를 탐지하고, 저장된 처리 방법을 바로 적용
+        print("Force-running Step 5 (Univariate) processing after applying settings...")
+        uni_module._run_uni_outlier_detection_logic(None, None, None)
+        uni_module._apply_uni_outlier_treatment_logic(None, None, None)
+        # 위 함수가 내부적으로 step5_outlier_treatment_complete 콜백을 호출합니다.
+
     mva_settings = settings.get("multivariate", {})
     if hasattr(mva_module, 'apply_multivariate_settings'):
-        # 다변량 분석은 단변량 분석 결과에 영향을 받을 수 있으나,
-        # 현재 설정 적용은 각자 독립적으로 UI와 파라미터를 복원하는 개념
+        # 다변량 설정은 UI만 복원 (사용자가 직접 실행)
         mva_module.apply_multivariate_settings(df_input, mva_settings, _step_05_shared_utilities)
 
-    # update_ui를 호출하여 전체 UI를 반영된 설정으로 새로고침
-    # apply_..._settings 함수 내부에서 이미 UI 업데이트가 이루어졌다면 중복일 수 있음
-    # 각 하위 모듈의 apply_..._settings가 자신의 update_ui를 호출하도록 하거나, 여기서 한 번만 호출
-    update_ui(df_input, main_callbacks) # 부모의 update_ui를 통해 하위 모듈 update_ui 호출
-
-    _log_message_parent("Step 5 Outlier Treatment settings applied from saved state. UI reflects parameters. Please run detection and treatment manually if needed.")
+    update_ui(df_input, main_callbacks)
+    _log_message_parent("Step 5 Outlier Treatment settings applied. Univariate processing re-run automatically.")

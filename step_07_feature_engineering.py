@@ -791,7 +791,19 @@ def reset_state():
     _categorical_mapping_state, _categorical_input_tags = {}, {}
     if dpg.is_dearpygui_running(): _refresh_sidebar(); _update_execution_list_table(); _update_if_builder_table()
 def get_settings_for_saving() -> dict: return {"execution_list": _execution_list}
+
 def apply_settings_and_process(df_input: pd.DataFrame, settings: dict, main_app_callbacks: Dict[str, Any]):
-    global _execution_list
+    global _execution_list, _main_app_callbacks
+
+    # main_app_callbacks가 설정되지 않았다면 설정
+    if not _main_app_callbacks: _main_app_callbacks = main_app_callbacks
+
     _execution_list = settings.get("execution_list", [])
     update_ui(df_input, main_app_callbacks)
+
+    # --- 추가된 부분: 파이프라인 강제 실행 ---
+    print("Force-running Step 7 processing after applying settings...")
+    if _execution_list: # 실행할 파이프라인이 있을 경우에만 실행
+        _run_pipeline()
+    else: # 실행할 파이프라인이 없으면, 입력받은 df를 그대로 완료 콜백으로 전달
+        _main_app_callbacks['step7_feature_engineering_complete'](df_input)
