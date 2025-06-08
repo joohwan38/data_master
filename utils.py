@@ -346,40 +346,26 @@ def calculate_column_widths(df: pd.DataFrame, min_w=MIN_COL_WIDTH, max_w=MAX_COL
     for col_name in df.columns:
         max_px = get_safe_text_size(format_text_for_display(str(col_name)))[0]
         sample = df[col_name].dropna().head(rows)
+        
         if not sample.empty:
-            max_px = max(max_px, max(get_safe_text_size(format_text_for_display(str(x)))[0] for x in sample))
+            # << CHANGED >>: 너비 측정 전, 화면에 표시될 값과 동일하게 포맷팅하는 로직 추가
+            formatted_sample = []
+            for x in sample:
+                if pd.isna(x):
+                    s_x = "NaN"
+                # float, np.floating 타입인 경우 round() 적용
+                elif isinstance(x, (float, np.floating)):
+                    s_x = str(round(x, 2))
+                else:
+                    s_x = str(x)
+                formatted_sample.append(s_x)
+            
+            # 포맷팅된 문자열 샘플을 기준으로 최대 너비 계산
+            max_px_data = max(get_safe_text_size(format_text_for_display(s_x))[0] for s_x in formatted_sample)
+            max_px = max(max_px, max_px_data)
+
         col_widths[col_name] = int(max(min_w, min(max_px + pad, max_w)))
     return col_widths
-
-def create_table_with_data(table_tag: str, df: pd.DataFrame, 
-                           utils_format_numeric=False, parent_df_for_widths: Optional[pd.DataFrame] = None):
-    if not dpg.is_dearpygui_running() or not dpg.does_item_exist(table_tag):
-        print(f"Error: Table '{table_tag}' not exist."); return
-    dpg.delete_item(table_tag, children_only=True)
-    if df is None or df.empty:
-        dpg.add_table_column(label="Info", parent=table_tag, init_width_or_weight=300)
-        with dpg.table_row(parent=table_tag): dpg.add_text("No data." if df is None else "Empty DF.")
-        return
-    col_widths = calculate_column_widths(parent_df_for_widths if parent_df_for_widths is not None and not parent_df_for_widths.empty else df)
-    for col in df.columns: dpg.add_table_column(label=str(col), parent=table_tag, init_width_or_weight=col_widths.get(str(col), MIN_COL_WIDTH))
-    for i in range(len(df)):
-        with dpg.table_row(parent=table_tag):
-            for col_name in df.columns:
-                val = df.iat[i, df.columns.get_loc(col_name)]
-                s_val = "NaN" if pd.isna(val) else (f"{val:.3f}" if utils_format_numeric and isinstance(val, (float, np.floating)) else str(val))
-                dpg.add_text(format_text_for_display(s_val))
-
-PLOT_DEF_H = 300
-PLOT_DEF_W = -1 
-
-def create_dpg_plot_scaffold(parent: str, title: str, x_lbl: str, y_lbl: str, w: int=PLOT_DEF_W, h: int=PLOT_DEF_H, legend: bool=False, eq_asp: bool=False) -> Tuple[str, str, str, Optional[str]]:
-    p_tag, x_tag, y_tag = dpg.generate_uuid(), dpg.generate_uuid(), dpg.generate_uuid()
-    l_tag = dpg.generate_uuid() if legend else None
-    with dpg.plot(label=title, height=h, width=w, parent=parent, tag=p_tag, equal_aspects=eq_asp):
-        dpg.add_plot_axis(dpg.mvXAxis, label=x_lbl, tag=x_tag, auto_fit=True)
-        dpg.add_plot_axis(dpg.mvYAxis, label=y_lbl, tag=y_tag, auto_fit=True)
-        if legend and l_tag: dpg.add_plot_legend(tag=l_tag, parent=p_tag, horizontal=False, location=dpg.mvPlot_Location_NorthEast)
-    return p_tag, x_tag, y_tag, l_tag
 
 def add_dpg_histogram_series(y_tag: str, data: List[float], lbl: str, bins: int=-1, density: bool=False):
     if data: dpg.add_histogram_series(data, label=lbl, bins=bins, density=density, parent=y_tag)
@@ -511,12 +497,35 @@ def _get_top_n_correlated_with_target(df: pd.DataFrame, target_col: str, numeric
     top_n_cols = [col_name for col_name, corr_val in correlations[:top_n]]
     return top_n_cols
 
+def create_table_with_data(table_tag: str, df: pd.DataFrame,
+                           utils_format_numeric=True, parent_df_for_widths: Optional[pd.DataFrame] = None):
+    if not dpg.is_dearpygui_running() or not dpg.does_item_exist(table_tag):
+        print(f"Error: Table '{table_tag}' not exist."); return
+    dpg.delete_item(table_tag, children_only=True)
+    if df is None or df.empty:
+        dpg.add_table_column(label="Info", parent=table_tag, init_width_or_weight=300)
+        with dpg.table_row(parent=table_tag): dpg.add_text("No data." if df is None else "Empty DF.")
+        return
+    col_widths = calculate_column_widths(parent_df_for_widths if parent_df_for_widths is not None and not parent_df_for_widths.empty else df)
+    for col in df.columns: dpg.add_table_column(label=str(col), parent=table_tag, init_width_or_weight=col_widths.get(str(col), MIN_COL_WIDTH))
+    for i in range(len(df)):
+        with dpg.table_row(parent=table_tag):
+            for col_name in df.columns:
+                val = df.iat[i, df.columns.get_loc(col_name)]
+
+                # << CHANGED >>: 숫자 포맷팅 부분을 round() 함수로 변경
+                if pd.isna(val):
+                    s_val = "NaN"
+                elif utils_format_numeric and isinstance(val, (float, np.floating)):
+                    # 소수점 둘째자리에서 반올림하여 문자열로 변환
+                    s_val = str(round(val, 2))
+                else:
+                    s_val = str(val)
+                
+                dpg.add_text(format_text_for_display(s_val))
+
 def create_table_with_large_data_preview(table_tag: str, df: pd.DataFrame, 
                                          max_rows: int = 25, max_cols: int = 20):
-    """
-    대용량 데이터프레임을 Jupyter Notebook 스타일로 미리보는 테이블을 생성합니다.
-    행/열이 max 값을 초과하면 앞/뒤 일부만 보여주고 중간은 '...'로 생략합니다.
-    """
     if not dpg.is_dearpygui_running() or not dpg.does_item_exist(table_tag):
         print(f"Error: Table '{table_tag}' not exist.")
         return
@@ -530,31 +539,21 @@ def create_table_with_large_data_preview(table_tag: str, df: pd.DataFrame,
 
     display_df = df
 
-    # 행 축소 로직
     if len(df) > max_rows:
         head_rows = max_rows // 2
         tail_rows = max_rows - head_rows
         head_df = df.head(head_rows)
         tail_df = df.tail(tail_rows)
-        
-        # '...' 행 생성
         separator_data = {col: '...' for col in df.columns}
         separator_df = pd.DataFrame([separator_data])
-        
         display_df = pd.concat([head_df, separator_df, tail_df], ignore_index=True)
 
-    # 열 축소 로직
     if len(display_df.columns) > max_cols:
         head_cols_count = max_cols // 2
         tail_cols_count = max_cols - head_cols_count
-        
         head_cols = display_df.iloc[:, :head_cols_count]
         tail_cols = display_df.iloc[:, -tail_cols_count:]
-        
-        # '...' 열 생성
         ellipsis_col = pd.Series(['...'] * len(display_df), name='...')
-        
         display_df = pd.concat([head_cols, ellipsis_col, tail_cols], axis=1)
 
-    # 최종적으로 기존 테이블 생성 함수 호출
     create_table_with_data(table_tag, display_df)

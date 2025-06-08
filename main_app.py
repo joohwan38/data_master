@@ -14,6 +14,7 @@ import step_05_outlier_treatment
 import step_06_standardization
 import step_07_feature_engineering
 import step_08_derivation
+import step_09_data_viewer
 import traceback
 import hashlib
 import json
@@ -65,6 +66,7 @@ ANALYSIS_STEPS = [
     "6. Standardization", 
     "7. Feature Engineering",
     "8. Derive DataFrames", # << ADDED
+    "9. DataFrame Viewer", # << NEW >>
     ]
 
 _MODAL_ID_SIMPLE_MESSAGE = "main_simple_modal_message_id"
@@ -391,9 +393,14 @@ def step7_feature_engineering_complete(processed_df: pd.DataFrame):
     update_target_variable_combo()
     
     # Step 8 UI 업데이트 트리거
-    if len(ANALYSIS_STEPS) > 7 and ANALYSIS_STEPS[7] in app_state.module_ui_updaters: # << CHANGED
+    if len(ANALYSIS_STEPS) > 7 and ANALYSIS_STEPS[7] in app_state.module_ui_updaters:
         print(f"Triggering UI update for subsequent step: {ANALYSIS_STEPS[7]}")
         trigger_specific_module_update(ANALYSIS_STEPS[7])
+
+    # << NEW >>: Step 9 (DataFrame Viewer) UI도 함께 업데이트하도록 신호 추가
+    if len(ANALYSIS_STEPS) > 8 and ANALYSIS_STEPS[8] in app_state.module_ui_updaters:
+        print(f"Triggering UI update for DataFrame Viewer: {ANALYSIS_STEPS[8]}")
+        trigger_specific_module_update(ANALYSIS_STEPS[8])
 
 # << ADDED >>: Step 8에서 파생 DF 생성이 완료되었을 때 호출되는 콜백
 def step8_derivation_complete(name: str, df: pd.DataFrame):
@@ -403,6 +410,11 @@ def step8_derivation_complete(name: str, df: pd.DataFrame):
     # Step 8 UI를 다시 그려서 목록을 갱신하도록 트리거
     if ANALYSIS_STEPS[7] in app_state.module_ui_updaters:
         trigger_specific_module_update(ANALYSIS_STEPS[7])
+
+    # << NEW >>: Step 9 (DataFrame Viewer) UI도 함께 업데이트하도록 신호 추가
+    if len(ANALYSIS_STEPS) > 8 and ANALYSIS_STEPS[8] in app_state.module_ui_updaters:
+        print(f"Triggering UI update for DataFrame Viewer: {ANALYSIS_STEPS[8]}")
+        trigger_specific_module_update(ANALYSIS_STEPS[8])
 
 
     # 타겟 변수 관련 UI 업데이트
@@ -843,8 +855,9 @@ def reset_application_state(clear_df_completely=True):
     if hasattr(step_04_missing_values, 'reset_missing_values_state'): step_04_missing_values.reset_missing_values_state()
     if hasattr(step_05_outlier_treatment, 'reset_outlier_treatment_state'): step_05_outlier_treatment.reset_outlier_treatment_state()
     if hasattr(step_06_standardization, 'reset_step6_state'): step_06_standardization.reset_step6_state()
-    if hasattr(step_07_feature_engineering, 'reset_state'): step_07_feature_engineering.reset_state() # << ADDED
-    if hasattr(step_08_derivation, 'reset_state'): step_08_derivation.reset_state() # << ADDED
+    if hasattr(step_07_feature_engineering, 'reset_state'): step_07_feature_engineering.reset_state()
+    if hasattr(step_08_derivation, 'reset_state'): step_08_derivation.reset_state()
+    if hasattr(step_09_data_viewer, 'reset_state'): step_09_data_viewer.reset_state() # << NEW >>
 
     if clear_df_completely:
         app_state.active_step_name = None
@@ -1096,24 +1109,30 @@ def apply_settings(settings_dict: dict):
         switch_step_view(None, None, ANALYSIS_STEPS[0])
 
 def get_all_available_dfs_callback() -> Dict[str, pd.DataFrame]:
-    """Step 8 모듈에서 사용할 수 있는 모든 DF 소스를 딕셔너리로 반환합니다."""
+    """Step 8, 9 모듈에서 사용할 수 있는 모든 DF 소스를 딕셔너리로 반환합니다."""
     available_dfs = {}
+    # << NEW >>: 원본 데이터를 목록에 추가
+    if app_state.original_df is not None:
+        available_dfs['0. Original Data'] = app_state.original_df
+
     if app_state.df_after_step1 is not None:
-        available_dfs['From Step 1 (Types Applied)'] = app_state.df_after_step1
+        available_dfs['1. After Type Conversion'] = app_state.df_after_step1
     if app_state.df_after_step3 is not None:
-        available_dfs['From Step 3 (Preprocessed)'] = app_state.df_after_step3
+        available_dfs['3. After Preprocessing'] = app_state.df_after_step3
     if app_state.df_after_step4 is not None:
-        available_dfs['From Step 4 (Missing Imputed)'] = app_state.df_after_step4
+        available_dfs['4. After Missing Value Imputation'] = app_state.df_after_step4
     if app_state.df_after_step5 is not None:
-        available_dfs['From Step 5 (Outliers Treated)'] = app_state.df_after_step5
+        available_dfs['5. After Outlier Treatment'] = app_state.df_after_step5
     if app_state.df_after_step6 is not None:
-        available_dfs['From Step 6 (Standardized)'] = app_state.df_after_step6
+        available_dfs['6. After Standardization'] = app_state.df_after_step6
     if app_state.df_after_step7 is not None:
-        available_dfs['From Step 7 (Features Engineered)'] = app_state.df_after_step7
-    
-    # 파생 DF들도 소스로 추가 (자기 자신을 소스로 사용하는 것을 막기 위해 복사)
-    available_dfs.update(app_state.derived_dfs.copy())
-    
+        available_dfs['7. After Feature Engineering'] = app_state.df_after_step7
+
+    # 8단계에서 생성된 파생 DF들을 추가
+    # 이름을 명확하게 하기 위해 접두사 추가
+    for name, df in app_state.derived_dfs.items():
+        available_dfs[f"Derived: {name}"] = df
+
     return available_dfs
 
 def add_or_update_derived_df_callback(name: str, df: pd.DataFrame):
@@ -1181,6 +1200,7 @@ util_functions_for_modules = {
     'calculate_cramers_v': utils.calculate_cramers_v,
     'calculate_feature_target_relevance': utils.calculate_feature_target_relevance,
     'plot_to_dpg_texture': utils.plot_to_dpg_texture, # 시각화 유틸리티 함수 추가
+    'create_table_with_large_data_preview': utils.create_table_with_large_data_preview,
 }
 
 main_app_callbacks = {
@@ -1296,9 +1316,13 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
                     if hasattr(step_07_feature_engineering, 'create_ui'):
                         step_07_feature_engineering.create_ui(step_name_create, "content_area", main_app_callbacks)
 
-                elif step_name_create == ANALYSIS_STEPS[7]: # << ADDED: Step 8 UI 생성
+                elif step_name_create == ANALYSIS_STEPS[7]: # Step 8 UI 생성
                     if hasattr(step_08_derivation, 'create_ui'):
                         step_08_derivation.create_ui(step_name_create, "content_area", main_app_callbacks)
+
+                elif step_name_create == ANALYSIS_STEPS[8]: # << NEW >>: Step 9 UI 생성
+                    if hasattr(step_09_data_viewer, 'create_ui'):
+                        step_09_data_viewer.create_ui(step_name_create, "content_area", main_app_callbacks)
 
             if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0 and not app_state.active_step_name:
                 first_step = ANALYSIS_STEPS[0]
