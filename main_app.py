@@ -997,7 +997,7 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
             for step_name_nav in ANALYSIS_STEPS:
                 dpg.add_button(label=step_name_nav, callback=switch_step_view, user_data=step_name_nav, width=-1, height=30)
 
-        ai_log_panel_width = 350
+        ai_log_panel_width = 300
         content_area_width = -(ai_log_panel_width)
 
 
@@ -1059,7 +1059,7 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
             dpg.add_separator()
             dpg.add_text("AI 분석 결과가 여기에 표시됩니다.\n", tag="ai_analysis_log_panel_text", wrap=ai_log_panel_width)
             
-dpg.create_viewport(title='Data Analysis Platform', width=1700, height=1000)
+dpg.create_viewport(title='Data Analysis Platform', width=1800, height=1000)
 dpg.set_exit_callback(save_state_on_exit)
 dpg.setup_dearpygui()
 
