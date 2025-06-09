@@ -25,11 +25,9 @@ except ImportError as e:
 
 TAG_OT_MULTIVARIATE_TAB = "step5_multivariate_outlier_tab"
 TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO = "step5_ot_mva_col_selection_mode_radio"
-# TAG_OT_MVA_MANUAL_COLUMN_SELECTOR_GROUP - 제거됨
-# TAG_OT_MVA_COLUMN_SELECTOR_MULTI - 제거됨
 TAG_OT_MVA_CONTAMINATION_INPUT = "step5_ot_mva_contamination_input"
 TAG_OT_MVA_DETECT_BUTTON = "step5_ot_mva_detect_button"
-TAG_OT_MVA_RECOMMEND_PARAMS_BUTTON = "step5_ot_mva_recommend_params_button"
+# TAG_OT_MVA_RECOMMEND_PARAMS_BUTTON - 제거됨
 TAG_OT_MVA_VISUALIZATION_GROUP = "step5_ot_mva_visualization_group"
 TAG_OT_MVA_UMAP_PLOT_IMAGE = "step5_ot_mva_umap_plot_image"
 TAG_OT_MVA_PCA_PLOT_IMAGE = "step5_ot_mva_pca_plot_image"
@@ -40,6 +38,9 @@ TAG_OT_MVA_INSTANCE_STATS_TABLE = "step5_ot_mva_instance_stats_table"
 TAG_OT_MVA_SHAP_PLOT_IMAGE = "step5_ot_mva_shap_plot_image"
 TAG_OT_MVA_SHAP_PARENT_GROUP = "shap_image_parent_group_in_tab"
 TAG_OT_MVA_BOXPLOT_GROUP = "step5_ot_mva_boxplot_group"
+TAG_OT_MVA_APPLY_TREATMENT_BUTTON = "step5_ot_mva_apply_treatment_button" # 새로 추가
+TAG_MVA_BULK_TREATMENT_COMBO = "step5_mva_bulk_treatment_combo"
+TAG_MVA_EXECUTE_BULK_CHANGE_BUTTON = "step5_mva_execute_bulk_change_button"
 
 DEFAULT_MVA_CONTAMINATION = 0.1
 MAX_OUTLIER_INSTANCES_TO_SHOW = 30
@@ -66,6 +67,8 @@ _mva_all_selectable_tags_in_instances_table: List[str] = []
 _mva_top_gap_vars_for_boxplot: List[str] = []
 _mva_boxplot_image_tags: List[str] = []
 _mva_last_recommendation_details_str: Optional[str] = None
+_mva_treatment_selections: Dict[Any, str] = {} # 새로 추가: 이상치 처리 방법을 저장할 딕셔너리 (인덱스 -> 방법)
+
 
 def _log_mva(message: str):
     if _shared_utils_mva and 'log_message_func' in _shared_utils_mva:
@@ -166,6 +169,9 @@ def _update_selected_columns_for_mva_detection():
 def _run_mva_outlier_detection_logic(sender, app_data, user_data):
     global _df_with_mva_outliers, _mva_model, _mva_shap_explainer, _mva_outlier_instances_summary
     _log_mva("Run MVA Outlier Detection clicked.")
+    _mva_treatment_selections.clear() # 새로 탐지 시 이전 처리 방법 선택 초기화
+    if dpg.does_item_exist(TAG_MVA_BULK_TREATMENT_COMBO):
+        dpg.set_value(TAG_MVA_BULK_TREATMENT_COMBO, "--- Select Bulk Action ---")
     current_df_orig = _shared_utils_mva['get_current_df_func']() if _shared_utils_mva and 'get_current_df_func' in _shared_utils_mva else None
     if current_df_orig is None:
         _show_simple_modal_mva("Error", "No data for MVA detection.")
@@ -304,17 +310,22 @@ def _run_mva_outlier_detection_logic(sender, app_data, user_data):
         _clear_all_mva_visualizations(); _populate_mva_outlier_instances_table()
 
 def _populate_mva_outlier_instances_table():
-    global _mva_all_selectable_tags_in_instances_table
+    global _mva_all_selectable_tags_in_instances_table, _mva_treatment_selections
     if not (dpg.is_dearpygui_running() and dpg.does_item_exist(TAG_OT_MVA_OUTLIER_INSTANCES_TABLE)): return
     dpg.delete_item(TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, children_only=True)
     _mva_all_selectable_tags_in_instances_table.clear()
+    
     if not _mva_outlier_instances_summary:
         dpg.add_table_column(label="Info", parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE)
         with dpg.table_row(parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE): dpg.add_text("No MVA outliers detected or run detection.")
         _clear_mva_instance_details(); return
 
-    dpg.add_table_column(label="Original Index", parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, init_width_or_weight=0.4)
-    dpg.add_table_column(label="MVA Outlier Score", parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, init_width_or_weight=0.6)
+    dpg.add_table_column(label="Original Index", parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, init_width_or_weight=0.25)
+    dpg.add_table_column(label="MVA Outlier Score", parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, init_width_or_weight=0.35)
+    dpg.add_table_column(label="Treatment Method", parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, init_width_or_weight=0.40)
+
+    treatment_options = ["Do Not Treat", "Remove Row", "Treat as Missing"]
+
     for i, item in enumerate(_mva_outlier_instances_summary):
         idx, score = item["Original Index"], item["MVA Outlier Score"]
         tag = f"mva_instance_sel_{i}_{idx}_{dpg.generate_uuid()}"
@@ -322,6 +333,59 @@ def _populate_mva_outlier_instances_table():
         with dpg.table_row(parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE):
             dpg.add_selectable(label=str(idx), tag=tag, user_data=idx, callback=_on_mva_outlier_instance_selected)
             dpg.add_text(score)
+            
+            current_treatment = _mva_treatment_selections.get(idx, "Do Not Treat")
+            dpg.add_combo(treatment_options, default_value=current_treatment, width=-1,
+                          user_data=idx, callback=_on_mva_treatment_method_change)
+
+def _on_mva_treatment_method_change(sender, app_data: str, user_data_idx: Any):
+    """MVA 이상치 처리 방법 콤보박스 변경 시 콜백"""
+    global _mva_treatment_selections
+    _mva_treatment_selections[user_data_idx] = app_data
+    _log_mva(f"MVA Treatment for index '{user_data_idx}' set to '{app_data}'.")
+
+def _apply_mva_treatment_logic():
+    """선택된 다변량 이상치 처리 방법을 적용하는 함수"""
+    global _df_with_mva_outliers
+    _log_mva("Apply MVA Treatments button clicked.")
+
+    if _df_with_mva_outliers is None:
+        _show_simple_modal_mva("Error", "No detection data available to apply treatments.")
+        return
+        
+    treatments_to_apply = {idx: method for idx, method in _mva_treatment_selections.items() if method != "Do Not Treat"}
+
+    if not treatments_to_apply:
+        _show_simple_modal_mva("Info", "No treatments were selected to be applied.")
+        return
+
+    df_processed = _df_with_mva_outliers.copy()
+    indices_to_drop = [idx for idx, method in treatments_to_apply.items() if method == "Remove Row"]
+    indices_to_nan = [idx for idx, method in treatments_to_apply.items() if method == "Treat as Missing"]
+
+    if indices_to_drop:
+        # drop하려는 인덱스가 실제 DataFrame에 있는지 확인
+        valid_indices_to_drop = [idx for idx in indices_to_drop if idx in df_processed.index]
+        if valid_indices_to_drop:
+            df_processed.drop(index=valid_indices_to_drop, inplace=True)
+            _log_mva(f"Removed {len(valid_indices_to_drop)} rows.")
+
+    if indices_to_nan:
+        # NaN 처리하려는 인덱스가 실제 DataFrame에 있는지 확인
+        valid_indices_to_nan = [idx for idx in indices_to_nan if idx in df_processed.index]
+        if valid_indices_to_nan:
+            # 모든 컬럼을 NaN으로 처리
+            df_processed.loc[valid_indices_to_nan, :] = np.nan
+            _log_mva(f"Treated {len(valid_indices_to_nan)} rows as missing (all columns).")
+
+    # 처리 후, 부모의 콜백 함수 호출하여 다음 단계로 데이터 전달
+    if _shared_utils_mva and 'main_app_callbacks' in _shared_utils_mva:
+        _shared_utils_mva['main_app_callbacks']['step5_outlier_treatment_complete'](df_processed)
+        _show_simple_modal_mva("Success", f"MVA outlier treatments applied.\n- {len(indices_to_drop)} rows removed.\n- {len(indices_to_nan)} rows set to NaN.")
+    
+    # 처리 후에는 선택 상태 초기화
+    _mva_treatment_selections.clear()
+    _populate_mva_outlier_instances_table() # 테이블 다시 그려서 콤보박스 초기화
 
 def _on_mva_outlier_instance_selected(sender, app_data_is_selected: bool, user_data_original_idx: Any):
     global _mva_selected_outlier_instance_idx
@@ -924,7 +988,6 @@ def create_multivariate_ui(parent_tab_bar_tag: str, shared_utilities: dict):
             dpg.add_input_float(tag=TAG_OT_MVA_CONTAMINATION_INPUT, width=120, default_value=_mva_contamination, min_value=0.0001, max_value=0.5, step=0.01, format="%.4f", callback=_on_mva_contamination_change)
         with dpg.group(horizontal=True):
             dpg.add_button(label="Run Multivariate Detection", tag=TAG_OT_MVA_DETECT_BUTTON, width=-1, height=30, callback=_run_mva_outlier_detection_logic, enabled=bool(PyOD_IForest))
-            dpg.add_button(label="Set Recommended MVA Params", tag=TAG_OT_MVA_RECOMMEND_PARAMS_BUTTON, width=-1, height=30, callback=_set_mva_recommended_parameters)
         dpg.add_separator()
 
         with dpg.tab_bar(tag="mva_results_tab_bar"):
@@ -972,13 +1035,33 @@ def create_multivariate_ui(parent_tab_bar_tag: str, shared_utilities: dict):
                                 # AI 버튼은 _generate_mva_umap_pca_plots 에서 이 그룹에 동적으로 추가됨
             # ... (Detected Instances & Details 탭, Variable Box Plots 탭은 기존과 거의 동일하게 유지)
             with dpg.tab(label="Detected Instances & Details", tag="mva_tab_details"):
+                with dpg.group():
+                    dpg.add_text("Bulk Treatment for All Detected Outliers", color=[200, 200, 0])
+                    with dpg.group(horizontal=True):
+                        dpg.add_combo(
+                            items=["--- Select Bulk Action ---", "Remove All Detected", "Treat All as Missing", "Reset All Selections"],
+                            tag=TAG_MVA_BULK_TREATMENT_COMBO,
+                            default_value="--- Select Bulk Action ---",
+                            width=-150
+                        )
+                        dpg.add_button(
+                            label="Execute Bulk Change",
+                            tag=TAG_MVA_EXECUTE_BULK_CHANGE_BUTTON,
+                            callback=_execute_bulk_treatment_change,
+                            width=-1
+                        )
+                dpg.add_spacer(height=5)
                 dpg.add_text("4. Detected Multivariate Outlier Instances (Max 30, by Score)", color=[255, 255, 0])
                 with dpg.table(tag=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True, height=220, borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
                     dpg.add_table_column(label="Info", parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE, width_stretch=True)
                     with dpg.table_row(parent=TAG_OT_MVA_OUTLIER_INSTANCES_TABLE):
                         dpg.add_text("Run MVA detection.")
+
+                # 'Apply MVA Treatments' 버튼을 테이블 위젯 *밖으로* 이동시킵니다.
+                dpg.add_button(label="Apply MVA Treatments", tag=TAG_OT_MVA_APPLY_TREATMENT_BUTTON, width=-1, height=30,
+                               callback=_apply_mva_treatment_logic)
                 
-                dpg.add_separator(parent="mva_tab_details") # 구분선 추가 (선택 사항)
+                dpg.add_separator(parent="mva_tab_details")
 
                 # SHAP 섹션과 통계 테이블 섹션을 위한 테이블 레이아웃
                 with dpg.table(header_row=False, resizable=False, policy=dpg.mvTable_SizingStretchProp,
@@ -1068,6 +1151,7 @@ def reset_multivariate_state_internal(called_from_parent_reset=True):
     _mva_column_selection_mode, _mva_contamination = "All Numeric", DEFAULT_MVA_CONTAMINATION # 기본값
     _mva_outlier_instances_summary, _mva_all_selectable_tags_in_instances_table, _mva_top_gap_vars_for_boxplot = [], [], []
     _mva_selected_outlier_instance_idx = None
+    _mva_treatment_selections.clear()
 
     if dpg.is_dearpygui_running():
         if dpg.does_item_exist(TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO): dpg.set_value(TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO, _mva_column_selection_mode)
@@ -1080,17 +1164,64 @@ def reset_multivariate_state_internal(called_from_parent_reset=True):
 def reset_multivariate_state(): reset_multivariate_state_internal(True); _log_mva("MVA outlier state reset by parent.")
 
 def get_multivariate_settings() -> dict:
-    return {"mva_col_sel_mode": _mva_column_selection_mode, "mva_contam": _mva_contamination} # "mva_sel_cols" 제거
+    return {
+        "mva_col_sel_mode": _mva_column_selection_mode, 
+        "mva_contam": _mva_contamination,
+        "mva_treatments": _mva_treatment_selections.copy() # 이 줄을 추가합니다.
+    }
 
 def apply_multivariate_settings(df_input: Optional[pd.DataFrame], settings: dict, shared_utilities: dict):
     global _shared_utils_mva, _current_df_for_mva, _mva_column_selection_mode, _mva_contamination
     _shared_utils_mva = shared_utilities; _current_df_for_mva = df_input
     _mva_column_selection_mode = settings.get("mva_col_sel_mode", "All Numeric")
     _mva_contamination = settings.get("mva_contam", DEFAULT_MVA_CONTAMINATION)
+    _mva_treatment_selections = settings.get("mva_treatments", {}).copy() # 이 줄을 추가합니다.
 
     if dpg.is_dearpygui_running():
         if dpg.does_item_exist(TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO): dpg.set_value(TAG_OT_MVA_COLUMN_SELECTION_MODE_RADIO, _mva_column_selection_mode)
         if dpg.does_item_exist(TAG_OT_MVA_CONTAMINATION_INPUT): dpg.set_value(TAG_OT_MVA_CONTAMINATION_INPUT, _mva_contamination)
-        if _current_df_for_mva is not None: _update_selected_columns_for_mva_detection()
-        _populate_mva_outlier_instances_table(); _clear_all_mva_visualizations()
+        if _current_df_for_mva is not None:
+            _update_selected_columns_for_mva_detection()
+            _populate_mva_outlier_instances_table()
+            _clear_all_mva_visualizations()
+            
     _log_mva("MVA outlier settings applied. Re-run detection if needed.")
+
+# --- 아래 함수 전체를 새로 추가합니다 ---
+def _execute_bulk_treatment_change():
+    """Bulk Treatment 콤보박스에서 선택된 액션을 모든 이상치에 대해 준비(stage)합니다."""
+    global _mva_treatment_selections
+    
+    if not dpg.does_item_exist(TAG_MVA_BULK_TREATMENT_COMBO): return
+        
+    selected_action = dpg.get_value(TAG_MVA_BULK_TREATMENT_COMBO)
+    
+    if selected_action == "--- Select Bulk Action ---":
+        _show_simple_modal_mva("Info", "Please select a bulk action from the dropdown menu.")
+        return
+
+    if not _mva_outlier_instances_summary:
+        _show_simple_modal_mva("Info", "There are no detected outliers to apply a bulk action to.")
+        dpg.set_value(TAG_MVA_BULK_TREATMENT_COMBO, "--- Select Bulk Action ---")
+        return
+
+    method_map = {
+        "Remove All Detected": "Remove Row",
+        "Treat All as Missing": "Treat as Missing",
+        "Reset All Selections": "Do Not Treat"
+    }
+    target_method = method_map.get(selected_action)
+    if target_method is None: return
+
+    # 모든 탐지된 이상치에 대해 처리 방법을 상태 변수에 저장
+    for instance_summary in _mva_outlier_instances_summary:
+        idx = instance_summary["Original Index"]
+        _mva_treatment_selections[idx] = target_method
+        
+    _log_mva(f"Bulk action '{selected_action}' staged for all {len(_mva_outlier_instances_summary)} detected outliers.")
+    
+    # 테이블 UI를 새로고침하여 변경된 드롭다운 값들을 보여줌
+    _populate_mva_outlier_instances_table()
+    
+    # 액션 실행 후 콤보박스 초기화
+    dpg.set_value(TAG_MVA_BULK_TREATMENT_COMBO, "--- Select Bulk Action ---")
