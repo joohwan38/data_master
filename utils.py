@@ -575,8 +575,8 @@ def create_dpg_plot_scaffold(parent: str, title: str, x_label: str, y_label: str
         if legend_tag:
             dpg.add_plot_legend(tag=legend_tag)
         
-        dpg.add_plot_axis(dpg.mvXAxis, label=x_label, tag=x_axis_tag)
-        dpg.add_plot_axis(dpg.mvYAxis, label=y_label, tag=y_axis_tag)
+        dpg.add_plot_axis(dpg.mvXAxis, label=x_label, tag=x_axis_tag, auto_fit=True)
+        dpg.add_plot_axis(dpg.mvYAxis, label=y_label, tag=y_axis_tag, auto_fit=True)
         
         if eq_asp:
             dpg.set_axis_limits_auto(dpg.last_item())

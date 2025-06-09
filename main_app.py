@@ -20,6 +20,7 @@ import hashlib
 import json
 import datetime
 import subprocess
+import re
 
 
 STEP_03_SAVE_LOAD_ENABLED = False 
@@ -28,6 +29,7 @@ class AppState:
     def __init__(self):
         self.current_df = None
         self.original_df = None
+        self.original_base_name = None
         self.df_after_step1 = None
         self.df_after_step3 = None 
         self.df_after_step4 = None 
@@ -75,6 +77,14 @@ try:
 except FileNotFoundError:
     print("Warning: 'ollama' command not found. AI analysis will not be available.")
 
+
+def _get_base_filename(file_path: str) -> str:
+    """Extracts the base name from a file path, stripping _YYYYMMDD_vN suffixes."""
+    filename = os.path.basename(file_path)
+    filename_no_ext, _ = os.path.splitext(filename)
+    # _YYYYMMDD 또는 _YYYYMMDD_v123 같은 패턴을 제거하는 정규식
+    base_name = re.sub(r'_(\d{8})(_v\d+)?$', '', filename_no_ext)
+    return base_name
 
 def _show_simple_modal_message(title: str, message: str, width: int = 450, height: int = 200):
     """간단한 메시지를 표시하는 모달 창을 띄웁니다."""
@@ -361,10 +371,11 @@ def load_data_from_file(file_path: str) -> bool:
         app_state.df_after_step3 = None
         app_state.df_after_step4 = None
         app_state.df_after_step5 = None
-        app_state.df_after_step6 = None # Reset Step 6 df
-        app_state.df_after_step7 = None # << ADDED
-        app_state.derived_dfs.clear() # << ADDED
+        app_state.df_after_step6 = None 
+        app_state.df_after_step7 = None 
+        app_state.derived_dfs.clear() 
         app_state.loaded_file_path = file_path
+        app_state.original_base_name = _get_base_filename(file_path)
         if dpg.does_item_exist(MAIN_FILE_PATH_DISPLAY_TAG):
             dpg.set_value(MAIN_FILE_PATH_DISPLAY_TAG, f"File: {os.path.basename(file_path)} (Shape: {app_state.original_df.shape if app_state.original_df is not None else 'N/A'})")
         success = True
@@ -555,6 +566,7 @@ def reset_application_state(clear_df_completely=True):
     if clear_df_completely:
         app_state.original_df = None
         app_state.loaded_file_path = None
+        app_state.original_base_name = None
         app_state.active_settings = {}
         if dpg.does_item_exist(MAIN_FILE_PATH_DISPLAY_TAG): dpg.set_value(MAIN_FILE_PATH_DISPLAY_TAG, "No data loaded.")
     
@@ -621,10 +633,11 @@ def reset_application_state(clear_df_completely=True):
 
 
 def export_to_parquet_callback():
-    """처리된 데이터를 Parquet 파일로 내보냅니다."""
+    """처리된 데이터를 Parquet 파일로 내보냅니다. (파일명_YYYYMMDD_vN 형식)"""
     df_to_export = None
     export_source_step = ""
 
+    # (내보낼 데이터프레임 선택 로직은 기존과 동일)
     if app_state.df_after_step7 is not None:
         df_to_export = app_state.df_after_step7
         export_source_step = "Step 7 (Feature Engineering)"
@@ -637,9 +650,6 @@ def export_to_parquet_callback():
     elif app_state.df_after_step4 is not None:
         df_to_export = app_state.df_after_step4
         export_source_step = "Step 4 (Missing Values)"
-    elif app_state.df_after_step3 is not None:
-        df_to_export = app_state.df_after_step3
-        export_source_step = "Step 3 (Node Editor)"
     elif app_state.df_after_step1 is not None:
         df_to_export = app_state.df_after_step1
         export_source_step = "Step 1 (Load/Overview)"
@@ -648,22 +658,35 @@ def export_to_parquet_callback():
         _show_simple_modal_message("Export Info", "No processed data available to export. Please complete at least Step 1.")
         return
 
-    if not app_state.loaded_file_path:
+    # `loaded_file_path` 와 `original_base_name` 모두 확인
+    if not app_state.loaded_file_path or not app_state.original_base_name:
         _show_simple_modal_message("Export Error", "Original file path not found. Cannot determine export location.")
         return
 
     try:
         original_dir = os.path.dirname(app_state.loaded_file_path)
-        original_basename = os.path.basename(app_state.loaded_file_path)
-        original_filename_no_ext, _ = os.path.splitext(original_basename)
+        base_name = app_state.original_base_name # 저장된 기본 이름 사용
         
-        export_suffix = f"_processed_after_{export_source_step.replace(' ', '_').replace('(', '').replace(')', '').lower()}"
-        export_filename = f"{original_filename_no_ext}{export_suffix}.parquet"
-        export_path = os.path.join(original_dir, export_filename)
+        # 오늘 날짜로 파일명 생성 (YYYYMMDD 형식)
+        current_date_str = datetime.datetime.now().strftime("%Y%m%d")
         
+        # 1. 기본 파일명 확인 (e.g., my_data_20250609.parquet)
+        export_filename_base = f"{base_name}_{current_date_str}"
+        export_path = os.path.join(original_dir, f"{export_filename_base}.parquet")
+        
+        # 2. 파일이 존재하면 버전 관리 (v1, v2, ...)
+        version = 1
+        while os.path.exists(export_path):
+            export_filename_versioned = f"{export_filename_base}_v{version}"
+            export_path = os.path.join(original_dir, f"{export_filename_versioned}.parquet")
+            version += 1
+            
+        # 최종 결정된 경로로 파일 저장
         df_to_export.to_parquet(export_path, index=False)
-        _show_simple_modal_message("Export Successful", f"Data (from {export_source_step}) has been exported to:\n{export_path}")
+        final_filename = os.path.basename(export_path)
+        _show_simple_modal_message("Export Successful", f"Data (from {export_source_step}) has been exported to:\n{final_filename}")
         print(f"Data exported to {export_path}")
+
     except Exception as e:
         _show_simple_modal_message("Export Error", f"Failed to export data to Parquet.\nError: {e}")
         print(f"Error exporting data: {e}"); traceback.print_exc()
