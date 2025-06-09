@@ -711,6 +711,7 @@ def gather_current_settings() -> dict:
         'step_05_outlier_treatment_settings': {},
         'step_06_standardization_settings': {},
         'step_07_feature_engineering_settings': {},
+        'step_09_data_viewer_settings': {},
     }
     if hasattr(step_01_data_loading, 'get_step1_settings_for_saving'):
         settings['step_01_settings'] = step_01_data_loading.get_step1_settings_for_saving()
@@ -738,6 +739,10 @@ def gather_current_settings() -> dict:
     
     if hasattr(step_07_feature_engineering, 'get_settings_for_saving'): # << ADDED
         settings['step_07_feature_engineering_settings'] = step_07_feature_engineering.get_settings_for_saving()
+    
+    if hasattr(step_09_data_viewer, 'get_settings_for_saving'):
+        settings['step_09_data_viewer_settings'] = step_09_data_viewer.get_settings_for_saving()
+
     
     return settings
 
@@ -819,6 +824,10 @@ def apply_settings(settings_dict: dict):
         step_07_feature_engineering.apply_settings_and_process(df_input_for_step7, s07_settings, main_app_callbacks)
 
     trigger_all_module_updates()
+
+    s09_settings = settings_dict.get('step_09_data_viewer_settings', {})
+    if s09_settings and hasattr(step_09_data_viewer, 'apply_settings_and_process'):
+         step_09_data_viewer.apply_settings_and_process(s09_settings, main_app_callbacks)
 
     restored_active_step = settings_dict.get('active_step_name', ANALYSIS_STEPS[0] if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0 else None)
     if restored_active_step and restored_active_step in app_state.step_group_tags and \

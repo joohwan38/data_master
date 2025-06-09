@@ -557,3 +557,31 @@ def create_table_with_large_data_preview(table_tag: str, df: pd.DataFrame,
         display_df = pd.concat([head_cols, ellipsis_col, tail_cols], axis=1)
 
     create_table_with_data(table_tag, display_df)
+
+# utils.py 파일에 추가할 코드
+
+def create_dpg_plot_scaffold(parent: str, title: str, x_label: str, y_label: str, 
+                             h: int = 300, w: int = -1, legend: bool = True,
+                             eq_asp: bool = False) -> Tuple[str, str, str, Optional[str]]:
+    """
+    DearPyGui 플롯의 기본 틀(플롯, 축, 범례)을 생성하고 각 요소의 태그를 반환합니다.
+    """
+    plot_tag = dpg.generate_uuid()
+    x_axis_tag = dpg.generate_uuid()
+    y_axis_tag = dpg.generate_uuid()
+    legend_tag = dpg.generate_uuid() if legend else None
+
+    with dpg.plot(label=title, height=h, width=w, parent=parent, tag=plot_tag):
+        if legend_tag:
+            dpg.add_plot_legend(tag=legend_tag)
+        
+        dpg.add_plot_axis(dpg.mvXAxis, label=x_label, tag=x_axis_tag)
+        dpg.add_plot_axis(dpg.mvYAxis, label=y_label, tag=y_axis_tag)
+        
+        if eq_asp:
+            dpg.set_axis_limits_auto(dpg.last_item())
+            dpg.set_axis_limits_auto(x_axis_tag)
+            # Aspect ratio is set on the plot itself after creation if needed
+            # dpg.set_plot_aspect_ratio(plot_tag, 1.0) # This might be what you want
+    
+    return plot_tag, x_axis_tag, y_axis_tag, legend_tag

@@ -93,7 +93,7 @@ def analyze_image_with_llava(image_bytes: bytes, chart_name: str = "Untitled Cha
         )
 
         payload = {
-            "model": "llava-llama3", # 이미지 분석에는 llava 모델 사용
+            "model": "gemma3:12b", # 이미지 분석에는 llava 모델 사용
             "prompt": prompt_text,
             "images": [encoded_image],
             "stream": True,

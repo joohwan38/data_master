@@ -8,6 +8,7 @@ import seaborn as sns
 import uuid
 import numpy as np
 import traceback
+import utils 
 
 # --- DPG Tags for Step 9 ---
 TAG_S9_GROUP = "step9_data_viewer_group"
@@ -85,73 +86,72 @@ def _clear_and_generate_charts():
     dpg.delete_item(TAG_S9_CHART_DISPLAY_WINDOW, children_only=True)
 
     if not _chart_configs:
-        dpg.add_text("No charts configured.", parent=TAG_S9_CHART_DISPLAY_WINDOW); return
+        dpg.add_text("차트가 구성되지 않았습니다. 'Chart Configuration' 탭에서 차트를 추가하세요.", parent=TAG_S9_CHART_DISPLAY_WINDOW)
+        return
 
     plot_func = _util_funcs.get('plot_to_dpg_texture')
     if not plot_func:
-        dpg.add_text("Error: Plotting utility function is not available.", parent=TAG_S9_CHART_DISPLAY_WINDOW, color=(255,0,0))
+        dpg.add_text("오류: 플롯 유틸리티 함수를 사용할 수 없습니다.", parent=TAG_S9_CHART_DISPLAY_WINDOW, color=(255,0,0))
         return
 
     for i, config in enumerate(_chart_configs):
         with dpg.group(parent=TAG_S9_CHART_DISPLAY_WINDOW):
             try:
+                # --- 차트 생성 로직 (이전과 동일) ---
                 df_name, chart_type = config.get("df_source"), config.get("chart_type")
                 x, y, hue, col_facet = (config.get(k) or None for k in ["x_axis", "y_axis", "hue", "col_facet"])
-                width, height = config.get("width", -1), config.get("height", 350)
-                
-                if not df_name or df_name not in _available_dfs: raise ValueError(f"DF '{df_name}' not found.")
+                if not df_name or df_name not in _available_dfs: raise ValueError(f"DF '{df_name}' 없음")
                 df = _available_dfs[df_name].copy()
-                if not x or x not in df.columns: raise ValueError("X-axis not specified.")
-                if CHART_UI_RULES.get(chart_type, {})["y_axis"] and (not y or y not in df.columns): raise ValueError("Y-axis required.")
-                if hue and df[hue].nunique() > 10: raise ValueError(f"Hue ('{hue}') has > 10 unique values.")
-                
+                if not x or x not in df.columns: raise ValueError("X축 지정 필요")
                 title = f"Chart {i+1}: {chart_type.capitalize()} on '{df_name}'"
-                dpg.add_text(title)
-                dpg.add_spacer(height=5, parent=TAG_S9_CHART_DISPLAY_WINDOW)
-
-                # --- Seaborn을 사용한 통합 플롯 로직 ---
-                plot_function_map = {
-                    "lineplot": sns.lineplot, "scatterplot": sns.scatterplot,
-                    "barplot": sns.barplot, "histplot": sns.histplot,
-                    "countplot": sns.countplot, "boxplot": sns.boxplot,
-                    "violinplot": sns.violinplot
-                }
+                plot_function_map = { "lineplot": sns.pointplot, "scatterplot": sns.scatterplot, "barplot": sns.barplot, "histplot": sns.histplot, "countplot": sns.countplot, "boxplot": sns.boxplot, "violinplot": sns.violinplot }
                 plot_function = plot_function_map.get(chart_type)
-                if not plot_function: raise ValueError(f"Unknown chart type: {chart_type}")
-
+                if not plot_function: raise ValueError(f"알 수 없는 차트 타입: {chart_type}")
                 plot_kwargs = {'data': df, 'x': x}
                 if y and CHART_UI_RULES.get(chart_type,{})["y_axis"]: plot_kwargs['y'] = y
                 if hue: plot_kwargs['hue'] = hue
-
-                # FacetGrid를 사용해야 하는 경우
                 if col_facet and col_facet in df.columns:
-                    g = sns.FacetGrid(df, col=col_facet, hue=hue, col_wrap=4, sharex=False, sharey=False)
-                    # FacetGrid.map()은 y축 인자를 명시적으로 요구할 수 있음
-                    map_args = [x]
+                    g = sns.FacetGrid(df, col=col_facet, hue=hue, col_wrap=4, sharex=False, sharey=False, height=3, aspect=1.2)
+                    map_args = [x]; 
                     if y and CHART_UI_RULES.get(chart_type,{})["y_axis"]: map_args.append(y)
-                    g.map(plot_function, *map_args)
-                    final_fig = g.fig
-                else: # 단일 차트
-                    fig_w = 8 if width == -1 else max(5, width / 80)
-                    fig_h = 6 if height == -1 else max(4, height / 80)
-                    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-                    plot_function(ax=ax, **plot_kwargs)
-                    final_fig = fig
-
-                final_fig.suptitle(title, y=1.02)
-                plt.tight_layout()
+                    g.map(plot_function, *map_args); final_fig = g.fig
+                else:
+                    fig, ax = plt.subplots(figsize=(8, 5)); plot_function(ax=ax, **plot_kwargs); final_fig = fig
+                final_fig.suptitle(title, y=1.02); plt.tight_layout(pad=1.0)
+                # --- 차트 생성 로직 끝 ---
                 
-                tex_tag, w, h, _ = plot_func(final_fig)
+                dpg.add_text(title)
+                dpg.add_spacer(height=5)
+                
+                tex_tag, w, h, img_bytes = plot_func(final_fig)
+                
                 if tex_tag:
                     _texture_tags.append(tex_tag)
-                    dpg.add_image(tex_tag, width=w, height=h)
-                
+                    
+                    # [최종 수정] 너비에만 맞추고, 높이는 비율에 따라 자유롭게 결정되도록 합니다.
+                    # 부모 창의 스크롤바가 넘치는 높이를 처리해 줄 것입니다.
+                    container_w = dpg.get_item_width(TAG_S9_CHART_DISPLAY_WINDOW) or 800
+                    max_w = container_w - 30 # 좌우 여백
+
+                    display_w = min(w, max_w)
+                    display_h = int(h * (display_w / w)) if w > 0 else h
+
+                    dpg.add_image(tex_tag, width=display_w, height=display_h)
+                    
+                    if img_bytes:
+                        ai_button_tag = f"s9_ai_analyze_btn_{config.get('id', uuid.uuid4())}"
+                        user_data_for_btn = {'bytes': img_bytes, 'name': title, 'btn_tag': ai_button_tag}
+                        action_callback = lambda s, a, u: utils.confirm_and_run_ai_analysis(
+                            image_bytes=u['bytes'], chart_name=u['name'],
+                            ai_button_tag=u['btn_tag'], main_callbacks=_module_main_callbacks
+                        )
+                        dpg.add_button(label="💡 Analyze with AI", tag=ai_button_tag,
+                                       user_data=user_data_for_btn, callback=action_callback)
             except Exception as e:
-                dpg.add_text(f"Failed to generate Chart {i+1}.\nError: {traceback.format_exc()}", color=(255, 0, 0))
+                dpg.add_text(f"차트 {i+1} 생성 실패.\n오류: {traceback.format_exc()}", color=(255, 0, 0))
             finally:
                 plt.close('all')
                 dpg.add_separator()
-
 
 def _update_chart_config_state(sender, app_data, user_data):
     config_id, field = user_data["id"], user_data["field"]
@@ -224,11 +224,11 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
                         with dpg.table(tag=TAG_S9_PREVIEW_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingFixedFit, scrollY=True, scrollX=True): pass
             with dpg.tab(label="Chart Configuration", tag=TAG_S9_CHART_CONFIG_TAB):
                 dpg.add_button(label="Add Chart", width=-1, callback=_add_chart_config_row)
-                with dpg.child_window(border=True, height=450):
+                with dpg.child_window(border=True, height=500):
                     with dpg.table(tag=TAG_S9_CHART_CONFIG_TABLE, header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp, scrollY=True): pass
                 dpg.add_button(label="Generate All Charts", width=-1, height=30, callback=_clear_and_generate_charts)
             with dpg.tab(label="Chart Display", tag=TAG_S9_CHART_DISPLAY_TAB):
-                with dpg.child_window(tag=TAG_S9_CHART_DISPLAY_WINDOW, border=True):
+                with dpg.child_window(tag=TAG_S9_CHART_DISPLAY_WINDOW, border=True, no_scrollbar=False):
                     dpg.add_text("Click 'Generate All Charts' in the configuration tab.")
 
     main_callbacks['register_module_updater'](step_name, update_ui)
@@ -254,3 +254,22 @@ def reset_state():
             dpg.delete_item(TAG_S9_CHART_DISPLAY_WINDOW, children_only=True)
             dpg.add_text("Click 'Generate All Charts' in the configuration tab.", parent=TAG_S9_CHART_DISPLAY_WINDOW)
         update_ui()
+
+# step_09_data_viewer.py 파일에 추가
+
+def get_settings_for_saving() -> dict:
+    """현재 차트 구성을 저장용 딕셔너리로 반환합니다."""
+    return {"chart_configs": _chart_configs}
+
+def apply_settings_and_process(settings: dict, main_callbacks: dict):
+    """불러온 설정을 적용합니다."""
+    global _chart_configs, _module_main_callbacks
+    if not _module_main_callbacks:
+        _module_main_callbacks = main_callbacks
+
+    # 설정 파일에서 차트 구성 목록을 복원합니다.
+    _chart_configs = settings.get("chart_configs", [])
+
+    # 불러온 구성을 UI 테이블에 반영합니다.
+    if dpg.is_dearpygui_running():
+        _populate_chart_config_table()

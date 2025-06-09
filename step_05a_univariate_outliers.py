@@ -320,29 +320,32 @@ def _populate_uni_detection_results_table():
     global _uni_all_selectable_tags_in_table
     if not dpg.is_dearpygui_running() or not dpg.does_item_exist(TAG_OT_DETECTION_RESULTS_TABLE_UNI): return
     dpg.delete_item(TAG_OT_DETECTION_RESULTS_TABLE_UNI, children_only=True)
-    _uni_all_selectable_tags_in_table.clear() # 선택 가능한 태그 목록 초기화
-    # ... (기존 로직과 동일)
-    if not _uni_outlier_summary_data:
+    _uni_all_selectable_tags_in_table.clear()
+
+    # 이상치가 1개 이상인 변수만 필터링합니다.
+    cols_with_outliers = [item for item in _uni_outlier_summary_data if item.get('Detected Outliers', 0) > 0]
+    
+    if not cols_with_outliers:
         dpg.add_table_column(label="Info", parent=TAG_OT_DETECTION_RESULTS_TABLE_UNI, width_stretch=True)
-        with dpg.table_row(parent=TAG_OT_DETECTION_RESULTS_TABLE_UNI): dpg.add_text("No univariate detection results. Run detection.")
+        with dpg.table_row(parent=TAG_OT_DETECTION_RESULTS_TABLE_UNI):
+            dpg.add_text("No variables with detected outliers.")
         return
+
     headers = ["Column (Click to Visualize)", "Detected Outliers", "Percentage (%)"]
-    # 컬럼 너비 조정 가능
     col_widths_summary = [0.5, 0.25, 0.25] 
     for i, header in enumerate(headers): 
         dpg.add_table_column(label=header, parent=TAG_OT_DETECTION_RESULTS_TABLE_UNI, 
                              init_width_or_weight=col_widths_summary[i], 
-                             width_stretch=(i==0)) # 첫 번째 컬럼만 stretch
+                             width_stretch=(i==0))
 
-    for i, row_data in enumerate(_uni_outlier_summary_data):
+    # 필터링된 리스트(cols_with_outliers)를 사용하여 테이블을 채웁니다.
+    for i, row_data in enumerate(cols_with_outliers):
         with dpg.table_row(parent=TAG_OT_DETECTION_RESULTS_TABLE_UNI):
             col_name_str = str(row_data.get("Column", ""))
-            # 태그 고유성 강화
             tag = f"uni_selectable_s5_{i}_{''.join(filter(str.isalnum, col_name_str))}_{dpg.generate_uuid()}"
             _uni_all_selectable_tags_in_table.append(tag)
-            # selectable은 전체 row에 걸쳐서 동작하도록 span_columns=True (기본값 False)
             dpg.add_selectable(label=col_name_str, tag=tag, user_data=col_name_str, 
-                               callback=_on_uni_row_selectable_clicked, span_columns=False) # 원래 코드 False 유지
+                               callback=_on_uni_row_selectable_clicked, span_columns=False)
             dpg.add_text(str(row_data.get("Detected Outliers", "")))
             dpg.add_text(str(row_data.get("Percentage (%)", "")))
 
@@ -365,13 +368,14 @@ def _generate_univariate_plots_with_ai_buttons(column_name: str):
         _log_uni("Error: _shared_utils_uni is not initialized.")
         return
 
+    # --- 불필요한 UI 정리 로직을 모두 제거했습니다 ---
+
     current_df = _shared_utils_uni.get('get_current_df_func', lambda: None)()
     plot_texture_func = _shared_utils_uni.get('plot_to_dpg_texture_func')
-    default_texture_tag = _shared_utils_uni.get('default_uni_plot_texture_tag') # 기본 플레이스홀더용
-    main_callbacks_for_ai = _shared_utils_uni.get('main_app_callbacks')
-
-    if not all([current_df is not None, plot_texture_func, default_texture_tag, main_callbacks_for_ai]):
-        _log_uni("Error: Missing shared utilities or data for plot generation in _generate_univariate_plots_with_ai_buttons.")
+    default_texture_tag = _shared_utils_uni.get('default_uni_plot_texture_tag')
+    
+    if not all([current_df is not None, plot_texture_func, default_texture_tag]):
+        _log_uni("Error: Missing shared utilities or data for plot generation.")
         _clear_uni_visualization_plot()
         return
 
@@ -385,23 +389,10 @@ def _generate_univariate_plots_with_ai_buttons(column_name: str):
        outlier_flag_col not in _df_with_uni_detected_outliers.columns:
         _clear_uni_visualization_plot(); _log_uni(f"Plot error: Invalid data or flags for '{column_name}'."); return
 
-    # 시각화 그룹 내 이전 AI 버튼들 삭제 (새로운 플롯에 대한 버튼만 표시)
-    if dpg.does_item_exist(TAG_OT_VISUALIZATION_GROUP_UNI):
-        children_slots = dpg.get_item_children(TAG_OT_VISUALIZATION_GROUP_UNI, 1)
-        for child_tag_slot in children_slots:
-            # 이미지 위젯은 남기고 버튼과 스페이서만 삭제 시도
-            # 더 확실하게 하려면 버튼에 특정 패턴의 alias를 주고 그것으로 필터링
-            item_info = dpg.get_item_info(child_tag_slot)
-            if item_info['type'] == "mvAppItemType::mvButton" or item_info['type'] == "mvAppItemType::mvSpacer":
-                 if "uni_plot_ai_button_for_" in dpg.get_item_alias(child_tag_slot): # AI 버튼 식별
-                    try: dpg.delete_item(child_tag_slot)
-                    except Exception as e: _log_uni(f"Minor error deleting old item {child_tag_slot}: {e}")
-
-
-    plot_figsize = (7, 4.8) # 각 개별 플롯의 크기
+    plot_figsize = (7, 4.8)
     img_parent_width = dpg.get_item_width(TAG_OT_VISUALIZATION_GROUP_UNI) if dpg.does_item_exist(TAG_OT_VISUALIZATION_GROUP_UNI) else 700
     
-    # --- 1. Box Plot 생성 및 AI 버튼 ---
+    # --- 1. Box Plot 생성 ---
     try:
         fig_box, ax_box = plt.subplots(figsize=plot_figsize)
         ax_box.boxplot(original_series, vert=True, patch_artist=True, 
@@ -422,9 +413,7 @@ def _generate_univariate_plots_with_ai_buttons(column_name: str):
         plot_result_box = plot_texture_func(fig_box)
         plt.close(fig_box)
         
-        tex_tag_box, w_box, h_box, img_bytes_box = None, 0, 0, None
-        if plot_result_box and len(plot_result_box) == 4:
-            tex_tag_box, w_box, h_box, img_bytes_box = plot_result_box
+        tex_tag_box, w_box, h_box, _ = (plot_result_box if plot_result_box else (None, 0, 0, None))
 
         if _uni_active_box_plot_texture_id and _uni_active_box_plot_texture_id != default_texture_tag and dpg.does_item_exist(_uni_active_box_plot_texture_id):
             try: dpg.delete_item(_uni_active_box_plot_texture_id)
@@ -436,27 +425,17 @@ def _generate_univariate_plots_with_ai_buttons(column_name: str):
                 display_w_box = min(w_box, img_parent_width - 20 if img_parent_width > 20 else w_box)
                 display_h_box = int(h_box * (display_w_box / w_box)) if w_box > 0 else h_box
                 dpg.configure_item(TAG_OT_BOX_PLOT_IMAGE_UNI, texture_tag=tex_tag_box, width=display_w_box, height=display_h_box, show=True)
-
-                if img_bytes_box:
-                    ai_button_tag_box = f"uni_plot_ai_button_for_BoxPlot_{''.join(filter(str.isalnum, column_name))}"
-                    chart_name_box = f"Univariate_Box_Plot_{column_name}"
-                    action_box = functools.partial(utils.confirm_and_run_ai_analysis, img_bytes_box, chart_name_box, ai_button_tag_box, main_callbacks_for_ai)
-                    with dpg.group(parent=TAG_OT_VISUALIZATION_GROUP_UNI, horizontal=True):
-                        btn_w = 200; sp_w = (display_w_box - btn_w) / 2 if display_w_box > btn_w else 0
-                        if sp_w > 0: dpg.add_spacer(width=int(sp_w))
-                        dpg.add_button(label=f"💡 Analyze Box Plot", tag=ai_button_tag_box, callback=lambda s,a,u: action_box(), width=btn_w, height=30)
         else:
             if dpg.does_item_exist(TAG_OT_BOX_PLOT_IMAGE_UNI):
                  dpg.configure_item(TAG_OT_BOX_PLOT_IMAGE_UNI, texture_tag=default_texture_tag, width=100, height=30, show=True)
             _log_uni(f"Failed to generate Box Plot for '{column_name}'.")
-        dpg.add_spacer(height=10, parent=TAG_OT_VISUALIZATION_GROUP_UNI)
+        # --- Spacer 추가 로직 제거 ---
     except Exception as e_box_plot:
         _log_uni(f"Error generating box plot for {column_name}: {e_box_plot}")
         if dpg.does_item_exist(TAG_OT_BOX_PLOT_IMAGE_UNI):
              dpg.configure_item(TAG_OT_BOX_PLOT_IMAGE_UNI, texture_tag=default_texture_tag, width=100, height=30, show=True)
 
-
-    # --- 2. Scatter Plot 생성 및 AI 버튼 ---
+    # --- 2. Scatter Plot 생성 ---
     try:
         fig_scatter, ax_scatter = plt.subplots(figsize=plot_figsize)
         scatter_df_data = pd.DataFrame({
@@ -483,9 +462,7 @@ def _generate_univariate_plots_with_ai_buttons(column_name: str):
         plot_result_scatter = plot_texture_func(fig_scatter)
         plt.close(fig_scatter)
 
-        tex_tag_scatter, w_scatter, h_scatter, img_bytes_scatter = None, 0, 0, None
-        if plot_result_scatter and len(plot_result_scatter) == 4:
-            tex_tag_scatter, w_scatter, h_scatter, img_bytes_scatter = plot_result_scatter
+        tex_tag_scatter, w_scatter, h_scatter, _ = (plot_result_scatter if plot_result_scatter else (None, 0, 0, None))
 
         if _uni_active_scatter_plot_texture_id and _uni_active_scatter_plot_texture_id != default_texture_tag and dpg.does_item_exist(_uni_active_scatter_plot_texture_id):
             try: dpg.delete_item(_uni_active_scatter_plot_texture_id)
@@ -497,25 +474,15 @@ def _generate_univariate_plots_with_ai_buttons(column_name: str):
                 display_w_scatter = min(w_scatter, img_parent_width - 20 if img_parent_width > 20 else w_scatter)
                 display_h_scatter = int(h_scatter * (display_w_scatter / w_scatter)) if w_scatter > 0 else h_scatter
                 dpg.configure_item(TAG_OT_SCATTER_PLOT_IMAGE_UNI, texture_tag=tex_tag_scatter, width=display_w_scatter, height=display_h_scatter, show=True)
-
-                if img_bytes_scatter:
-                    ai_button_tag_scatter = f"uni_plot_ai_button_for_ScatterPlot_{''.join(filter(str.isalnum, column_name))}"
-                    chart_name_scatter = f"Univariate_Scatter_Plot_{column_name}"
-                    action_scatter = functools.partial(utils.confirm_and_run_ai_analysis, img_bytes_scatter, chart_name_scatter, ai_button_tag_scatter, main_callbacks_for_ai)
-                    with dpg.group(parent=TAG_OT_VISUALIZATION_GROUP_UNI, horizontal=True): # 버튼을 가운데 정렬하기 위한 그룹
-                        btn_w_sc = 200; sp_w_sc = (display_w_scatter - btn_w_sc) / 2 if display_w_scatter > btn_w_sc else 0
-                        if sp_w_sc > 0: dpg.add_spacer(width=int(sp_w_sc))
-                        dpg.add_button(label=f"💡 Analyze Scatter Plot", tag=ai_button_tag_scatter, callback=lambda s,a,u: action_scatter(), width=btn_w_sc, height=30)
         else:
             if dpg.does_item_exist(TAG_OT_SCATTER_PLOT_IMAGE_UNI):
                 dpg.configure_item(TAG_OT_SCATTER_PLOT_IMAGE_UNI, texture_tag=default_texture_tag, width=100, height=30, show=True)
             _log_uni(f"Failed to generate Scatter Plot for '{column_name}'.")
-        dpg.add_spacer(height=10, parent=TAG_OT_VISUALIZATION_GROUP_UNI)
+        # --- Spacer 추가 로직 제거 ---
     except Exception as e_scatter_plot:
         _log_uni(f"Error generating scatter plot for {column_name}: {e_scatter_plot}")
         if dpg.does_item_exist(TAG_OT_SCATTER_PLOT_IMAGE_UNI):
             dpg.configure_item(TAG_OT_SCATTER_PLOT_IMAGE_UNI, texture_tag=default_texture_tag, width=100, height=30, show=True)
-
 
 def _clear_uni_visualization_plot(): # 두 개의 이미지 플롯을 초기화하도록 수정
     global _uni_active_box_plot_texture_id, _uni_active_scatter_plot_texture_id
