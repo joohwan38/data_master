@@ -13,14 +13,14 @@ import functools # partial 함수 사용을 위해 추가
 
 import seaborn as sns
 import matplotlib.pyplot as plt
-import umap
+# import umap # UMAP 제거
 import io
 from PIL import Image
 import traceback
 # ollama_analyzer는 utils.py에서 임포트하여 사용하므로 여기서는 직접 임포트 필요 없음
 
 warnings.filterwarnings('ignore', category=RuntimeWarning)
-warnings.filterwarnings('ignore', category=UserWarning, module='umap')
+# warnings.filterwarnings('ignore', category=UserWarning, module='umap') # UMAP 제거
 warnings.filterwarnings('ignore', category=UserWarning, module='seaborn')
 warnings.filterwarnings('ignore', category=FutureWarning, module='seaborn')
 
@@ -28,7 +28,7 @@ warnings.filterwarnings('ignore', category=FutureWarning, module='seaborn')
 TAG_MVA_STEP_GROUP = "mva_step_group"
 TAG_MVA_MAIN_TAB_BAR = "mva_main_tab_bar"
 TAG_MVA_CORR_TAB = "mva_corr_tab"
-TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX = "mva_corr_umap_group_by_target_checkbox"
+# TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX = "mva_corr_umap_group_by_target_checkbox" # UMAP 제거
 TAG_MVA_CORR_RUN_BUTTON = "mva_corr_run_button"
 TAG_MVA_CORR_RESULTS_GROUP = "mva_corr_results_group"
 TAG_MVA_PAIRPLOT_TAB = "mva_pairplot_tab"
@@ -47,8 +47,9 @@ _mva_util_funcs: Dict[str, Any] = {} # 이 변수는 이제 utils.py의 함수�
 def get_mva_settings_for_saving() -> Dict[str, Any]:
     settings = {'corr_tab': {}, 'pairplot_tab': {}, 'cat_eda_tab': {}}
     if dpg.is_dearpygui_running(): # DPG 실행 중일 때만 UI 요소 접근
-        if dpg.does_item_exist(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX):
-            settings['corr_tab']['umap_group_by_target'] = dpg.get_value(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX)
+        # UMAP 관련 설정 저장 로직 제거
+        # if dpg.does_item_exist(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX):
+        #     settings['corr_tab']['umap_group_by_target'] = dpg.get_value(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX)
         if dpg.does_item_exist(TAG_MVA_PAIRPLOT_GROUP_BY_TARGET_CHECKBOX):
             settings['pairplot_tab']['group_by_target'] = dpg.get_value(TAG_MVA_PAIRPLOT_GROUP_BY_TARGET_CHECKBOX)
         
@@ -69,9 +70,10 @@ def get_mva_settings_for_saving() -> Dict[str, Any]:
 def apply_mva_settings_from_loaded(settings: Dict[str, Any], current_df: Optional[pd.DataFrame], main_callbacks: Dict[str, Any]):
     if not dpg.is_dearpygui_running(): return
 
-    corr_tab_settings = settings.get('corr_tab', {})
-    if 'umap_group_by_target' in corr_tab_settings and dpg.does_item_exist(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX):
-        dpg.set_value(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX, corr_tab_settings['umap_group_by_target'])
+    # UMAP 관련 설정 적용 로직 제거
+    # corr_tab_settings = settings.get('corr_tab', {})
+    # if 'umap_group_by_target' in corr_tab_settings and dpg.does_item_exist(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX):
+    #     dpg.set_value(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX, corr_tab_settings['umap_group_by_target'])
 
     pairplot_tab_settings = settings.get('pairplot_tab', {})
     if 'group_by_target' in pairplot_tab_settings and dpg.does_item_exist(TAG_MVA_PAIRPLOT_GROUP_BY_TARGET_CHECKBOX):
@@ -289,80 +291,10 @@ def _mva_run_correlation_analysis(df: pd.DataFrame, u_funcs: dict, callbacks: di
     elif target_var and target_var in df.columns :
         if not (selection_method_description == "No target selected." or "not suitable for this selection" in selection_method_description or "not suitable." in selection_method_description):
              dpg.add_text(f"-> Not enough numeric variables found based on '{target_var}' for Clustermap 2.", parent=results_group, color=(200,200,0))
-    dpg.add_separator(parent=results_group)
-
+    
     # --- UMAP ---
-    dpg.add_text("UMAP 2D Visualization of All Numeric Variables:", parent=results_group, color=(255,255,0))
-    img_bytes_umap = None
-    tex_tag_umap, w_umap, h_umap = None, 0, 0
-
-    try:
-        umap_prep_df = df[num_cols].copy()
-        for col in umap_prep_df.columns:
-            if umap_prep_df[col].isnull().any() and pd.api.types.is_numeric_dtype(umap_prep_df[col]):
-                umap_prep_df[col] = umap_prep_df[col].fillna(umap_prep_df[col].median())
-        if umap_prep_df.shape[0] < 2 or umap_prep_df.shape[1] < 2:
-            dpg.add_text("Not enough data/features for UMAP.", parent=results_group)
-        else:
-            group_umap_cb = dpg.get_value(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX) if dpg.does_item_exist(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX) else False
-            umap_hue_values = None; umap_legend_hndls = None; actual_umap_hue_var = None
-            cmap_for_umap = 'Spectral'; n_cats_umap = 0
-            if group_umap_cb and target_var and target_var in df.columns:
-                target_s_for_hue = df[target_var].copy()
-                if target_s_for_hue.isnull().any(): target_s_for_hue = target_s_for_hue.astype(str).fillna("Missing")
-                unique_hue_count = target_s_for_hue.nunique(dropna=False)
-                MAX_HUE_CATS_UMAP = 10
-                if 2 <= unique_hue_count <= MAX_HUE_CATS_UMAP:
-                    actual_umap_hue_var = target_var
-                    aligned_hue_series = target_s_for_hue.loc[umap_prep_df.index.intersection(target_s_for_hue.index)]
-                    umap_hue_values = aligned_hue_series.astype('category').cat.codes
-                    cats_umap = aligned_hue_series.astype('category').cat.categories
-                    n_cats_umap = len(cats_umap)
-                    if n_cats_umap > 0 : cmap_for_umap = plt.colormaps.get_cmap('Spectral').resampled(n_cats_umap) # type: ignore
-                    umap_legend_hndls = [plt.Line2D([0],[0], marker='o', color='w', label=str(c)[:15], markerfacecolor=cmap_for_umap(i) if n_cats_umap > 0 else 'gray', markersize=6) for i, c in enumerate(cats_umap)] # type: ignore
-                    dpg.add_text(f"UMAP: Grouping by target '{target_var}'.", parent=results_group, color=(180,180,180))
-                else:
-                    dpg.add_text(f"UMAP Hue: Target '{target_var}' has {unique_hue_count} unique values. Hue disabled (requires 2-{MAX_HUE_CATS_UMAP}).", parent=results_group, color=(200,200,0))
-            n_neigh = min(15, umap_prep_df.shape[0] - 1) if umap_prep_df.shape[0] > 1 else 1
-            if n_neigh <= 0: n_neigh = 1
-            reducer_umap = umap.UMAP(n_neighbors=n_neigh, n_components=2, random_state=42, min_dist=0.05, spread=1.0)
-            umap_embedding = reducer_umap.fit_transform(umap_prep_df)
-            plt.style.use('seaborn-v0_8-whitegrid')
-            fig_umap_plot = plt.figure(figsize=(8, 6.5))
-            scatter_kwargs_umap = {'s': 15, 'alpha': 0.7}
-            if umap_hue_values is not None:
-                scatter_kwargs_umap['c'] = umap_hue_values
-                scatter_kwargs_umap['cmap'] = cmap_for_umap
-            plt.scatter(umap_embedding[:, 0], umap_embedding[:, 1], **scatter_kwargs_umap)
-
-            if umap_legend_hndls and umap_hue_values is not None:
-                plt.legend(handles=umap_legend_hndls, title=str(actual_umap_hue_var)[:15], fontsize=7.5, loc='best', frameon=True, shadow=True)
-            plt.title("UMAP Projection of Numeric Variables", fontsize=11); plt.xlabel("UMAP Dimension 1", fontsize=9); plt.ylabel("UMAP Dimension 2", fontsize=9)
-            plt.xticks(fontsize=8.5); plt.yticks(fontsize=7.5); plt.tight_layout()
-            
-            plot_result_umap = _plot_to_dpg_texture_data(fig_umap_plot, desired_dpi=100)
-            if plot_result_umap and len(plot_result_umap) == 4:
-                tex_tag_umap, w_umap, h_umap, img_bytes_umap = plot_result_umap
-            plt.style.use('default')
-
-            with dpg.group(horizontal=False, parent=results_group):
-                _display_dpg_image(dpg.last_item(), tex_tag_umap, w_umap, h_umap, max_w=750)
-                if img_bytes_umap and tex_tag_umap:
-                    chart_name_umap = "UMAP_Projection_Numeric_Variables"
-                    ai_button_umap_tag = dpg.generate_uuid()
-                    action_for_umap_button = functools.partial(
-                        utils.confirm_and_run_ai_analysis,
-                        img_bytes_umap, chart_name_umap, ai_button_umap_tag, _mva_main_app_callbacks
-                    )
-                    dpg.add_button(label="💡 Analyze with AI", tag=ai_button_umap_tag, width=150, height=25,
-                                   # 수정된 부분: 람다 함수로 감싸기
-                                   callback=lambda sender, app_data, user_data: action_for_umap_button())
-                    dpg.add_spacer(height=5)
-    except ImportError:
-        dpg.add_text("UMAP-learn not installed.",parent=results_group,color=(255,100,0))
-    except Exception as e:
-        dpg.add_text(f"Error (UMAP): {e}",parent=results_group,color=(255,0,0))
-        print(f"Error (UMAP traceback): {traceback.format_exc()}")
+    # UMAP 관련 모든 코드 블록 제거
+    
 
 def _mva_run_pair_plot_analysis(df: pd.DataFrame, u_funcs: dict, callbacks: dict):
     # Pair Plot은 현재 AI 분석 버튼이 없으므로, 기존 로직 유지 또는 필요시 추가
@@ -568,10 +500,11 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
 
     with dpg.group(tag=TAG_MVA_STEP_GROUP, parent=parent_container_tag): # show=False 기본값으로 시작
         with dpg.tab_bar(tag=TAG_MVA_MAIN_TAB_BAR):
-            with dpg.tab(label="Correlation & UMAP (Numeric)", tag=TAG_MVA_CORR_TAB):
-                dpg.add_text("Displays clustermaps of numeric correlations and UMAP projection.", wrap=-1)
-                dpg.add_checkbox(label="Group UMAP by Target (if Target suitable: 2-10 unique values)", tag=TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX, default_value=False)
-                dpg.add_button(label="Run Correlation Analysis & UMAP", tag=TAG_MVA_CORR_RUN_BUTTON, width=-1, height=30,
+            with dpg.tab(label="Correlation (Numeric)", tag=TAG_MVA_CORR_TAB):
+                dpg.add_text("Displays clustermaps of numeric correlations.", wrap=-1)
+                # UMAP 관련 체크박스 제거
+                # dpg.add_checkbox(label="Group UMAP by Target (if Target suitable: 2-10 unique values)", tag=TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX, default_value=False)
+                dpg.add_button(label="Run Correlation Analysis", tag=TAG_MVA_CORR_RUN_BUTTON, width=-1, height=30,
                              callback=lambda: _mva_run_correlation_analysis(
                                  _mva_main_app_callbacks['get_current_df'](), 
                                  _mva_main_app_callbacks.get('get_util_funcs', lambda: {})(), # u_funcs 전달
@@ -632,19 +565,21 @@ def update_ui(current_df: Optional[pd.DataFrame], main_callbacks: Dict[str, Any]
             dpg.configure_item(run_button_tag, enabled=is_df_valid)
             
     # 특정 체크박스들의 활성화 여부도 데이터 유효성에 따라 결정 (선택적)
-    for checkbox_tag in [TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX, TAG_MVA_PAIRPLOT_GROUP_BY_TARGET_CHECKBOX]:
+    # UMAP 관련 체크박스 제거
+    for checkbox_tag in [TAG_MVA_PAIRPLOT_GROUP_BY_TARGET_CHECKBOX]:
         if dpg.does_item_exist(checkbox_tag):
              dpg.configure_item(checkbox_tag, enabled=is_df_valid and bool(main_callbacks['get_selected_target_variable']()))
 
 
 def reset_mva_ui_defaults():
     if not dpg.is_dearpygui_running(): return
-    if dpg.does_item_exist(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX): dpg.set_value(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX, False)
+    # UMAP 관련 체크박스 제거
+    # if dpg.does_item_exist(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX): dpg.set_value(TAG_MVA_CORR_UMAP_GROUP_BY_TARGET_CHECKBOX, False)
     if dpg.does_item_exist(TAG_MVA_PAIRPLOT_GROUP_BY_TARGET_CHECKBOX): dpg.set_value(TAG_MVA_PAIRPLOT_GROUP_BY_TARGET_CHECKBOX, False)
     
     # UI 초기화 시, 각 결과 그룹에 기본 안내 메시지 설정
     for area_tag, msg in [
-        (TAG_MVA_CORR_RESULTS_GROUP, "Run 'Correlation Analysis & UMAP' to see results."), 
+        (TAG_MVA_CORR_RESULTS_GROUP, "Run 'Correlation Analysis' to see results."), 
         (TAG_MVA_PAIRPLOT_RESULTS_GROUP, "Click 'Generate Pair Plot' to see results."), 
         (TAG_MVA_CAT_EDA_RESULTS_GROUP, "Run 'Categorical Association Analysis' to see results.")
     ]:

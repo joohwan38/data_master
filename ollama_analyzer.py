@@ -21,7 +21,6 @@ def analyze_text_with_ollama(prompt_text: str, chart_name: str = "Text Analysis"
             "prompt": prompt_text,
             "stream": True,
             "format": "json", # JSON 형식으로 응답 요청
-            "temperature": 0.0,
              "options": {
                 "temperature": 0.0
             }
@@ -89,15 +88,16 @@ def analyze_image_with_llava(image_bytes: bytes, chart_name: str = "Untitled Cha
     try:
         encoded_image = base64.b64encode(image_bytes).decode('utf-8')
         prompt_text = (
-            f"You are a professional data analyst. Analyze the '{chart_name}' chart and provide insights on overall insights, key analysis results, and application strategies. Keep your response concise and avoid unnecessary explanations. Please respond in Korean."
+            f"""너는 전문적인 차트 데이터분석가입니다. '{chart_name}'를 자세히 확인하고 데이터분석 해주세요.
+             핵심분석결과 (1-2문장) 활용방안 (1 문장)에 대해 과학적인 분석을 해주세요. 부연설명이나 참고사항은 금지합니다. """
         )
 
         payload = {
-            "model": "gemma3:12b", # 이미지 분석에는 llava 모델 사용
+            "model": OLLAMA_MODEL, # 이미지 분석에는 llava 모델 사용
             "prompt": prompt_text,
             "images": [encoded_image],
             "stream": True,
-            "temperature" : 0.1
+            "temperature" : 0.2
         }
 
         print(f"[Ollama Analyzer] Sending request to Ollama for '{chart_name}' (streaming)...")
