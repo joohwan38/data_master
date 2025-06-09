@@ -173,7 +173,7 @@ def _on_apply_clicked(sender, app_data, user_data):
     _generate_comparison_plots(_current_df_input, df_to_process, numeric_cols)
 
     if _main_app_callbacks:
-        _main_app_callbacks['step6_standardization_complete'](df_to_process)
+        _main_app_callbacks['step6_standardization_complete'](df_to_process, _selected_scaler_method)
         _log("Processing complete, callback sent to main_app.")
 
 def _generate_comparison_plots(df_before: pd.DataFrame, df_after: pd.DataFrame, numeric_cols: List[str]):
