@@ -1,48 +1,160 @@
-# step_02a_sva.py
+# step_02a_sva.py (최종 수정 버전)
 import dearpygui.dearpygui as dpg
 import pandas as pd
 import numpy as np
 from scipy import stats
 from typing import Dict, List, Tuple, Optional, Any
 import warnings
-import utils # utils 모듈 임포트
+import utils 
+import traceback
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 
+# --- 태그 정의 (기존과 동일) ---
 TAG_SVA_STEP_GROUP = "sva_step_group"
 TAG_SVA_FILTER_STRENGTH_RADIO = "sva_filter_strength_radio"
 TAG_SVA_GROUP_BY_TARGET_CHECKBOX = "sva_group_by_target_checkbox"
 TAG_SVA_RUN_BUTTON = "sva_run_button"
 TAG_SVA_RESULTS_CHILD_WINDOW = "sva_results_child_window"
 TAG_SVA_VARIABLE_SECTION_GROUP_PREFIX = "sva_var_section_prefix_"
-# SVA 모듈 전용 프로그레스/알림 태그 정의 (utils의 기본 태그와 다르게 하여 충돌 방지)
 TAG_SVA_MODULE_PROGRESS_MODAL = "sva_module_specific_progress_modal"
 TAG_SVA_MODULE_PROGRESS_TEXT = "sva_module_specific_progress_text"
 TAG_SVA_MODULE_ALERT_MODAL = "sva_module_specific_alert_modal"
 TAG_SVA_MODULE_ALERT_TEXT = "sva_module_specific_alert_text"
+TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO = "sva_grouped_numeric_plot_type_radio"
+TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO = "sva_grouped_cat_plot_type_radio"
+X_AXIS_ROTATED_TICKS_THEME_TAG = "sva_x_axis_rotated_theme"
 
-TAG_SVA_GROUPED_PLOT_TYPE_RADIO = "sva_grouped_plot_type_radio"
-X_AXIS_ROTATED_TICKS_THEME_TAG = "sva_x_axis_rotated_theme" # SVA용 X축 테마
+_sva_main_app_callbacks: Dict[str, Any] = {}
+_sva_util_funcs: Dict[str, Any] = {}
+
+# (get_sva_settings_for_saving, apply_sva_settings_from_loaded, _sva_setup_axis_themes 등 다른 함수는 이전과 동일하게 유지)
+# ...
+
+# <<< _sva_get_filtered_variables 함수 수정 >>>
+def _sva_get_filtered_variables(df: pd.DataFrame, strength: str, callbacks: dict, target: str = None) -> Tuple[List[str], str]:
+    if df is None or df.empty: return [], strength
+    types = callbacks.get('get_column_analysis_types', lambda: {})()
+    types = types if isinstance(types, dict) else {c: str(df[c].dtype) for c in df.columns}
+    
+    cols = [c for c in df.columns if not any(k in types.get(c, str(df[c].dtype)) for k in ["Text (", "Potentially Sensitive"])]
+    if strength == "None (All variables)": return cols, strength
+    
+    weak_cols = []
+    for c_name in cols:
+        s = df[c_name]
+        c_type = types.get(c_name, str(s.dtype))
+        if s.nunique(dropna=False) <= 1: continue
+        is_bin_num = "Numeric (Binary)" in c_type or \
+                     ("Numeric" in c_type and len(s.dropna().unique())==2 and set(s.dropna().unique()).issubset({0,1,0.0,1.0}))
+        if is_bin_num: continue
+        weak_cols.append(c_name)
+        
+    if strength == "Weak (Exclude obvious non-analytical)": return weak_cols, strength
+    
+    if not target: 
+        utils.show_dpg_alert_modal("Target Required", f"Filter '{strength}' requires a target variable to be selected.", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT)
+        return [], strength
+    
+    # --- 필터 로직 수정 ---
+    # 수치형/범주형을 가리지 않고 'Weak' 필터를 통과한 모든 변수를 후보로 사용
+    candidate_cols = weak_cols
+    if not candidate_cols:
+        utils.show_dpg_alert_modal("Filter Error", f"Filter '{strength}': No candidate variables found after 'Weak' filtering.", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT)
+        return [], strength
+    # --- 수정 완료 ---
+        
+    target_type = callbacks['get_selected_target_variable_type']()
+    relevance_tuples = utils.calculate_feature_target_relevance(
+        df, target, target_type, candidate_cols, callbacks 
+    )
+    relevant_scores_vars = [var_name for var_name, score in relevance_tuples] 
+
+    if not relevant_scores_vars: 
+        utils.show_dpg_alert_modal("Filter Error", f"Filter '{strength}': Could not calculate relevance for any variables.", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT)
+        return [], strength
+        
+    return relevant_scores_vars[:10 if strength == "Strong (Top 5-10 relevant)" else 20], strength
+
+# <<< _sva_group_by_target_cb 함수 수정 >>>
+def _sva_group_by_target_cb(sender, app_data, user_data):
+    main_callbacks = user_data
+    
+    # --- 그룹화 체크 시, 타겟 변수 선택 여부 즉시 확인 ---
+    if app_data: # 체크박스를 켤 때
+        target = main_callbacks['get_selected_target_variable']()
+        if not target:
+            utils.show_dpg_alert_modal("Target Not Selected", 
+                                       "To use the grouping feature, please select a target variable from the top panel first.", 
+                                       modal_tag=TAG_SVA_MODULE_ALERT_MODAL, 
+                                       text_tag=TAG_SVA_MODULE_ALERT_TEXT)
+            dpg.set_value(sender, False) # 체크박스를 다시 해제
+            return # 더 이상 진행하지 않음
+    # --- 수정 완료 ---
+            
+    # 기존 UI 가시성 제어 로직
+    dpg.configure_item(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO, show=app_data)
+    dpg.configure_item(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO + "_label", show=app_data)
+    dpg.configure_item(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO, show=app_data)
+    dpg.configure_item(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO + "_label", show=app_data)
+
+    if not app_data:
+        dpg.set_value(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO, "Box Plot")
+        dpg.set_value(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO, "100% Stacked (Proportions)")
+
+# (create_ui, _sva_run_analysis 등 나머지 함수는 이전 버전과 동일하게 유지)
+# ... 파일의 나머지 부분 ...
+
+# 아래는 파일 전체의 내용입니다. 위에서 수정한 함수를 포함하여 파일 전체를 교체하시면 됩니다.
+
+# step_02a_sva.py (최종 수정 버전)
+import dearpygui.dearpygui as dpg
+import pandas as pd
+import numpy as np
+from scipy import stats
+from typing import Dict, List, Tuple, Optional, Any
+import warnings
+import utils 
+import traceback
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+
+# --- 태그 정의 ---
+TAG_SVA_STEP_GROUP = "sva_step_group"
+TAG_SVA_FILTER_STRENGTH_RADIO = "sva_filter_strength_radio"
+TAG_SVA_GROUP_BY_TARGET_CHECKBOX = "sva_group_by_target_checkbox"
+TAG_SVA_RUN_BUTTON = "sva_run_button"
+TAG_SVA_RESULTS_CHILD_WINDOW = "sva_results_child_window"
+TAG_SVA_VARIABLE_SECTION_GROUP_PREFIX = "sva_var_section_prefix_"
+TAG_SVA_MODULE_PROGRESS_MODAL = "sva_module_specific_progress_modal"
+TAG_SVA_MODULE_PROGRESS_TEXT = "sva_module_specific_progress_text"
+TAG_SVA_MODULE_ALERT_MODAL = "sva_module_specific_alert_modal"
+TAG_SVA_MODULE_ALERT_TEXT = "sva_module_specific_alert_text"
+TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO = "sva_grouped_numeric_plot_type_radio"
+TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO = "sva_grouped_cat_plot_type_radio"
+X_AXIS_ROTATED_TICKS_THEME_TAG = "sva_x_axis_rotated_theme"
 
 _sva_main_app_callbacks: Dict[str, Any] = {}
 _sva_util_funcs: Dict[str, Any] = {}
 
 def get_sva_settings_for_saving() -> Dict[str, Any]:
-    """SVA 탭의 현재 설정을 저장용 딕셔너리로 반환합니다."""
     settings = {}
     if dpg.does_item_exist(TAG_SVA_FILTER_STRENGTH_RADIO):
         settings['filter_strength'] = dpg.get_value(TAG_SVA_FILTER_STRENGTH_RADIO)
     if dpg.does_item_exist(TAG_SVA_GROUP_BY_TARGET_CHECKBOX):
         settings['group_by_target'] = dpg.get_value(TAG_SVA_GROUP_BY_TARGET_CHECKBOX)
-    if dpg.does_item_exist(TAG_SVA_GROUPED_PLOT_TYPE_RADIO):
-        settings['grouped_plot_type'] = dpg.get_value(TAG_SVA_GROUPED_PLOT_TYPE_RADIO)
-    # 추가적으로 저장할 SVA 관련 UI 상태가 있다면 여기에 추가
+    if dpg.does_item_exist(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO):
+        settings['grouped_numeric_plot_type'] = dpg.get_value(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO)
+    if dpg.does_item_exist(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO):
+        settings['grouped_cat_plot_type'] = dpg.get_value(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO)
     return settings
 
 def apply_sva_settings_from_loaded(settings: Dict[str, Any], current_df: Optional[pd.DataFrame], main_callbacks: Dict[str, Any]):
-    """저장된 설정을 SVA UI에 적용합니다."""
-    if not dpg.is_dearpygui_running():
-        return
+    if not dpg.is_dearpygui_running(): return
 
     if 'filter_strength' in settings and dpg.does_item_exist(TAG_SVA_FILTER_STRENGTH_RADIO):
         dpg.set_value(TAG_SVA_FILTER_STRENGTH_RADIO, settings['filter_strength'])
@@ -51,25 +163,24 @@ def apply_sva_settings_from_loaded(settings: Dict[str, Any], current_df: Optiona
     if dpg.does_item_exist(TAG_SVA_GROUP_BY_TARGET_CHECKBOX):
         dpg.set_value(TAG_SVA_GROUP_BY_TARGET_CHECKBOX, group_by_target_val)
     
-    if dpg.does_item_exist(TAG_SVA_GROUPED_PLOT_TYPE_RADIO):
-        if 'grouped_plot_type' in settings:
-            dpg.set_value(TAG_SVA_GROUPED_PLOT_TYPE_RADIO, settings['grouped_plot_type'])
-        dpg.configure_item(TAG_SVA_GROUPED_PLOT_TYPE_RADIO, show=group_by_target_val)
+    _sva_group_by_target_cb(TAG_SVA_GROUP_BY_TARGET_CHECKBOX, group_by_target_val, main_callbacks)
+    
+    if dpg.does_item_exist(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO):
+        if 'grouped_numeric_plot_type' in settings:
+            dpg.set_value(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO, settings['grouped_numeric_plot_type'])
 
-    # 설정 로드 후 SVA 결과창을 어떻게 할지 결정 필요
-    # 예: 이전 결과가 있었다면 "설정이 로드되었습니다. 분석을 다시 실행하세요." 같은 메시지 표시
+    if dpg.does_item_exist(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO):
+        if 'grouped_cat_plot_type' in settings:
+            dpg.set_value(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO, settings['grouped_cat_plot_type'])
+
     if dpg.does_item_exist(TAG_SVA_RESULTS_CHILD_WINDOW):
         dpg.delete_item(TAG_SVA_RESULTS_CHILD_WINDOW, children_only=True)
         dpg.add_text("Settings loaded. Click 'Run Single Variable Analysis' to update results.", parent=TAG_SVA_RESULTS_CHILD_WINDOW)
-    
-    # 필요하다면 여기서 update_ui를 호출하여 UI의 다른 부분을 갱신할 수 있습니다.
-    # update_ui(current_df, main_callbacks) # current_df가 필요할 수 있음
-
 
 def _sva_setup_axis_themes():
     if not dpg.does_item_exist(X_AXIS_ROTATED_TICKS_THEME_TAG):
         with dpg.theme(tag=X_AXIS_ROTATED_TICKS_THEME_TAG):
-            with dpg.theme_component(dpg.mvXAxis): pass # 실제 스타일은 사용자가 이 태그에 직접 정의
+            with dpg.theme_component(dpg.mvXAxis): pass
 
 def _sva_get_filtered_variables(df: pd.DataFrame, strength: str, callbacks: dict, target: str = None) -> Tuple[List[str], str]:
     if df is None or df.empty: return [], strength
@@ -81,7 +192,8 @@ def _sva_get_filtered_variables(df: pd.DataFrame, strength: str, callbacks: dict
     
     weak_cols = []
     for c_name in cols:
-        s, c_type = df[c_name], types.get(c_name, str(df[c_name].dtype))
+        s = df[c_name]
+        c_type = types.get(c_name, str(s.dtype))
         if s.nunique(dropna=False) <= 1: continue
         is_bin_num = "Numeric (Binary)" in c_type or \
                      ("Numeric" in c_type and len(s.dropna().unique())==2 and set(s.dropna().unique()).issubset({0,1,0.0,1.0}))
@@ -89,20 +201,27 @@ def _sva_get_filtered_variables(df: pd.DataFrame, strength: str, callbacks: dict
         weak_cols.append(c_name)
         
     if strength == "Weak (Exclude obvious non-analytical)": return weak_cols, strength
-    if not target: utils.show_dpg_alert_modal("Target Required", f"Filter '{strength}': Target var needed.", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT); return [], strength
-        
-    num_cols_rank = [c for c in weak_cols if "Numeric" in types.get(c,"") and "Binary" not in types.get(c,"")]
-    if not num_cols_rank: utils.show_dpg_alert_modal("Filter Error", f"Filter '{strength}': No numeric vars.", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT); return [], strength
+    
+    if not target: 
+        utils.show_dpg_alert_modal("Target Required", f"Filter '{strength}' requires a target variable to be selected.", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT)
+        return [], strength
+    
+    candidate_cols = weak_cols
+    if not candidate_cols:
+        utils.show_dpg_alert_modal("Filter Error", f"Filter '{strength}': No candidate variables found after 'Weak' filtering.", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT)
+        return [], strength
         
     target_type = callbacks['get_selected_target_variable_type']()
     relevance_tuples = utils.calculate_feature_target_relevance(
-        df, target, target_type, num_cols_rank, callbacks 
+        df, target, target_type, candidate_cols, callbacks 
     )
-    relevant_scores_vars = [var_name for var_name, score in relevance_tuples] # 변수명만 추출
+    relevant_scores_vars = [var_name for var_name, score in relevance_tuples] 
 
-    if not relevant_scores_vars: utils.show_dpg_alert_modal("Filter Error", f"Filter '{strength}': No relevant vars.", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT); return [], strength
+    if not relevant_scores_vars: 
+        utils.show_dpg_alert_modal("Filter Error", f"Filter '{strength}': Could not calculate relevance for any variables.", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT)
+        return [], strength
+        
     return relevant_scores_vars[:10 if strength == "Strong (Top 5-10 relevant)" else 20], strength
-
 
 def _sva_create_basic_stats_table(parent: str, series: pd.Series, u_funcs: dict, analysis_override: str = None):
     dpg.add_text("Basic Statistics", parent=parent)
@@ -111,7 +230,7 @@ def _sva_create_basic_stats_table(parent: str, series: pd.Series, u_funcs: dict,
                   {'S': 'Unique (Actual)', 'V': str(series.nunique(dropna=False))},
                   {'S': 'Unique (Valid)', 'V': str(series.nunique())}]
     s1_types_func = u_funcs['main_app_callbacks'].get('get_column_analysis_types', lambda: {})
-    s1_types_dict = s1_types_func() # 함수를 호출하여 딕셔너리를 얻음
+    s1_types_dict = s1_types_func() 
     s1_type = s1_types_dict.get(series.name, str(series.dtype))
     is_bin_num = "Numeric (Binary)" in s1_type
     treat_cat = is_bin_num or analysis_override == "ForceCategoricalForBinaryNumeric" or \
@@ -141,7 +260,7 @@ def _sva_create_basic_stats_table(parent: str, series: pd.Series, u_funcs: dict,
 def _sva_create_advanced_relations_table(parent: str, series: pd.Series, full_df: pd.DataFrame, u_funcs: dict, col_w: int):
     norm_data = []
     s1_types_func = u_funcs['main_app_callbacks'].get('get_column_analysis_types', lambda: {})
-    s1_types_dict = s1_types_func() # 함수를 호출하여 컬럼 분석 타입 딕셔너리를 얻음
+    s1_types_dict = s1_types_func() 
     s1_type = s1_types_dict.get(series.name, str(series.dtype))
     is_num_test = pd.api.types.is_numeric_dtype(series.dtype) and "Binary" not in s1_type and series.nunique(dropna=False) >= 5
     if is_num_test:
@@ -194,7 +313,7 @@ def _sva_get_top_correlated(df: pd.DataFrame, cur_var: str, top_n: int = 5) -> L
         cand_cols = [c for c in df.columns if c != cur_var and (df[c].nunique(dropna=False) < 30 or pd.api.types.is_categorical_dtype(df[c].dtype) or df[c].dtype == 'object')]
         for col in cand_cols:
             try:
-                c_v = utils.calculate_cramers_v(series, df[col]) # utils의 함수 사용
+                c_v = utils.calculate_cramers_v(series, df[col]) 
                 if pd.notna(c_v) and c_v > 0.01: corrs.append((col, c_v, "Cramér's V"))
             except: pass
     corrs.sort(key=lambda x: abs(x[1]), reverse=True)
@@ -202,29 +321,19 @@ def _sva_get_top_correlated(df: pd.DataFrame, cur_var: str, top_n: int = 5) -> L
     return results if results else [{'Info': 'No significant relations.'}]
 
 def _sva_create_plot(parent: str, series: pd.Series, group_target: Optional[pd.Series] = None,
-                     an_override: Optional[str] = None, grp_plot_pref: str = "KDE",
+                     an_override: Optional[str] = None, numeric_plot_pref: str = "Box Plot",
+                     cat_plot_pref: str = "100% Stacked (Proportions)",
                      u_funcs: Optional[Dict] = None):
+    plot_container_tag = parent
 
-    plot_lbl = f"Dist: {series.name}"
-    if group_target is not None and series.name != group_target.name:
-        plot_lbl += f" (vs {group_target.name})"
-    
-    plot_container_tag = parent # 플롯과 메시지가 추가될 부모 그룹
-
-    # 1. 초기 데이터 정제
     clean_s = series.replace([np.inf, -np.inf], np.nan).dropna()
-
     if clean_s.empty:
-        if dpg.does_item_exist(plot_container_tag):
-            dpg.add_text("No valid data points for plot.", parent=plot_container_tag, color=(255, 200, 0))
+        dpg.add_text("No valid data for plot.", parent=plot_container_tag, color=(255, 200, 0))
         return
 
-    # 2. 시리즈 타입 및 그룹화 정보 결정
-    s1_type_str = str(series.dtype) # 기본값
-    if u_funcs and 'main_app_callbacks' in u_funcs:
-        s1_types_func = u_funcs['main_app_callbacks'].get('get_column_analysis_types', lambda: {})
-        s1_types_dict = s1_types_func()
-        s1_type_str = s1_types_dict.get(series.name, str(series.dtype))
+    s1_types_func = u_funcs['main_app_callbacks'].get('get_column_analysis_types', lambda: {})
+    s1_types_dict = s1_types_func()
+    s1_type_str = s1_types_dict.get(series.name, str(series.dtype))
 
     is_binary_numeric = "Numeric (Binary)" in s1_type_str
     treat_as_categorical = is_binary_numeric or \
@@ -233,130 +342,71 @@ def _sva_create_plot(parent: str, series: pd.Series, group_target: Optional[pd.S
                            (clean_s.nunique() < 5)
     is_grouped = group_target is not None
 
-    # 3. 플롯 틀 생성
-    plot_item_tag, x_axis_tag, y_axis_tag, legend_item_tag = utils.create_dpg_plot_scaffold(
-        plot_container_tag, plot_lbl, series.name, "Density/Freq",
-        h=290, legend=is_grouped
-    )
-    if legend_item_tag and not is_grouped:
-        dpg.hide_item(legend_item_tag)
-    if dpg.does_item_exist(X_AXIS_ROTATED_TICKS_THEME_TAG):
-        dpg.bind_item_theme(x_axis_tag, X_AXIS_ROTATED_TICKS_THEME_TAG)
-
-    # --- 4. 플로팅 로직 ---
-    # 수치형 데이터
-    if pd.api.types.is_numeric_dtype(series.dtype) and not treat_as_categorical:
-        num_unique_clean = clean_s.nunique()
-
-        if is_grouped: # 그룹화된 수치형
-            unique_groups = sorted(group_target.dropna().unique())[:7]
-            for group_val in unique_groups:
-                group_data_s = clean_s[group_target == group_val].dropna() # clean_s 에서 그룹 데이터 추출
-                if len(group_data_s) < 2: continue
-
-                grp_lbl = f"{str(group_val)[:15]}"
-                # "어제 코드"처럼, group_data_s가 이미 숫자형이라고 가정하고 바로 tolist()
-                # 단, KDE는 여전히 float을 명시적으로 요구할 수 있음
-                final_group_data_list = group_data_s.tolist() 
-                
-                if not final_group_data_list: continue
-
-                try:
-                    if grp_plot_pref == "KDE" and pd.Series(final_group_data_list).nunique() >= 2:
-                        # KDE는 float 타입 데이터 필요
-                        kde_input_data = pd.Series(final_group_data_list).astype(float).replace([np.inf,-np.inf],np.nan).dropna()
-                        if len(kde_input_data) >= 2 and kde_input_data.nunique() >= 2:
-                            kde = stats.gaussian_kde(kde_input_data)
-                            min_val, max_val = kde_input_data.min(), kde_input_data.max()
-                            if min_val < max_val:
-                                x_vals = np.linspace(min_val, max_val, 100)
-                                utils.add_dpg_line_series(y_axis_tag, x_vals.tolist(), kde(x_vals).tolist(), grp_lbl)
-                    elif grp_plot_pref == "Histogram":
-                        # "어제 코드"처럼 density=True, bins=-1 사용
-                        utils.add_dpg_histogram_series(y_axis_tag, final_group_data_list, grp_lbl, density=True, bins=-1)
-                except SystemError as se_grp:
-                    print(f"!!! SVA PLOT (GROUPED) SystemError for group '{grp_lbl}' of '{series.name}': {se_grp} !!!")
-                except Exception as e_grp:
-                    print(f"SVA PLOT (GROUPED) Exception for group '{grp_lbl}' of '{series.name}': {e_grp}")
+    fig = None 
+    try:
+        plot_texture_func = u_funcs.get('plot_to_dpg_texture', utils.plot_to_dpg_texture)
+        fig, ax = plt.subplots(figsize=(7, 4.5), dpi=90)
         
-        else: # 그룹화되지 않은 수치형
-            if num_unique_clean == 1:
-                the_value = clean_s.iloc[0]
-                count = len(clean_s)
-                msg = f"All {count} data points are: {the_value:.3f}"
-                print(f"SVA PLOT INFO ({series.name}): {msg}")
-                if dpg.does_item_exist(plot_container_tag):
-                    dpg.add_text(msg, parent=plot_container_tag, color=(200, 200, 0))
-            
-            elif num_unique_clean > 1:
-                # "어제 코드"처럼, clean_s가 이미 숫자형이라고 가정하고 바로 tolist()
-                final_data_list = clean_s.tolist()
+        if pd.api.types.is_numeric_dtype(series.dtype) and not treat_as_categorical:
+            if is_grouped:
+                plot_data = pd.DataFrame({'value': clean_s, 'group': group_target}).dropna()
+                if numeric_plot_pref == "Box Plot":
+                    sns.boxplot(x='group', y='value', data=plot_data, ax=ax, palette="viridis")
+                    ax.set_title(f"Box Plot of {series.name} by {group_target.name}")
+                    ax.set_xlabel(group_target.name)
+                else:
+                    stat_type = "density" if numeric_plot_pref == "Overlaid Density (KDE)" else "count"
+                    kde_flag = True if numeric_plot_pref == "Overlaid Density (KDE)" else False
+                    sns.histplot(data=plot_data, x='value', hue='group', fill=True, common_norm=False, stat=stat_type,
+                                 kde=kde_flag, palette="viridis", alpha=0.5, bins=30)
+                    ax.set_title(f"{stat_type.capitalize()} of {series.name} by {group_target.name}")
+                ax.set_ylabel(series.name)
+            else: 
+                sns.histplot(clean_s, kde=True, ax=ax, bins=30)
+                ax.set_title(f"Distribution of {series.name}")
+                ax.set_xlabel(series.name)
+                ax.set_ylabel("Density")
+        
+        else:
+            if is_grouped:
+                if cat_plot_pref == "100% Stacked (Proportions)":
+                    contingency_table = pd.crosstab(series, group_target)
+                    proportions_df = contingency_table.div(contingency_table.sum(axis=1), axis=0)
+                    proportions_df.plot(kind='bar', stacked=True, ax=ax, colormap='viridis', alpha=0.75, width=0.8)
+                    ax.set_title(f"Proportions of {group_target.name} within each {series.name}")
+                    ax.set_ylabel("Proportion")
+                    ax.legend(title=group_target.name, bbox_to_anchor=(1.02, 1), loc='upper left')
+                    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+                else: 
+                    sns.countplot(x=series, hue=group_target, ax=ax, palette="viridis", order=series.value_counts().index[:15])
+                    ax.set_title(f"Counts of {series.name} by {group_target.name}")
+                    ax.set_ylabel("Count")
+            else: 
+                sns.countplot(y=series, ax=ax, order=series.value_counts().index[:15], palette="viridis")
+                ax.set_title(f"Frequency of {series.name} (Top 15)")
+                ax.set_ylabel(series.name)
+                ax.set_xlabel("Count")
 
-                if not final_data_list: # 혹시 모를 경우 대비
-                    if dpg.does_item_exist(plot_container_tag):
-                        dpg.add_text(f"No data for histogram for {series.name}.", parent=plot_container_tag, color=(255,150,0))
-                    return
+        ax.grid(axis='y', linestyle='--', alpha=0.6)
+        if ax.get_xticklabels():
+            plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+        plt.tight_layout()
 
-                # 히스토그램 시도 ("어제 코드"처럼 density=True, bins=-1)
-                try:
-                    print(f"SVA PLOT Attempting histogram for '{series.name}' (len: {len(final_data_list)}) with density=True, bins=-1")
-                    utils.add_dpg_histogram_series(y_axis_tag, final_data_list, "Histogram", density=True, bins=-1)
-                except SystemError as se_hist:
-                    print(f"!!! SVA PLOT: SYSTEM ERROR during add_histogram_series for '{series.name}' !!!")
-                    print(f"    Parameters: density=True, bins=-1")
-                    print(f"    Data len: {len(final_data_list)}, Min: {min(final_data_list) if final_data_list else 'N/A'}, Max: {max(final_data_list) if final_data_list else 'N/A'}")
-                    print(f"    Exception: {se_hist}")
-                    if dpg.does_item_exist(plot_container_tag): # UI 오류 메시지는 최소화
-                         dpg.add_text(f"Failed to draw histogram for {series.name}.", parent=plot_container_tag, color=(255,0,0))
-                except Exception as e_hist_other:
-                    print(f"SVA PLOT: Other Exception for '{series.name}' (Histogram): {e_hist_other}")
-                    if dpg.does_item_exist(plot_container_tag):
-                         dpg.add_text(f"Error drawing histogram for '{series.name}'.", parent=plot_container_tag, color=(255,0,0))
-
-                # KDE 시도 (히스토그램 실패와 무관하게 시도)
-                if len(final_data_list) >= 2 and pd.Series(final_data_list).nunique() >= 2:
-                    try:
-                        # KDE는 float 타입 데이터 필요
-                        kde_input_data = pd.Series(final_data_list).astype(float).replace([np.inf,-np.inf],np.nan).dropna()
-                        if len(kde_input_data) >= 2 and kde_input_data.nunique() >= 2:
-                            min_val, max_val = kde_input_data.min(), kde_input_data.max()
-                            if min_val < max_val: # 분산 확인
-                                kde = stats.gaussian_kde(kde_input_data)
-                                x_vals = np.linspace(min_val, max_val, 150)
-                                utils.add_dpg_line_series(y_axis_tag, x_vals.tolist(), kde(x_vals).tolist(), "KDE")
-                    except SystemError as se_kde:
-                         print(f"!!! SVA PLOT: SYSTEM ERROR during KDE for '{series.name}' !!! Exception: {se_kde}")
-                    except Exception as e_kde_other:
-                        print(f"SVA PLOT: Other Exception for '{series.name}' (KDE): {e_kde_other}")
+        tex_tag, w, h, _ = plot_texture_func(fig)
+        if tex_tag and w > 0:
+            container_w = dpg.get_item_width(plot_container_tag) or 600
+            display_w = min(w, container_w - 20)
+            display_h = int(h * (display_w / w)) if w > 0 else h
+            dpg.add_image(tex_tag, parent=plot_container_tag, width=display_w, height=display_h)
+        else:
+            dpg.add_text("Failed to render plot.", parent=plot_container_tag, color=(255, 100, 0))
     
-    # 범주형 데이터
-    else: 
-        value_counts = clean_s.value_counts(dropna=False).nlargest(10)
-        if value_counts.empty:
-            if dpg.does_item_exist(plot_container_tag):
-                dpg.add_text("No data to display in bar chart.", parent=plot_container_tag, color=(255, 200, 0))
-            return
-
-        cat_labels = [str(c)[:20] for c in value_counts.index.tolist()]
-        x_pos = np.arange(len(cat_labels))
-
-        if is_grouped:
-            unique_groups = sorted(group_target.dropna().unique())[:7]
-            num_grps = len(unique_groups)
-            if num_grps > 0:
-                bar_total_w = 0.8; bar_single_w = bar_total_w / num_grps
-                for i, group_val in enumerate(unique_groups):
-                    grp_s_data = clean_s[group_target == group_val]
-                    grp_counts = grp_s_data.value_counts(dropna=False)
-                    y_vals = [grp_counts.get(cat_orig_val, 0) for cat_orig_val in value_counts.index]
-                    current_x_pos = x_pos - (bar_total_w / 2) + (i * bar_single_w) + (bar_single_w / 2)
-                    utils.add_dpg_bar_series(y_axis_tag, current_x_pos.tolist(), y_vals, lbl=f"{str(group_val)[:15]}")
-        else: # 그룹화되지 않은 범주형
-            utils.add_dpg_bar_series(y_axis_tag, x_pos.tolist(), value_counts.values.tolist(), "Frequency")
-        
-        if cat_labels:
-            dpg.set_axis_ticks(x_axis_tag, tuple(zip(cat_labels, x_pos.tolist())))
-
+    except Exception as e:
+        dpg.add_text(f"Error creating plot:\n{e}", parent=plot_container_tag, color=(255, 0, 0))
+        print(f"Plotting Error for '{series.name}':\n{traceback.format_exc()}")
+    finally:
+        if fig:
+            plt.close(fig)
 
 def _sva_run_analysis(callbacks: dict):
     df = callbacks['get_current_df']()
@@ -370,15 +420,16 @@ def _sva_run_analysis(callbacks: dict):
     
     if df is None: dpg.add_text("Load data for SVA.", parent=TAG_SVA_RESULTS_CHILD_WINDOW); utils.hide_dpg_progress_modal(TAG_SVA_MODULE_PROGRESS_MODAL); return
 
-    strength = dpg.get_value(TAG_SVA_FILTER_STRENGTH_RADIO) if dpg.does_item_exist(TAG_SVA_FILTER_STRENGTH_RADIO) else "Weak (Exclude obvious non-analytical)"
-    grp_flag = dpg.get_value(TAG_SVA_GROUP_BY_TARGET_CHECKBOX) if dpg.does_item_exist(TAG_SVA_GROUP_BY_TARGET_CHECKBOX) else False
-    grp_plot_pref = dpg.get_value(TAG_SVA_GROUPED_PLOT_TYPE_RADIO) if grp_flag and dpg.does_item_exist(TAG_SVA_GROUPED_PLOT_TYPE_RADIO) else "KDE"
+    strength = dpg.get_value(TAG_SVA_FILTER_STRENGTH_RADIO)
+    grp_flag = dpg.get_value(TAG_SVA_GROUP_BY_TARGET_CHECKBOX)
+    
+    numeric_plot_pref = dpg.get_value(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO) if grp_flag else "Box Plot"
+    cat_plot_pref = dpg.get_value(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO) if grp_flag else "100% Stacked (Proportions)"
     
     target_s_grp = _sva_validate_grouping(df, target, callbacks) if grp_flag else None
     if target_s_grp is None and grp_flag: grp_flag = False
         
-    dpg.set_value(TAG_SVA_MODULE_PROGRESS_TEXT, "SVA: Filtering variables..."); 
-    if dpg.is_dearpygui_running(): dpg.split_frame()
+    dpg.set_value(TAG_SVA_MODULE_PROGRESS_TEXT, "SVA: Filtering variables..."); dpg.split_frame()
     filt_cols, act_filter = _sva_get_filtered_variables(df, strength, callbacks, target)
     
     if not filt_cols: dpg.add_text(f"No vars for filter: '{act_filter}'", parent=TAG_SVA_RESULTS_CHILD_WINDOW); utils.hide_dpg_progress_modal(TAG_SVA_MODULE_PROGRESS_MODAL); return
@@ -386,11 +437,9 @@ def _sva_run_analysis(callbacks: dict):
     total_vars = len(filt_cols)
     for i, col_name in enumerate(filt_cols):
         if not dpg.is_dearpygui_running(): break
-        dpg.set_value(TAG_SVA_MODULE_PROGRESS_TEXT, f"SVA: Analyzing {col_name} ({i+1}/{total_vars})"); 
-        if dpg.is_dearpygui_running(): dpg.split_frame()
-        _sva_create_section(i, col_name, df, target_s_grp if grp_flag else None, grp_plot_pref, u_funcs, act_filter)
+        dpg.set_value(TAG_SVA_MODULE_PROGRESS_TEXT, f"SVA: Analyzing {col_name} ({i+1}/{total_vars})"); dpg.split_frame()
+        _sva_create_section(i, col_name, df, target_s_grp, numeric_plot_pref, cat_plot_pref, u_funcs, act_filter)
     utils.hide_dpg_progress_modal(TAG_SVA_MODULE_PROGRESS_MODAL)
-
 
 def _sva_validate_grouping(df: pd.DataFrame, target_var: str, callbacks: dict) -> Optional[pd.Series]:
     if not target_var or target_var not in df.columns: 
@@ -400,16 +449,16 @@ def _sva_validate_grouping(df: pd.DataFrame, target_var: str, callbacks: dict) -
     if not (2 <= unique_n <= 7):
         utils.show_dpg_alert_modal("Grouping Warning", f"Target '{target_var}' has {unique_n} unique values (need 2-7).", modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT)
         if dpg.does_item_exist(TAG_SVA_GROUP_BY_TARGET_CHECKBOX): dpg.set_value(TAG_SVA_GROUP_BY_TARGET_CHECKBOX, False)
-        if dpg.does_item_exist(TAG_SVA_GROUPED_PLOT_TYPE_RADIO): dpg.configure_item(TAG_SVA_GROUPED_PLOT_TYPE_RADIO, show=False)
+        _sva_group_by_target_cb(TAG_SVA_GROUP_BY_TARGET_CHECKBOX, False, callbacks)
         return None
     return df[target_var]
 
-def _sva_create_section(idx: int, col_name: str, df: pd.DataFrame, target_s: Optional[pd.Series], plot_pref: str, u_funcs: dict, filt_applied: str):
+def _sva_create_section(idx: int, col_name: str, df: pd.DataFrame, target_s: Optional[pd.Series], numeric_plot_pref: str, cat_plot_pref: str, u_funcs: dict, filt_applied: str):
     sec_tag = f"{TAG_SVA_VARIABLE_SECTION_GROUP_PREFIX}{''.join(filter(str.isalnum, col_name))}_{idx}"
-    s1_types_func = u_funcs['main_app_callbacks'].get('get_column_analysis_types', lambda: {})
-    s1_types_dict = s1_types_func() # 함수를 호출하여 딕셔너리를 얻음
+    s1_types_dict = u_funcs['main_app_callbacks'].get('get_column_analysis_types', lambda: {})()
     col_type = s1_types_dict.get(col_name, str(df[col_name].dtype))
     an_override = "ForceCategoricalForBinaryNumeric" if filt_applied == "None (All variables)" and "Numeric (Binary)" in col_type else None
+    
     with dpg.group(tag=sec_tag, parent=TAG_SVA_RESULTS_CHILD_WINDOW):
         res_w = (dpg.get_item_width(TAG_SVA_RESULTS_CHILD_WINDOW) or 900) 
         head_wrap = res_w - 30 if res_w > 50 else 500
@@ -423,19 +472,37 @@ def _sva_create_section(idx: int, col_name: str, df: pd.DataFrame, target_s: Opt
             dpg.add_spacer(width=10)
             with dpg.group(width=item_w): _sva_create_advanced_relations_table(dpg.last_item(), df[col_name], df, u_funcs, item_w)
             dpg.add_spacer(width=10)
-            with dpg.group(): _sva_create_plot(dpg.last_item(), df[col_name], target_s, an_override, plot_pref, u_funcs)
+            with dpg.group(): _sva_create_plot(dpg.last_item(), df[col_name], target_s, an_override, numeric_plot_pref, cat_plot_pref, u_funcs)
         dpg.add_separator(); dpg.add_spacer(height=10)
 
 def _sva_group_by_target_cb(sender, app_data, user_data):
-    if dpg.does_item_exist(TAG_SVA_GROUPED_PLOT_TYPE_RADIO): dpg.configure_item(TAG_SVA_GROUPED_PLOT_TYPE_RADIO, show=app_data)
-    if not app_data and dpg.does_item_exist(TAG_SVA_GROUPED_PLOT_TYPE_RADIO): dpg.set_value(TAG_SVA_GROUPED_PLOT_TYPE_RADIO, "KDE")
+    main_callbacks = user_data
+    
+    if app_data:
+        target = main_callbacks['get_selected_target_variable']()
+        if not target:
+            utils.show_dpg_alert_modal("Target Not Selected", 
+                                       "To use the grouping feature, please select a target variable from the top panel first.", 
+                                       modal_tag=TAG_SVA_MODULE_ALERT_MODAL, 
+                                       text_tag=TAG_SVA_MODULE_ALERT_TEXT)
+            dpg.set_value(sender, False)
+            return
+            
+    dpg.configure_item(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO, show=app_data)
+    dpg.configure_item(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO + "_label", show=app_data)
+    dpg.configure_item(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO, show=app_data)
+    dpg.configure_item(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO + "_label", show=app_data)
+
+    if not app_data:
+        dpg.set_value(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO, "Box Plot")
+        dpg.set_value(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO, "100% Stacked (Proportions)")
 
 def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
     global _sva_main_app_callbacks, _sva_util_funcs
     _sva_main_app_callbacks = main_callbacks
     _sva_util_funcs = main_callbacks.get('get_util_funcs', lambda: {})()
     _sva_setup_axis_themes() 
-    # main_callbacks['register_step_group_tag'](step_name, TAG_SVA_STEP_GROUP)
+
     with dpg.group(tag=TAG_SVA_STEP_GROUP, parent=parent_container_tag):
         dpg.add_text(f"--- {step_name} ---"); dpg.add_separator()
         with dpg.group(horizontal=True):
@@ -452,7 +519,13 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
             with dpg.group():
                 dpg.add_text("Grouping & Plot Option")
                 dpg.add_checkbox(label="Group by Target (2-7 Unique)", tag=TAG_SVA_GROUP_BY_TARGET_CHECKBOX, default_value=False, user_data=main_callbacks, callback=_sva_group_by_target_cb)
-                dpg.add_radio_button(items=["KDE", "Histogram"], tag=TAG_SVA_GROUPED_PLOT_TYPE_RADIO, default_value="KDE", horizontal=True, show=False)
+                
+                dpg.add_text(" - For Numeric Vars:", show=False, tag=TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO + "_label")
+                dpg.add_radio_button(items=["Box Plot", "Overlaid Density (KDE)", "Overlaid Histogram"], tag=TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO, default_value="Box Plot", horizontal=True, show=False)
+
+                dpg.add_text(" - For Categorical Vars:", show=False, tag=TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO + "_label")
+                dpg.add_radio_button(items=["100% Stacked (Proportions)", "Side-by-side (Counts)"], tag=TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO, default_value="100% Stacked (Proportions)", horizontal=True, show=False)
+
                 dpg.add_spacer(height=10)
                 dpg.add_button(label="Run Single Variable Analysis", tag=TAG_SVA_RUN_BUTTON, callback=lambda: _sva_run_analysis(main_callbacks), width=-1, height=30)
         dpg.add_separator()
@@ -473,9 +546,17 @@ def reset_sva_ui_defaults():
     if not dpg.is_dearpygui_running(): return
     if dpg.does_item_exist(TAG_SVA_FILTER_STRENGTH_RADIO): dpg.set_value(TAG_SVA_FILTER_STRENGTH_RADIO, "Weak (Exclude obvious non-analytical)")
     if dpg.does_item_exist(TAG_SVA_GROUP_BY_TARGET_CHECKBOX): dpg.set_value(TAG_SVA_GROUP_BY_TARGET_CHECKBOX, False)
-    if dpg.does_item_exist(TAG_SVA_GROUPED_PLOT_TYPE_RADIO):
-        dpg.set_value(TAG_SVA_GROUPED_PLOT_TYPE_RADIO, "KDE")
-        dpg.configure_item(TAG_SVA_GROUPED_PLOT_TYPE_RADIO, show=False)
+    
+    if dpg.does_item_exist(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO):
+        dpg.set_value(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO, "Box Plot")
+        dpg.configure_item(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO, show=False)
+        dpg.configure_item(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO + "_label", show=False)
+
+    if dpg.does_item_exist(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO):
+        dpg.set_value(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO, "100% Stacked (Proportions)")
+        dpg.configure_item(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO, show=False)
+        dpg.configure_item(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO + "_label", show=False)
+        
     if dpg.does_item_exist(TAG_SVA_RESULTS_CHILD_WINDOW):
         dpg.delete_item(TAG_SVA_RESULTS_CHILD_WINDOW, children_only=True)
         dpg.add_text("Select filter options and click 'Run Single Variable Analysis'.", parent=TAG_SVA_RESULTS_CHILD_WINDOW)

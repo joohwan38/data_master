@@ -267,8 +267,35 @@ def step4_missing_value_processing_complete(processed_df: pd.DataFrame):
 def step5_outlier_treatment_complete(processed_df: pd.DataFrame):
     _update_pipeline_state(ANALYSIS_STEPS[4], processed_df)
 
-def step6_standardization_complete(processed_df: pd.DataFrame):
-    _update_pipeline_state(ANALYSIS_STEPS[5], processed_df)
+def step6_standardization_complete(processed_df: pd.DataFrame, method_name: str):
+    """
+    Step 6 완료 시 호출. 이제 사용된 메소드 이름을 받아 파생 DF의 이름을 생성합니다.
+    """
+    if processed_df is None:
+        return
+
+    # 1. 기본 이름 생성 (예: "Standardized_MinMaxScaler")
+    base_name = f"Standardized_{method_name}"
+    derived_df_name = base_name
+    
+    # 2. 이름 중복 방지를 위한 카운터 추가
+    counter = 1
+    while derived_df_name in app_state.derived_dfs:
+        derived_df_name = f"{base_name}_{counter}"
+        counter += 1
+
+    # 3. 파생 DF 목록에 추가 및 UI 업데이트 (기존 로직과 유사)
+    app_state.derived_dfs[derived_df_name] = processed_df
+    print(f"Derived DataFrame '{derived_df_name}' created from Standardization.")
+
+    if ANALYSIS_STEPS[7] in app_state.module_ui_updaters:
+        trigger_specific_module_update(ANALYSIS_STEPS[7])
+    if len(ANALYSIS_STEPS) > 8 and ANALYSIS_STEPS[8] in app_state.module_ui_updaters:
+        trigger_specific_module_update(ANALYSIS_STEPS[8])
+
+    # 4. 사용자에게 생성된 이름으로 알림
+    _show_simple_modal_message("Standardization Complete",
+                               f"The standardized data has been saved as a new derived DataFrame named:\n'{derived_df_name}'\n\nYou can view it in Step 8 or 9.")
 
 def step7_feature_engineering_complete(processed_df: pd.DataFrame):
     _update_pipeline_state(ANALYSIS_STEPS[6], processed_df)
@@ -895,9 +922,21 @@ def add_or_update_derived_df_callback(name: str, df: pd.DataFrame):
     app_state.derived_dfs[name] = df
 
 def delete_derived_df_callback(name: str):
+    """지정된 이름의 파생 데이터프레임을 삭제하고, 관련 UI를 새로고침합니다."""
     if name in app_state.derived_dfs:
         del app_state.derived_dfs[name]
         print(f"Derived DataFrame '{name}' deleted.")
+        
+        # UI 새로고침 트리거
+        # Step 8 (Derive DataFrames) UI 업데이트
+        if ANALYSIS_STEPS[7] in app_state.module_ui_updaters:
+            trigger_specific_module_update(ANALYSIS_STEPS[7])
+        # Step 9 (DataFrame Viewer) UI 업데이트
+        if len(ANALYSIS_STEPS) > 8 and ANALYSIS_STEPS[8] in app_state.module_ui_updaters:
+            trigger_specific_module_update(ANALYSIS_STEPS[8])
+    else:
+        print(f"Warning: Attempted to delete non-existent derived DataFrame: '{name}'")
+
 
 def initial_load_on_startup():
     """애플리케이션 시작 시 이전 세션 정보를 로드합니다."""
@@ -991,7 +1030,7 @@ main_app_callbacks = {
     'step6_standardization_complete': step6_standardization_complete,
     'step7_feature_engineering_complete': step7_feature_engineering_complete, # << ADDED
     'step8_derivation_complete': step8_derivation_complete, # << ADDED
-    'delete_derived_df': delete_derived_df_callback, # << ADDED
+    'delete_derived_df': delete_derived_df_callback,
     'add_ai_log': add_ai_log_message,
 }
 

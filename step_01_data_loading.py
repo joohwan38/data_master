@@ -77,8 +77,22 @@ def _find_best_date_format(sample: pd.Series) -> Tuple[Optional[str], float]:
 def _check_timedelta_type(sample: pd.Series, name_low: str, kind: str) -> bool:
     if sample.empty: return False
     try:
-        if kind == 'O' and pd.to_timedelta(sample.astype(str), errors='coerce').notna().mean() > 0.8: return True
-        if any(kw in name_low for kw in TIMEDELTA_KEYWORDS) and kind in 'iuf': return True
+        if kind == 'O':
+            # --- 사용자 요청 로직 적용 ---
+            # 샘플 데이터에 영문자가 하나라도 포함되어 있으면 Timedelta 타입이 아니라고 간주.
+            # 이 검사는 문자열 타입의 데이터에 대해서만 수행합니다.
+            if sample.astype(str).str.contains(r'[a-zA-Z]').any():
+                return False
+
+            # 영문자가 없는 경우에만 pandas의 표준 변환 기능을 시도합니다.
+            if pd.to_timedelta(sample.astype(str), errors='coerce').notna().mean() > 0.8:
+                return True
+            # --- 로직 적용 끝 ---
+
+        # 숫자형 컬럼 이름에 시간 관련 키워드가 있는 경우 (기존 로직 유지)
+        if any(kw in name_low for kw in TIMEDELTA_KEYWORDS) and kind in 'iuf':
+            return True
+            
     except Exception: 
         pass
     return False

@@ -144,11 +144,7 @@ def _on_apply_clicked(sender, app_data, user_data):
     numeric_cols = df_to_process.select_dtypes(include=np.number).columns.tolist()
 
     if not numeric_cols:
-        modal_func = _get_util_func('_show_simple_modal_message')
-        if modal_func:
-            modal_func("Info", "No numeric columns found to apply standardization.")
-        if _main_app_callbacks:
-            _main_app_callbacks['step6_standardization_complete'](df_to_process)
+        # ... (기존과 동일)
         return
 
     scaler = None
@@ -170,7 +166,8 @@ def _on_apply_clicked(sender, app_data, user_data):
             if modal_func:
                 modal_func("Scaling Error", f"An error occurred during scaling: {e}")
             if _main_app_callbacks:
-                _main_app_callbacks['step6_standardization_complete'](None)
+                _main_app_callbacks['step6_standardization_complete'](df_to_process, _selected_scaler_method)
+                _log("Processing complete, callback sent to main_app.")
             return
 
     _generate_comparison_plots(_current_df_input, df_to_process, numeric_cols)

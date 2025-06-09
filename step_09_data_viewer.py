@@ -71,10 +71,29 @@ def _update_df_list():
     
     if dpg.does_item_exist(TAG_S9_DF_TABLE):
         dpg.delete_item(TAG_S9_DF_TABLE, children_only=True)
-        dpg.add_table_column(parent=TAG_S9_DF_TABLE)
+        
+        # 테이블 컬럼을 2개로 설정: 이름(가변), 삭제 버튼(고정)
+        dpg.add_table_column(parent=TAG_S9_DF_TABLE, width_stretch=True)
+        dpg.add_table_column(parent=TAG_S9_DF_TABLE, width_fixed=True, init_width_or_weight=45)
+
         for name in filtered_names:
             with dpg.table_row(parent=TAG_S9_DF_TABLE):
-                dpg.add_selectable(label=name, user_data=name, callback=_on_df_select, span_columns=True)
+                # 이름 부분 (기존과 유사하나 span_columns=False로 변경)
+                dpg.add_selectable(label=name, user_data=name, callback=_on_df_select, span_columns=False)
+                
+                # 삭제 버튼 부분
+                if name.startswith("Derived: "):
+                    # "Derived: " 접두사를 제거한 실제 DF 이름을 user_data로 전달
+                    actual_df_name = name.replace("Derived: ", "", 1)
+                    dpg.add_button(
+                        label=" X ", 
+                        user_data=actual_df_name, 
+                        small=True,
+                        callback=lambda s, a, u: _module_main_callbacks['delete_derived_df'](u)
+                    )
+                else:
+                    # 파생 DF가 아닌 경우 빈 공간
+                    dpg.add_text("")
 
 def _clear_and_generate_charts():
     global _texture_tags
