@@ -1,10 +1,8 @@
-# step_10_ui.py - UI 담당 (완전 수정 버전)
+# step_10_ui.py - UI 담당 (수정된 버전)
 
 import dearpygui.dearpygui as dpg
 import pandas as pd
 from typing import Dict, List, Optional, Any
-
-# 절대 import로 변경 (같은 디렉토리에 있는 모듈들)
 import step_10_analysis as analysis
 import step_10_visualization as viz
 
@@ -92,16 +90,40 @@ def _update_variable_lists():
         if s1_analysis_types.get(var) != "분석에서 제외 (Exclude)"
     ]
 
-    # 방법론별 필터링 - 대부분 수치형만 사용
+    # 방법론별 필터링
     method = dpg.get_value(TAG_S10_METHOD_SELECTOR) if dpg.does_item_exist(TAG_S10_METHOD_SELECTOR) else ""
     
-    if method in ["K-Means", "Hierarchical", "DBSCAN", "PCA", "Factor Analysis", "Pearson", "Spearman", "Kendall", "Linear", "Logistic"]:
+    if method in ["K-Means", "Hierarchical", "DBSCAN", "PCA", "Factor Analysis", 
+                  "Pearson", "Spearman", "Kendall", "Linear"]:
+        # 수치형 변수만
         numeric_vars = []
         for var in eligible_vars:
             s1_type = s1_analysis_types.get(var)
             if s1_type and "Numeric" in s1_type:
                 numeric_vars.append(var)
             elif pd.api.types.is_numeric_dtype(df[var].dtype):
+                numeric_vars.append(var)
+        eligible_vars = numeric_vars
+    
+    elif method == "Logistic":
+        # 수치형 + 이진 범주형
+        valid_vars = []
+        for var in eligible_vars:
+            if pd.api.types.is_numeric_dtype(df[var].dtype):
+                valid_vars.append(var)
+            elif df[var].nunique() <= 10:  # 카테고리가 적은 범주형도 포함
+                valid_vars.append(var)
+        eligible_vars = valid_vars
+    
+    elif method == "ANOVA":
+        # 모든 변수 포함 (범주형과 연속형 구분은 분석 시 처리)
+        pass
+    
+    elif method == "Time Series":
+        # 수치형 변수만
+        numeric_vars = []
+        for var in eligible_vars:
+            if pd.api.types.is_numeric_dtype(df[var].dtype):
                 numeric_vars.append(var)
         eligible_vars = numeric_vars
 
@@ -205,6 +227,11 @@ def _create_dynamic_options(method: str):
             dpg.add_input_int(default_value=3, min_value=2, max_value=20,
                             tag="hier_n_clusters", width=100)
         
+        with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
+            dpg.add_text("Linkage Method:")
+            dpg.add_combo(["ward", "complete", "average", "single"], 
+                         default_value="ward", tag="hier_linkage", width=150)
+        
         dpg.add_checkbox(label="Standardize variables", default_value=True,
                         tag="hier_standardize", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
         dpg.add_checkbox(label="Generate Dendrogram", default_value=True,
@@ -219,6 +246,11 @@ def _create_dynamic_options(method: str):
             dpg.add_input_float(default_value=0.5, min_value=0.01, max_value=10.0,
                               tag="dbscan_eps", width=100, format="%.2f")
         
+        with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
+            dpg.add_text("Min Samples:")
+            dpg.add_input_int(default_value=5, min_value=1, max_value=50,
+                            tag="dbscan_min_samples", width=100)
+        
         dpg.add_checkbox(label="Standardize variables", default_value=True,
                         tag="dbscan_standardize", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
         
@@ -231,8 +263,17 @@ def _create_dynamic_options(method: str):
             dpg.add_input_int(default_value=2, min_value=1, max_value=10,
                             tag="pca_n_components", width=100)
         
+        with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
+            dpg.add_text("Variance Threshold (%):")
+            dpg.add_input_float(default_value=85.0, min_value=50.0, max_value=99.0,
+                              tag="pca_variance_threshold", width=100, format="%.1f")
+        
         dpg.add_checkbox(label="Standardize variables", default_value=True,
                         tag="pca_standardize", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        dpg.add_checkbox(label="Generate Scree Plot", default_value=True,
+                        tag="pca_scree", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        dpg.add_checkbox(label="Generate Biplot", default_value=True,
+                        tag="pca_biplot", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
         
     elif method == "Factor Analysis":
         dpg.add_text("Factor Analysis Options", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
@@ -243,8 +284,15 @@ def _create_dynamic_options(method: str):
             dpg.add_input_int(default_value=2, min_value=1, max_value=10,
                             tag="fa_n_factors", width=100)
         
+        with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
+            dpg.add_text("Max Iterations:")
+            dpg.add_input_int(default_value=1000, min_value=100, max_value=5000,
+                            tag="fa_max_iter", width=100)
+        
         dpg.add_checkbox(label="Standardize variables", default_value=True,
                         tag="fa_standardize", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        dpg.add_checkbox(label="Generate Scree Plot", default_value=True,
+                        tag="fa_scree", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
         
     elif method in ["Pearson", "Spearman", "Kendall"]:
         dpg.add_text(f"{method} Correlation Options", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
@@ -252,23 +300,66 @@ def _create_dynamic_options(method: str):
         
         with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
             dpg.add_text("Significance Level:")
-            dpg.add_combo([0.01, 0.05, 0.10], default_value=0.05,
+            dpg.add_combo(["0.001", "0.01", "0.05", "0.10"], default_value="0.05",
                          tag="corr_alpha", width=100)
         
     elif method in ["Linear", "Logistic"]:
         dpg.add_text(f"{method} Regression Options", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
         dpg.add_separator(parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
         
-        dpg.add_text("Target Variable: Use main panel selection", 
-                    color=(200, 200, 200), parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        # 타겟 변수 선택
+        with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
+            dpg.add_text("Target Variable:")
+            target_var = _module_main_callbacks.get('get_selected_target_variable', lambda: None)() if _module_main_callbacks else None
+            if target_var:
+                dpg.add_text(f"{target_var} (from main panel)", color=(200, 200, 200))
+            else:
+                dpg.add_text("Not selected", color=(255, 100, 100))
         
         with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
             dpg.add_text("Test Size (%):")
             dpg.add_input_float(default_value=20.0, min_value=10.0, max_value=50.0,
                               tag="reg_test_size", width=100, format="%.1f")
         
-        dpg.add_checkbox(label="Standardize features", default_value=True,
+        dpg.add_checkbox(label="Standardize features", default_value=False,
                         tag="reg_standardize", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        
+        if method == "Linear":
+            dpg.add_checkbox(label="Include diagnostic plots", default_value=True,
+                            tag="reg_diagnostics", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        
+    elif method == "ANOVA":
+        dpg.add_text("ANOVA Options", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        dpg.add_separator(parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        
+        # 타겟 변수 선택
+        with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
+            dpg.add_text("Target Variable (Continuous):")
+            target_var = _module_main_callbacks.get('get_selected_target_variable', lambda: None)() if _module_main_callbacks else None
+            if target_var:
+                dpg.add_text(f"{target_var} (from main panel)", color=(200, 200, 200))
+            else:
+                dpg.add_text("Not selected", color=(255, 100, 100))
+        
+        dpg.add_checkbox(label="Include interaction effects", default_value=False,
+                        tag="anova_interactions", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        dpg.add_checkbox(label="Perform post-hoc tests", default_value=True,
+                        tag="anova_posthoc", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        
+    elif method == "Time Series":
+        dpg.add_text("Time Series Analysis Options", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        dpg.add_separator(parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        
+        dpg.add_text("Select exactly one variable for time series analysis", 
+                    color=(200, 200, 200), parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        
+        dpg.add_checkbox(label="Seasonal decomposition", default_value=True,
+                        tag="ts_seasonal", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        
+        with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
+            dpg.add_text("Period (for seasonal):")
+            dpg.add_input_int(default_value=12, min_value=2, max_value=365,
+                            tag="ts_period", width=100)
     
     # 공통 출력 옵션
     dpg.add_separator(parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
@@ -290,7 +381,7 @@ def _create_dynamic_options(method: str):
     with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
         dpg.add_text("New DataFrame name:")
         dpg.add_input_text(default_value="", tag=TAG_S10_NEW_DF_NAME_INPUT,
-                         width=200, hint="Leave empty to auto-generate")
+                         width=200, hint="Leave empty to update current")
 
 def _get_method_options(method: str) -> Dict[str, Any]:
     """현재 UI에서 설정된 옵션들을 수집"""
@@ -305,34 +396,56 @@ def _get_method_options(method: str) -> Dict[str, Any]:
     elif method == "Hierarchical":
         options = {
             'n_clusters': dpg.get_value("hier_n_clusters") if dpg.does_item_exist("hier_n_clusters") else 3,
+            'linkage': dpg.get_value("hier_linkage") if dpg.does_item_exist("hier_linkage") else "ward",
             'standardize': dpg.get_value("hier_standardize") if dpg.does_item_exist("hier_standardize") else True,
             'dendrogram': dpg.get_value("hier_dendrogram") if dpg.does_item_exist("hier_dendrogram") else True
         }
     elif method == "DBSCAN":
         options = {
             'eps': dpg.get_value("dbscan_eps") if dpg.does_item_exist("dbscan_eps") else 0.5,
+            'min_samples': dpg.get_value("dbscan_min_samples") if dpg.does_item_exist("dbscan_min_samples") else 5,
             'standardize': dpg.get_value("dbscan_standardize") if dpg.does_item_exist("dbscan_standardize") else True
         }
     elif method == "PCA":
         options = {
             'n_components': dpg.get_value("pca_n_components") if dpg.does_item_exist("pca_n_components") else 2,
-            'standardize': dpg.get_value("pca_standardize") if dpg.does_item_exist("pca_standardize") else True
+            'variance_threshold': dpg.get_value("pca_variance_threshold") if dpg.does_item_exist("pca_variance_threshold") else 85.0,
+            'standardize': dpg.get_value("pca_standardize") if dpg.does_item_exist("pca_standardize") else True,
+            'scree': dpg.get_value("pca_scree") if dpg.does_item_exist("pca_scree") else True,
+            'biplot': dpg.get_value("pca_biplot") if dpg.does_item_exist("pca_biplot") else True
         }
     elif method == "Factor Analysis":
         options = {
             'n_factors': dpg.get_value("fa_n_factors") if dpg.does_item_exist("fa_n_factors") else 2,
-            'standardize': dpg.get_value("fa_standardize") if dpg.does_item_exist("fa_standardize") else True
+            'max_iter': dpg.get_value("fa_max_iter") if dpg.does_item_exist("fa_max_iter") else 1000,
+            'standardize': dpg.get_value("fa_standardize") if dpg.does_item_exist("fa_standardize") else True,
+            'scree': dpg.get_value("fa_scree") if dpg.does_item_exist("fa_scree") else True
         }
     elif method in ["Pearson", "Spearman", "Kendall"]:
+        alpha_str = dpg.get_value("corr_alpha") if dpg.does_item_exist("corr_alpha") else "0.05"
         options = {
-            'alpha': dpg.get_value("corr_alpha") if dpg.does_item_exist("corr_alpha") else 0.05
+            'alpha': float(alpha_str)
         }
     elif method in ["Linear", "Logistic"]:
         target_var = _module_main_callbacks.get('get_selected_target_variable', lambda: None)() if _module_main_callbacks else None
         options = {
             'target_variable': target_var,
             'test_size': dpg.get_value("reg_test_size") if dpg.does_item_exist("reg_test_size") else 20.0,
-            'standardize': dpg.get_value("reg_standardize") if dpg.does_item_exist("reg_standardize") else True
+            'standardize': dpg.get_value("reg_standardize") if dpg.does_item_exist("reg_standardize") else False
+        }
+        if method == "Linear":
+            options['diagnostics'] = dpg.get_value("reg_diagnostics") if dpg.does_item_exist("reg_diagnostics") else True
+    elif method == "ANOVA":
+        target_var = _module_main_callbacks.get('get_selected_target_variable', lambda: None)() if _module_main_callbacks else None
+        options = {
+            'target_variable': target_var,
+            'include_interactions': dpg.get_value("anova_interactions") if dpg.does_item_exist("anova_interactions") else False,
+            'posthoc': dpg.get_value("anova_posthoc") if dpg.does_item_exist("anova_posthoc") else True
+        }
+    elif method == "Time Series":
+        options = {
+            'seasonal_decompose': dpg.get_value("ts_seasonal") if dpg.does_item_exist("ts_seasonal") else True,
+            'period': dpg.get_value("ts_period") if dpg.does_item_exist("ts_period") else 12
         }
     
     return options
@@ -341,18 +454,36 @@ def _run_analysis():
     """분석 실행"""
     method = dpg.get_value(TAG_S10_METHOD_SELECTOR)
     
+    # 방법별 변수 개수 확인
+    min_vars = 1
+    max_vars = None
+    
+    if method in ["K-Means", "Hierarchical", "DBSCAN", "PCA", "Pearson", "Spearman", "Kendall"]:
+        min_vars = 2
+    elif method == "Factor Analysis":
+        min_vars = 3
+    elif method == "Time Series":
+        min_vars = 1
+        max_vars = 1
+    elif method in ["Linear", "Logistic", "ANOVA"]:
+        min_vars = 1
+    
     if not _selected_df_name or not _selected_vars:
-        min_vars = 1 if method in ["Linear", "Logistic"] else 2
         _util_funcs['_show_simple_modal_message']("Error", 
-            f"Please select a DataFrame and at least {min_vars} variables for analysis.")
+            f"Please select a DataFrame and at least {min_vars} variable(s) for analysis.")
         return
     
-    # 회귀분석의 경우 타겟 변수 확인
-    if method in ["Linear", "Logistic"]:
+    if max_vars and len(_selected_vars) > max_vars:
+        _util_funcs['_show_simple_modal_message']("Error", 
+            f"Please select exactly {max_vars} variable(s) for {method} analysis.")
+        return
+    
+    # 회귀분석/ANOVA의 경우 타겟 변수 확인
+    if method in ["Linear", "Logistic", "ANOVA"]:
         target_var = _module_main_callbacks.get('get_selected_target_variable', lambda: None)() if _module_main_callbacks else None
         if not target_var:
             _util_funcs['_show_simple_modal_message']("Error", 
-                "Please select a target variable in the main panel for regression analysis.")
+                f"Please select a target variable in the main panel for {method} analysis.")
             return
     
     df = _available_dfs[_selected_df_name]
@@ -424,6 +555,14 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
                     dpg.add_text("2. Choose an analysis method")
                     dpg.add_text("3. Select variables")
                     dpg.add_text("4. Configure options and run")
+                    dpg.add_separator()
+                    dpg.add_text("Available Methods:", color=(255, 255, 0))
+                    dpg.add_text("• Clustering: K-Means, Hierarchical, DBSCAN")
+                    dpg.add_text("• Dimension Reduction: PCA, Factor Analysis")
+                    dpg.add_text("• Correlation: Pearson, Spearman, Kendall")
+                    dpg.add_text("• Regression: Linear, Logistic (with statsmodels)")
+                    dpg.add_text("• ANOVA: One-way, Multi-way, ANCOVA")
+                    dpg.add_text("• Time Series: Decomposition, Stationarity tests")
         
         # 하부 컨트롤 패널
         with dpg.child_window(height=lower_height, border=True, tag=TAG_S10_LOWER_CONTROL_PANEL):
@@ -438,7 +577,7 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
                     dpg.add_separator()
                     dpg.add_text("Analysis Method", color=(255, 255, 0))
                     
-                    # 탭바로 카테고리별 분류 (복구)
+                    # 탭바로 카테고리별 분류
                     with dpg.tab_bar(tag="method_selection_tabs"):
                         
                         # 군집분석 탭
@@ -453,7 +592,7 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
                             )
                         
                         # 차원축소 탭
-                        with dpg.tab(label="Dimension Reduction"):
+                        with dpg.tab(label="Dimension"):
                             dpg.add_radio_button(
                                 items=["PCA", "Factor Analysis"],
                                 default_value="PCA",
@@ -479,6 +618,17 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
                             dpg.add_radio_button(
                                 items=["Linear", "Logistic"],
                                 default_value="Linear",
+                                callback=lambda s, a, u: [
+                                    dpg.set_value(TAG_S10_METHOD_SELECTOR, a),
+                                    _on_method_selected(s, a, u)
+                                ]
+                            )
+                        
+                        # 통계 분석 탭 (새로 추가)
+                        with dpg.tab(label="Statistical"):
+                            dpg.add_radio_button(
+                                items=["ANOVA", "Time Series"],
+                                default_value="ANOVA",
                                 callback=lambda s, a, u: [
                                     dpg.set_value(TAG_S10_METHOD_SELECTOR, a),
                                     _on_method_selected(s, a, u)

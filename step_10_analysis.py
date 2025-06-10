@@ -1,4 +1,4 @@
-# step_10_analysis.py - 분석 로직 담당
+# step_10_analysis.py - 분석 로직 담당 (statsmodels 통합 버전)
 
 import pandas as pd
 import numpy as np
@@ -12,6 +12,14 @@ from sklearn.metrics import silhouette_score, silhouette_samples
 from scipy.cluster.hierarchy import linkage
 import warnings
 warnings.filterwarnings('ignore')
+
+# statsmodels 추가
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from statsmodels.stats.anova import anova_lm
+from statsmodels.stats.diagnostic import het_breuschpagan
+from statsmodels.stats.stattools import durbin_watson
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 # --- Module State ---
 _module_main_callbacks: Optional[Dict] = None
@@ -58,8 +66,11 @@ def run_analysis(params: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]]
             results = _run_correlation_analysis(params)
         elif params['method'] in ["Linear", "Logistic"]:
             results = _run_regression_analysis(params)
+        elif params['method'] == "ANOVA":
+            results = _run_anova_analysis(params)
+        elif params['method'] == "Time Series":
+            results = _run_time_series_analysis(params)
         else:
-            raise ValueError(f"Method '{params['method']}' is not implemented yet.")
             raise ValueError(f"Method '{params['method']}' is not implemented yet.")
         
         return True, results
@@ -73,6 +84,360 @@ def run_analysis(params: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]]
     finally:
         _util_funcs['hide_dpg_progress_modal']("step10_progress_modal")
 
+def _run_regression_analysis(params: Dict[str, Any]) -> Dict[str, Any]:
+    """회귀분석 실행 (statsmodels 사용)"""
+    df = params['df']
+    variables = params['variables']
+    options = params['options']
+    method = params['method']
+    
+    target_var = options.get('target_variable')
+    if not target_var or target_var not in df.columns:
+        raise ValueError("Target variable must be selected for regression analysis")
+    
+    if target_var in variables:
+        variables = [v for v in variables if v != target_var]
+    
+    if len(variables) < 1:
+        raise ValueError("At least one predictor variable is required")
+    
+    # 데이터 준비
+    data_for_model = df[variables + [target_var]].dropna()
+    
+    if len(data_for_model) < 20:
+        raise ValueError("Not enough data points for regression (need at least 20)")
+    
+    X = data_for_model[variables]
+    y = data_for_model[target_var]
+    
+    # statsmodels를 사용한 회귀분석
+    if method == "Linear":
+        results = _run_linear_regression_sm(X, y, variables, target_var, options)
+    elif method == "Logistic":
+        results = _run_logistic_regression_sm(X, y, variables, target_var, options)
+    
+    # 메타데이터 추가
+    results.update({
+        'method': method,
+        'df_name': params['df_name'],
+        'variables': variables,
+        'target_variable': target_var,
+        'X': X,
+        'y': y,
+        'data_for_model': data_for_model
+    })
+    
+    return results
+
+def _run_linear_regression_sm(X: pd.DataFrame, y: pd.Series, feature_vars: List[str], 
+                            target_var: str, options: Dict[str, Any]) -> Dict[str, Any]:
+    """statsmodels를 사용한 선형 회귀분석"""
+    from sklearn.model_selection import train_test_split
+    
+    # 데이터 분할
+    test_size = options.get('test_size', 20.0) / 100.0
+    random_state = options.get('random_state', 42)
+    
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state
+    )
+    
+    # 상수항 추가
+    X_train_sm = sm.add_constant(X_train)
+    X_test_sm = sm.add_constant(X_test)
+    
+    # 모델 적합
+    model = sm.OLS(y_train, X_train_sm).fit()
+    
+    # 예측
+    y_pred_train = model.predict(X_train_sm)
+    y_pred_test = model.predict(X_test_sm)
+    
+    # 잔차
+    residuals_train = y_train - y_pred_train
+    residuals_test = y_test - y_pred_test
+    
+    # 진단 통계량
+    diagnostics = {}
+    
+    # VIF 계산 (다중공선성)
+    vif_data = pd.DataFrame()
+    vif_data["Variable"] = X_train.columns
+    vif_data["VIF"] = [variance_inflation_factor(X_train.values, i) 
+                       for i in range(len(X_train.columns))]
+    diagnostics['vif'] = vif_data
+    
+    # Breusch-Pagan 검정 (이분산성)
+    bp_test = het_breuschpagan(residuals_train, X_train_sm)
+    diagnostics['breusch_pagan'] = {
+        'lm_statistic': bp_test[0],
+        'lm_pvalue': bp_test[1],
+        'f_statistic': bp_test[2],
+        'f_pvalue': bp_test[3]
+    }
+    
+    # Durbin-Watson 검정 (자기상관)
+    dw_stat = durbin_watson(residuals_train)
+    diagnostics['durbin_watson'] = dw_stat
+    
+    # 영향력 진단
+    influence = model.get_influence()
+    diagnostics['cooks_distance'] = influence.cooks_distance[0]
+    diagnostics['leverage'] = influence.hat_matrix_diag
+    
+    results = {
+        'model': model,
+        'model_summary': model.summary(),
+        'model_summary_text': str(model.summary()),
+        'predictions_train': y_pred_train,
+        'predictions_test': y_pred_test,
+        'residuals_train': residuals_train,
+        'residuals_test': residuals_test,
+        'y_train': y_train,
+        'y_test': y_test,
+        'X_train': X_train,
+        'X_test': X_test,
+        'diagnostics': diagnostics,
+        'coefficients': pd.DataFrame({
+            'Feature': ['const'] + feature_vars,
+            'Coefficient': model.params.values,
+            'Std_Error': model.bse.values,
+            't_value': model.tvalues.values,
+            'p_value': model.pvalues.values,
+            'CI_Lower': model.conf_int()[0].values,
+            'CI_Upper': model.conf_int()[1].values
+        })
+    }
+    
+    return results
+
+def _run_logistic_regression_sm(X: pd.DataFrame, y: pd.Series, feature_vars: List[str], 
+                               target_var: str, options: Dict[str, Any]) -> Dict[str, Any]:
+    """statsmodels를 사용한 로지스틱 회귀분석"""
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import confusion_matrix, classification_report
+    
+    # 데이터 분할
+    test_size = options.get('test_size', 20.0) / 100.0
+    random_state = options.get('random_state', 42)
+    
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state
+    )
+    
+    # 상수항 추가
+    X_train_sm = sm.add_constant(X_train)
+    X_test_sm = sm.add_constant(X_test)
+    
+    # 모델 적합
+    try:
+        model = sm.Logit(y_train, X_train_sm).fit(method='bfgs', maxiter=1000)
+    except:
+        # 수렴 실패 시 다른 방법 시도
+        model = sm.Logit(y_train, X_train_sm).fit(method='newton', maxiter=1000)
+    
+    # 예측 확률
+    y_pred_proba_train = model.predict(X_train_sm)
+    y_pred_proba_test = model.predict(X_test_sm)
+    
+    # 예측 클래스
+    threshold = options.get('threshold', 0.5)
+    y_pred_train = (y_pred_proba_train >= threshold).astype(int)
+    y_pred_test = (y_pred_proba_test >= threshold).astype(int)
+    
+    # 성능 지표
+    cm_test = confusion_matrix(y_test, y_pred_test)
+    cr_test = classification_report(y_test, y_pred_test, output_dict=True)
+    
+    # 모델 진단
+    diagnostics = {}
+    
+    # Pseudo R-squared
+    diagnostics['pseudo_r2'] = {
+        'McFadden': model.prsquared,
+        'LLR_pvalue': model.llr_pvalue
+    }
+    
+    # Odds Ratios
+    odds_ratios = np.exp(model.params)
+    
+    results = {
+        'model': model,
+        'model_summary': model.summary(),
+        'model_summary_text': str(model.summary()),
+        'predictions_train': y_pred_train,
+        'predictions_test': y_pred_test,
+        'prediction_probabilities_train': y_pred_proba_train,
+        'prediction_probabilities_test': y_pred_proba_test,
+        'y_train': y_train,
+        'y_test': y_test,
+        'X_train': X_train,
+        'X_test': X_test,
+        'confusion_matrix': cm_test,
+        'classification_report': cr_test,
+        'diagnostics': diagnostics,
+        'coefficients': pd.DataFrame({
+            'Feature': ['const'] + feature_vars,
+            'Coefficient': model.params.values,
+            'Std_Error': model.bse.values,
+            'z_value': model.tvalues.values,
+            'p_value': model.pvalues.values,
+            'Odds_Ratio': odds_ratios.values,
+            'CI_Lower': model.conf_int()[0].values,
+            'CI_Upper': model.conf_int()[1].values
+        })
+    }
+    
+    return results
+
+def _run_anova_analysis(params: Dict[str, Any]) -> Dict[str, Any]:
+    """ANOVA 분석 실행"""
+    df = params['df']
+    variables = params['variables']
+    options = params['options']
+    
+    target_var = options.get('target_variable')
+    if not target_var or target_var not in df.columns:
+        raise ValueError("Target variable must be selected for ANOVA")
+    
+    if target_var in variables:
+        variables = [v for v in variables if v != target_var]
+    
+    # 카테고리 변수와 연속 변수 구분
+    cat_vars = []
+    cont_vars = []
+    
+    for var in variables:
+        if df[var].dtype in ['object', 'category'] or df[var].nunique() < 10:
+            cat_vars.append(var)
+        else:
+            cont_vars.append(var)
+    
+    if len(cat_vars) == 0:
+        raise ValueError("At least one categorical variable is required for ANOVA")
+    
+    # 데이터 준비
+    data_for_anova = df[variables + [target_var]].dropna()
+    
+    # ANOVA 모델 생성
+    if len(cat_vars) == 1 and len(cont_vars) == 0:
+        # One-way ANOVA
+        formula = f"{target_var} ~ C({cat_vars[0]})"
+        anova_type = "One-way ANOVA"
+    else:
+        # Multi-way ANOVA or ANCOVA
+        formula_parts = []
+        for cat_var in cat_vars:
+            formula_parts.append(f"C({cat_var})")
+        for cont_var in cont_vars:
+            formula_parts.append(cont_var)
+        
+        # 상호작용 효과 포함 옵션
+        if options.get('include_interactions', False) and len(cat_vars) > 1:
+            formula_parts.append("*".join([f"C({cv})" for cv in cat_vars[:2]]))
+        
+        formula = f"{target_var} ~ " + " + ".join(formula_parts)
+        anova_type = "ANCOVA" if cont_vars else "Multi-way ANOVA"
+    
+    # 모델 적합
+    model = smf.ols(formula, data=data_for_anova).fit()
+    
+    # ANOVA 테이블
+    anova_table = anova_lm(model, typ=2)
+    
+    # 사후 검정 준비 (Tukey HSD 등)
+    post_hoc_results = {}
+    if len(cat_vars) == 1:
+        from statsmodels.stats.multicomp import pairwise_tukeyhsd
+        groups = data_for_anova[cat_vars[0]]
+        tukey = pairwise_tukeyhsd(data_for_anova[target_var], groups)
+        post_hoc_results['tukey_hsd'] = tukey
+    
+    results = {
+        'anova_type': anova_type,
+        'model': model,
+        'model_summary': model.summary(),
+        'model_summary_text': str(model.summary()),
+        'anova_table': anova_table,
+        'formula': formula,
+        'categorical_vars': cat_vars,
+        'continuous_vars': cont_vars,
+        'post_hoc': post_hoc_results,
+        'residuals': model.resid,
+        'fitted_values': model.fittedvalues
+    }
+    
+    return results
+
+def _run_time_series_analysis(params: Dict[str, Any]) -> Dict[str, Any]:
+    """시계열 분석 실행"""
+    from statsmodels.tsa.seasonal import seasonal_decompose
+    from statsmodels.tsa.stattools import adfuller, acf, pacf
+    from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+    
+    df = params['df']
+    variables = params['variables']
+    options = params['options']
+    
+    if len(variables) != 1:
+        raise ValueError("Time series analysis requires exactly one variable")
+    
+    ts_var = variables[0]
+    
+    # 시계열 데이터 준비
+    ts_data = df[ts_var].dropna()
+    
+    if len(ts_data) < 50:
+        raise ValueError("Not enough data points for time series analysis (need at least 50)")
+    
+    # 기본 통계
+    ts_stats = {
+        'mean': ts_data.mean(),
+        'std': ts_data.std(),
+        'min': ts_data.min(),
+        'max': ts_data.max(),
+        'skewness': ts_data.skew(),
+        'kurtosis': ts_data.kurt()
+    }
+    
+    # ADF 검정 (정상성)
+    adf_result = adfuller(ts_data)
+    adf_stats = {
+        'adf_statistic': adf_result[0],
+        'p_value': adf_result[1],
+        'used_lag': adf_result[2],
+        'nobs': adf_result[3],
+        'critical_values': adf_result[4],
+        'is_stationary': adf_result[1] < 0.05
+    }
+    
+    # ACF/PACF
+    nlags = min(40, len(ts_data) // 4)
+    acf_values = acf(ts_data, nlags=nlags)
+    pacf_values = pacf(ts_data, nlags=nlags)
+    
+    # 계절성 분해
+    decomposition = None
+    if options.get('seasonal_decompose', True) and len(ts_data) >= 24:
+        period = options.get('period', 12)
+        try:
+            decomposition = seasonal_decompose(ts_data, model='additive', period=period)
+        except:
+            decomposition = None
+    
+    results = {
+        'time_series': ts_data,
+        'statistics': ts_stats,
+        'adf_test': adf_stats,
+        'acf': acf_values,
+        'pacf': pacf_values,
+        'decomposition': decomposition,
+        'variable': ts_var
+    }
+    
+    return results
+
+# 기존 함수들은 그대로 유지...
 def _run_clustering_analysis(params: Dict[str, Any]) -> Dict[str, Any]:
     """군집분석 실행"""
     df = params['df']
@@ -114,105 +479,12 @@ def _run_clustering_analysis(params: Dict[str, Any]) -> Dict[str, Any]:
     
     return results
 
-def _run_regression(X: pd.DataFrame, y: pd.Series, feature_vars: List[str], 
-                   target_var: str, method: str, options: Dict[str, Any]) -> Dict[str, Any]:
-    """회귀분석 실행"""
-    from sklearn.model_selection import train_test_split
-    from sklearn.linear_model import LinearRegression, LogisticRegression
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.metrics import r2_score, mean_squared_error, accuracy_score, classification_report, confusion_matrix
-    
-    # 데이터 분할
-    test_size = options.get('test_size', 20.0) / 100.0
-    random_state = options.get('random_state', 42)
-    
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state
-    )
-    
-    # 표준화
-    if options.get('standardize', True):
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-    else:
-        X_train_scaled = X_train.values
-        X_test_scaled = X_test.values
-        scaler = None
-    
-    # 모델 학습
-    if method == "Linear":
-        model = LinearRegression()
-        model.fit(X_train_scaled, y_train)
-        
-        # 예측
-        y_pred_train = model.predict(X_train_scaled)
-        y_pred_test = model.predict(X_test_scaled)
-        
-        # 성능 지표
-        r2_train = r2_score(y_train, y_pred_train)
-        r2_test = r2_score(y_test, y_pred_test)
-        rmse_train = np.sqrt(mean_squared_error(y_train, y_pred_train))
-        rmse_test = np.sqrt(mean_squared_error(y_test, y_pred_test))
-        
-        metrics = {
-            'R2_train': r2_train,
-            'R2_test': r2_test,
-            'RMSE_train': rmse_train,
-            'RMSE_test': rmse_test
-        }
-        
-    elif method == "Logistic":
-        max_iter = options.get('max_iter', 1000)
-        model = LogisticRegression(max_iter=max_iter, random_state=random_state)
-        model.fit(X_train_scaled, y_train)
-        
-        # 예측
-        y_pred_train = model.predict(X_train_scaled)
-        y_pred_test = model.predict(X_test_scaled)
-        y_pred_proba_test = model.predict_proba(X_test_scaled)
-        
-        # 성능 지표
-        acc_train = accuracy_score(y_train, y_pred_train)
-        acc_test = accuracy_score(y_test, y_pred_test)
-        
-        metrics = {
-            'Accuracy_train': acc_train,
-            'Accuracy_test': acc_test,
-            'Classification_report': classification_report(y_test, y_pred_test, output_dict=True),
-            'Confusion_matrix': confusion_matrix(y_test, y_pred_test)
-        }
-    
-    # 계수/특성 중요도
-    coefficients = pd.DataFrame({
-        'Feature': feature_vars,
-        'Coefficient': model.coef_[0] if hasattr(model, 'coef_') and len(model.coef_.shape) > 1 else model.coef_
-    })
-    
-    results = {
-        'model': model,
-        'scaler': scaler,
-        'coefficients': coefficients,
-        'metrics': metrics,
-        'predictions_train': y_pred_train,
-        'predictions_test': y_pred_test,
-        'y_train': y_train,
-        'y_test': y_test,
-        'X_train': X_train,
-        'X_test': X_test
-    }
-    
-    if method == "Logistic":
-        results['prediction_probabilities'] = y_pred_proba_test
-    
-    return results
-
 def _run_correlation_analysis(params: Dict[str, Any]) -> Dict[str, Any]:
     """상관분석 실행"""
     df = params['df']
     variables = params['variables']
     options = params['options']
-    method = params['method'].lower()  # 'Pearson' -> 'pearson'
+    method = params['method'].lower()
     
     if len(variables) < 2:
         raise ValueError("Correlation analysis requires at least 2 variables")
@@ -224,99 +496,42 @@ def _run_correlation_analysis(params: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("Not enough data points for correlation analysis (need at least 10)")
     
     # 상관분석 실행
-    results = _run_correlation(X, method, options)
+    corr_matrix = X.corr(method=method)
     
-    # 메타데이터 추가
-    results.update({
+    # p-values 계산
+    from scipy.stats import pearsonr, spearmanr, kendalltau
+    
+    n_vars = len(variables)
+    p_values = np.zeros((n_vars, n_vars))
+    
+    for i in range(n_vars):
+        for j in range(n_vars):
+            if i == j:
+                p_values[i, j] = 0.0
+            else:
+                x = X.iloc[:, i]
+                y = X.iloc[:, j]
+                
+                if method == 'pearson':
+                    _, p = pearsonr(x, y)
+                elif method == 'spearman':
+                    _, p = spearmanr(x, y)
+                elif method == 'kendall':
+                    _, p = kendalltau(x, y)
+                
+                p_values[i, j] = p
+    
+    p_value_matrix = pd.DataFrame(p_values, index=variables, columns=variables)
+    
+    results = {
         'method': params['method'],
         'df_name': params['df_name'],
         'variables': variables,
-        'X': X
-    })
-    
-    return results
-
-def _run_regression_analysis(params: Dict[str, Any]) -> Dict[str, Any]:
-    """회귀분석 실행"""
-    df = params['df']
-    variables = params['variables']
-    options = params['options']
-    method = params['method']
-    
-    target_var = options.get('target_variable')
-    if not target_var or target_var not in df.columns:
-        raise ValueError("Target variable must be selected for regression analysis")
-    
-    if target_var in variables:
-        variables = [v for v in variables if v != target_var]  # 타겟 변수 제외
-    
-    if len(variables) < 1:
-        raise ValueError("At least one predictor variable is required")
-    
-    # 데이터 준비
-    X = df[variables].dropna()
-    y = df.loc[X.index, target_var]
-    
-    if len(X) < 20:
-        raise ValueError("Not enough data points for regression (need at least 20)")
-    
-    # 회귀분석 실행
-    results = _run_regression(X, y, variables, target_var, method, options)
-    
-    # 메타데이터 추가
-    results.update({
-        'method': method,
-        'df_name': params['df_name'],
-        'variables': variables,
-        'target_variable': target_var,
         'X': X,
-        'y': y
-    })
-    
-    return results
-
-def _run_pca(X: pd.DataFrame, X_scaled: np.ndarray, options: Dict[str, Any]) -> Dict[str, Any]:
-    """PCA 실행"""
-    n_components = options.get('n_components', 2)
-    variance_threshold = options.get('variance_threshold', 85.0) / 100.0
-    
-    # 모든 성분으로 PCA 실행 (Scree plot용)
-    pca_full = PCA()
-    pca_full.fit(X_scaled)
-    
-    # 지정된 성분 수로 PCA 실행
-    pca = PCA(n_components=n_components, random_state=42)
-    component_scores = pca.fit_transform(X_scaled)
-    
-    # 분산 기준으로 최적 성분 수 찾기
-    optimal_components = 1
-    cumsum_var = np.cumsum(pca_full.explained_variance_ratio_)
-    for i, cum_var in enumerate(cumsum_var):
-        if cum_var >= variance_threshold:
-            optimal_components = i + 1
-            break
-    
-    results = {
-        'component_scores': component_scores,
-        'components': pca.components_,  # 주성분 벡터
-        'explained_variance': pca.explained_variance_,
-        'explained_variance_ratio': pca.explained_variance_ratio_,
-        'singular_values': pca.singular_values_,
-        'n_components': n_components,
-        'optimal_components': optimal_components,
-        'variance_threshold': variance_threshold * 100
+        'correlation_matrix': corr_matrix,
+        'p_value_matrix': p_value_matrix,
+        'significance_level': options.get('alpha', 0.05)
     }
-    
-    # Scree plot을 위한 전체 eigenvalue
-    if options.get('scree', True):
-        results['eigenvalues'] = pca_full.explained_variance_
-        results['full_explained_variance_ratio'] = pca_full.explained_variance_ratio_
-    
-    # Biplot을 위한 추가 정보
-    if options.get('biplot', True):
-        # 변수 로딩 (주성분과 원변수의 상관계수)
-        loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
-        results['loadings'] = loadings
     
     return results
 
@@ -392,6 +607,7 @@ def _run_factor_analysis(params: Dict[str, Any]) -> Dict[str, Any]:
     
     return results
 
+# 기존의 _run_kmeans, _run_hierarchical, _run_dbscan, _run_pca, _run_fa 함수들은 그대로 유지...
 def _run_kmeans(X: pd.DataFrame, X_scaled: np.ndarray, options: Dict[str, Any]) -> Dict[str, Any]:
     """K-Means 군집분석 실행"""
     n_clusters = options.get('n_clusters', 3)
@@ -495,6 +711,51 @@ def _run_dbscan(X: pd.DataFrame, X_scaled: np.ndarray, options: Dict[str, Any]) 
     
     return results
 
+def _run_pca(X: pd.DataFrame, X_scaled: np.ndarray, options: Dict[str, Any]) -> Dict[str, Any]:
+    """PCA 실행"""
+    n_components = options.get('n_components', 2)
+    variance_threshold = options.get('variance_threshold', 85.0) / 100.0
+    
+    # 모든 성분으로 PCA 실행 (Scree plot용)
+    pca_full = PCA()
+    pca_full.fit(X_scaled)
+    
+    # 지정된 성분 수로 PCA 실행
+    pca = PCA(n_components=n_components, random_state=42)
+    component_scores = pca.fit_transform(X_scaled)
+    
+    # 분산 기준으로 최적 성분 수 찾기
+    optimal_components = 1
+    cumsum_var = np.cumsum(pca_full.explained_variance_ratio_)
+    for i, cum_var in enumerate(cumsum_var):
+        if cum_var >= variance_threshold:
+            optimal_components = i + 1
+            break
+    
+    results = {
+        'component_scores': component_scores,
+        'components': pca.components_,  # 주성분 벡터
+        'explained_variance': pca.explained_variance_,
+        'explained_variance_ratio': pca.explained_variance_ratio_,
+        'singular_values': pca.singular_values_,
+        'n_components': n_components,
+        'optimal_components': optimal_components,
+        'variance_threshold': variance_threshold * 100
+    }
+    
+    # Scree plot을 위한 전체 eigenvalue
+    if options.get('scree', True):
+        results['eigenvalues'] = pca_full.explained_variance_
+        results['full_explained_variance_ratio'] = pca_full.explained_variance_ratio_
+    
+    # Biplot을 위한 추가 정보
+    if options.get('biplot', True):
+        # 변수 로딩 (주성분과 원변수의 상관계수)
+        loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
+        results['loadings'] = loadings
+    
+    return results
+
 def _run_fa(X: pd.DataFrame, X_scaled: np.ndarray, options: Dict[str, Any]) -> Dict[str, Any]:
     """Factor Analysis 실행"""
     n_factors = options.get('n_factors', 2)
@@ -539,6 +800,7 @@ def _run_fa(X: pd.DataFrame, X_scaled: np.ndarray, options: Dict[str, Any]) -> D
     
     return results
 
+# DataFrame에 결과 추가하는 함수들도 그대로 유지...
 def add_clustering_results_to_dataframe(df: pd.DataFrame, results: Dict[str, Any], params: Dict[str, Any]):
     """군집분석 결과를 DataFrame에 추가"""
     X = results['X']
@@ -608,6 +870,42 @@ def add_pca_results_to_dataframe(df: pd.DataFrame, results: Dict[str, Any], para
         _util_funcs['_show_simple_modal_message']("Success", 
             f"PCA component scores added to '{params['df_name']}'.")
 
+def add_correlation_results_to_dataframe(df: pd.DataFrame, results: Dict[str, Any], params: Dict[str, Any]):
+    """상관분석 결과를 DataFrame에 추가 (필요시)"""
+    # 상관분석은 일반적으로 DataFrame에 추가할 내용이 없음
+    pass
+
+def add_regression_results_to_dataframe(df: pd.DataFrame, results: Dict[str, Any], params: Dict[str, Any]):
+    """회귀분석 결과를 DataFrame에 추가"""
+    data_for_model = results['data_for_model']
+    predictions = results.get('predictions_test')
+    residuals = results.get('residuals_test')
+    
+    if predictions is not None:
+        # 예측값과 잔차를 DataFrame에 추가
+        pred_col_name = f"pred_{results['method'].lower()}_{results['target_variable']}"
+        resid_col_name = f"resid_{results['method'].lower()}_{results['target_variable']}"
+        
+        # test set의 인덱스에 예측값 추가
+        test_indices = results['y_test'].index
+        df.loc[test_indices, pred_col_name] = predictions
+        
+        if residuals is not None:
+            df.loc[test_indices, resid_col_name] = residuals
+    
+    # 새 DataFrame 생성 여부 확인
+    new_df_name = params.get('new_df_name', '').strip()
+    if new_df_name:
+        new_df = df.copy()
+        if _module_main_callbacks and 'step8_derivation_complete' in _module_main_callbacks:
+            _module_main_callbacks['step8_derivation_complete'](new_df_name, new_df)
+            _util_funcs['_show_simple_modal_message']("Success", 
+                f"New DataFrame '{new_df_name}' created with regression results.")
+    else:
+        _util_funcs['_show_simple_modal_message']("Success", 
+            f"Regression results added to '{params['df_name']}'.")
+
+# Export 함수들은 그대로 유지...
 def export_results(results: Dict[str, Any], format: str):
     """결과 내보내기"""
     if format == 'excel':
@@ -634,60 +932,101 @@ def _export_to_excel(results: Dict[str, Any]):
             "openpyxl not installed. Cannot export to Excel.")
 
 def _save_excel_file(filepath: str, results: Dict[str, Any]):
-    """Excel 파일 저장"""
+    """Excel 파일 저장 (statsmodels 결과 포함)"""
     try:
         with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
             # 요약 정보
-            if results['method'] == "Factor Analysis":
+            method = results['method']
+            
+            if method in ["Linear", "Logistic"]:
+                # 회귀분석 결과
                 summary_data = {
-                    'Metric': ['Method', 'DataFrame', 'Variables', 'Number of Factors', 'Total Explained Variance'],
-                    'Value': [results['method'], results['df_name'], 
-                            ', '.join(results['variables']), results['n_factors'],
-                            f"{np.sum(results['explained_variance_ratio'])*100:.1f}%"]
-                }
-                summary_df = pd.DataFrame(summary_data)
-                summary_df.to_excel(writer, sheet_name='Summary', index=False)
-                
-                # 요인 적재값
-                loadings_df = pd.DataFrame(
-                    results['loadings'], 
-                    index=results['variables'],
-                    columns=[f'Factor_{i+1}' for i in range(results['n_factors'])]
-                )
-                loadings_df.to_excel(writer, sheet_name='Factor_Loadings')
-                
-                # 요인 점수
-                factor_scores_df = results['X'].copy()
-                for i in range(results['n_factors']):
-                    factor_scores_df[f'Factor_{i+1}'] = results['factor_scores'][:, i]
-                factor_scores_df.to_excel(writer, sheet_name='Factor_Scores')
-                
-            else:  # Clustering methods
-                summary_data = {
-                    'Metric': ['Method', 'DataFrame', 'Variables', 'Number of Clusters'],
-                    'Value': [results['method'], results['df_name'], 
-                            ', '.join(results['variables']), results['n_clusters']]
+                    'Metric': ['Method', 'DataFrame', 'Target Variable', 'Predictors'],
+                    'Value': [method, results['df_name'], results['target_variable'], 
+                            ', '.join(results['variables'])]
                 }
                 
-                if 'silhouette_avg' in results:
-                    summary_data['Metric'].append('Silhouette Score')
-                    summary_data['Value'].append(f"{results['silhouette_avg']:.3f}")
-                
-                if 'n_noise' in results:
-                    summary_data['Metric'].append('Noise Points')
-                    summary_data['Value'].append(results['n_noise'])
+                if method == "Linear":
+                    summary_data['Metric'].extend(['R-squared', 'Adj. R-squared', 'F-statistic', 'AIC', 'BIC'])
+                    model = results['model']
+                    summary_data['Value'].extend([
+                        f"{model.rsquared:.4f}",
+                        f"{model.rsquared_adj:.4f}",
+                        f"{model.fvalue:.4f} (p={model.f_pvalue:.4e})",
+                        f"{model.aic:.2f}",
+                        f"{model.bic:.2f}"
+                    ])
                 
                 summary_df = pd.DataFrame(summary_data)
                 summary_df.to_excel(writer, sheet_name='Summary', index=False)
                 
-                # 클러스터 할당
-                cluster_df = results['X'].copy()
-                cluster_df['Cluster'] = results['labels']
-                cluster_df.to_excel(writer, sheet_name='Cluster_Assignments')
+                # 계수 테이블
+                results['coefficients'].to_excel(writer, sheet_name='Coefficients', index=False)
                 
-                # 클러스터별 통계
-                cluster_stats = cluster_df.groupby('Cluster').agg(['mean', 'std', 'count'])
-                cluster_stats.to_excel(writer, sheet_name='Cluster_Statistics')
+                # 모델 요약 (텍스트)
+                summary_text_df = pd.DataFrame({'Model Summary': [results['model_summary_text']]})
+                summary_text_df.to_excel(writer, sheet_name='Model_Summary', index=False)
+                
+                # 진단 통계량
+                if 'diagnostics' in results:
+                    diag = results['diagnostics']
+                    if 'vif' in diag:
+                        diag['vif'].to_excel(writer, sheet_name='VIF', index=False)
+                    
+                    if 'breusch_pagan' in diag:
+                        bp_df = pd.DataFrame([diag['breusch_pagan']])
+                        bp_df.to_excel(writer, sheet_name='Breusch_Pagan_Test', index=False)
+                
+            elif method == "ANOVA":
+                # ANOVA 결과
+                summary_data = {
+                    'Metric': ['ANOVA Type', 'DataFrame', 'Target Variable', 'Formula'],
+                    'Value': [results['anova_type'], results['df_name'], 
+                            results.get('target_variable', 'N/A'), results['formula']]
+                }
+                summary_df = pd.DataFrame(summary_data)
+                summary_df.to_excel(writer, sheet_name='Summary', index=False)
+                
+                # ANOVA 테이블
+                results['anova_table'].to_excel(writer, sheet_name='ANOVA_Table')
+                
+                # 모델 요약
+                summary_text_df = pd.DataFrame({'Model Summary': [results['model_summary_text']]})
+                summary_text_df.to_excel(writer, sheet_name='Model_Summary', index=False)
+                
+            else:
+                # 기존의 다른 분석 방법들
+                if method == "Factor Analysis":
+                    summary_data = {
+                        'Metric': ['Method', 'DataFrame', 'Variables', 'Number of Factors', 'Total Explained Variance'],
+                        'Value': [results['method'], results['df_name'], 
+                                ', '.join(results['variables']), results['n_factors'],
+                                f"{np.sum(results['explained_variance_ratio'])*100:.1f}%"]
+                    }
+                    summary_df = pd.DataFrame(summary_data)
+                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
+                    
+                    # 요인 적재값
+                    loadings_df = pd.DataFrame(
+                        results['loadings'], 
+                        index=results['variables'],
+                        columns=[f'Factor_{i+1}' for i in range(results['n_factors'])]
+                    )
+                    loadings_df.to_excel(writer, sheet_name='Factor_Loadings')
+                    
+                else:  # Clustering methods
+                    summary_data = {
+                        'Metric': ['Method', 'DataFrame', 'Variables', 'Number of Clusters'],
+                        'Value': [results['method'], results['df_name'], 
+                                ', '.join(results['variables']), results['n_clusters']]
+                    }
+                    
+                    if 'silhouette_avg' in results:
+                        summary_data['Metric'].append('Silhouette Score')
+                        summary_data['Value'].append(f"{results['silhouette_avg']:.3f}")
+                    
+                    summary_df = pd.DataFrame(summary_data)
+                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
         
         _util_funcs['_show_simple_modal_message']("Success", 
             f"Results exported to:\n{filepath}")
@@ -697,10 +1036,10 @@ def _save_excel_file(filepath: str, results: Dict[str, Any]):
             f"Failed to export: {str(e)}")
 
 def _export_to_html(results: Dict[str, Any]):
-    """HTML로 내보내기 (향후 구현)"""
+    """HTML로 내보내기"""
     _util_funcs['_show_simple_modal_message']("Info", 
-        "HTML export not implemented yet.")
+        "HTML export with interactive plots coming soon.")
 
 def reset_state():
     """분석 모듈 상태 초기화"""
-    pass  # 현재 분석 모듈은 상태가 없으므로 빈 함수
+    pass
