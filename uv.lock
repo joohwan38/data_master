@@ -248,6 +248,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "dearpygui" },
+    { name = "factor-analyzer" },
     { name = "fastparquet" },
     { name = "matplotlib" },
     { name = "nbformat" },
@@ -263,6 +264,7 @@ dependencies = [
     { name = "seaborn" },
     { name = "setuptools" },
     { name = "shap" },
+    { name = "statsmodels" },
     { name = "umap-learn" },
     { name = "ydata-profiling" },
 ]
@@ -275,6 +277,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "dearpygui", specifier = ">=2.0.0" },
+    { name = "factor-analyzer", specifier = ">=0.5.1" },
     { name = "fastparquet", specifier = ">=2024.11.0" },
     { name = "matplotlib", specifier = ">=3.10.0" },
     { name = "nbformat", specifier = ">=5.10.4" },
@@ -290,6 +293,7 @@ requires-dist = [
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "setuptools", specifier = ">=80.9.0" },
     { name = "shap", specifier = ">=0.47.2" },
+    { name = "statsmodels", specifier = ">=0.14.4" },
     { name = "umap-learn", specifier = ">=0.5.7" },
     { name = "ydata-profiling", specifier = ">=4.16.1" },
 ]
@@ -355,6 +359,18 @@ sdist = { url = "https://files.pythonhosted.org/packages/91/50/a9d80c47ff289c611
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7b/8f/c4d9bafc34ad7ad5d8dc16dd1347ee0e507a52c3adb6bfa8887e1c6a26ba/executing-2.2.0-py2.py3-none-any.whl", hash = "sha256:11387150cad388d62750327a53d3339fad4888b39a6fe233c3afbb54ecffd3aa", size = 26702 },
 ]
+
+[[package]]
+name = "factor-analyzer"
+version = "0.5.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/28/19/089a65c4cf7ea407ab001846989b44cf83bc488a6e1fe68e950607251720/factor_analyzer-0.5.1.tar.gz", hash = "sha256:03703cd128ee9f91c9bd191a452b06e4a28296b5a24d11823ebb5d8250e8fdf6", size = 42824 }
 
 [[package]]
 name = "fastjsonschema"
