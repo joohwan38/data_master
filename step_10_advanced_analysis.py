@@ -9,7 +9,7 @@ import datetime
 import io
 import base64
 from sklearn.cluster import KMeans, AgglomerativeClustering, DBSCAN
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, FactorAnalysis
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score, silhouette_samples
 import matplotlib.pyplot as plt
@@ -42,7 +42,7 @@ TAG_S10_NEW_DF_NAME_INPUT = "step10_new_df_name_input"
 # --- 분석 방법론 목록 ---
 ANALYSIS_METHODS = {
     "군집분석 (Clustering)": ["K-Means", "Hierarchical", "DBSCAN"],
-    "차원축소 (Dimension Reduction)": ["PCA", "t-SNE"],
+    "차원축소 (Dimension Reduction)": ["PCA", "Factor Analysis", "t-SNE"],
     "회귀분석 (Regression)": ["Linear", "Logistic", "Polynomial"],
     "상관분석 (Correlation)": ["Pearson", "Spearman", "Kendall"],
     "시계열분석 (Time Series)": ["Trend", "Seasonal Decomposition"],
@@ -62,22 +62,26 @@ _texture_tags: List[str] = []
 # --- Helper Functions ---
 
 def _update_df_list():
-    """데이터프레임 목록 업데이트"""
+    """데이터프레임 목록 업데이트 (수정: original_df 제외)"""
     global _available_dfs, _selected_df_name
     if not _module_main_callbacks:
         return
     
-    _available_dfs = _module_main_callbacks['get_all_available_dfs']()
+    all_dfs_from_main = _module_main_callbacks.get('get_all_available_dfs', lambda: {})()
+    
+    # --- [사용자 요청 수정] '0. Original Data' 제외 ---
+    _available_dfs = {k: v for k, v in all_dfs_from_main.items() if k != '0. Original Data'}
     
     if dpg.does_item_exist(TAG_S10_DF_SELECTOR):
         df_names = list(_available_dfs.keys())
+        current_selection = dpg.get_value(TAG_S10_DF_SELECTOR)
+        
         dpg.configure_item(TAG_S10_DF_SELECTOR, items=df_names)
         
-        if _selected_df_name not in df_names and df_names:
-            _selected_df_name = df_names[0]
-            dpg.set_value(TAG_S10_DF_SELECTOR, _selected_df_name)
-        elif not df_names:
-            _selected_df_name = ""
+        if current_selection not in df_names:
+            new_selection = df_names[0] if df_names else ""
+            dpg.set_value(TAG_S10_DF_SELECTOR, new_selection)
+            _on_df_selected(None, new_selection, None)
 
 def _on_df_selected(sender, app_data, user_data):
     """데이터프레임 선택 시 호출"""
@@ -87,78 +91,117 @@ def _on_df_selected(sender, app_data, user_data):
     _update_variable_lists()
 
 def _on_method_selected(sender, app_data, user_data):
-    """분석 방법론 선택 시 호출"""
+    """분석 방법론 선택 시 호출 (수정: 변수 목록 초기화 및 업데이트)"""
+    global _selected_vars
+    
+    # --- [사용자 요청 수정] 메서드 변경 시 선택된 변수 초기화 및 목록 새로고침 ---
+    _selected_vars.clear()
     _create_dynamic_options(app_data)
+    _update_variable_lists()
 
 def _update_variable_lists():
-    """변수 목록 업데이트"""
+    """변수 목록 업데이트 (수정: 전역 제외 및 방법론별 필터링)"""
     if not _selected_df_name or _selected_df_name not in _available_dfs:
+        for list_tag in [TAG_S10_VAR_AVAILABLE_LIST, TAG_S10_VAR_SELECTED_LIST]:
+            if dpg.does_item_exist(list_tag):
+                dpg.delete_item(list_tag, children_only=True)
+                dpg.add_table_column(parent=list_tag)
         return
     
     df = _available_dfs[_selected_df_name]
-    available_vars = list(df.columns)
     
+    # 1. 필터링을 위해 Step 1 분석 타입 가져오기
+    s1_analysis_types = _module_main_callbacks.get('get_column_analysis_types', lambda: {})()
+
+    # 2. 전역 제외: Step 1에서 '제외'로 표시된 변수 필터링
+    eligible_vars = [
+        var for var in df.columns 
+        if s1_analysis_types.get(var) != "분석에서 제외 (Exclude)"
+    ]
+
+    # 3. 방법론별 필터링
+    method = dpg.get_value(TAG_S10_METHOD_SELECTOR) if dpg.does_item_exist(TAG_S10_METHOD_SELECTOR) else ""
+    
+    if method in ["K-Means", "Hierarchical", "DBSCAN", "PCA", "Factor Analysis"]:
+        # 군집분석 및 차원축소의 경우, 수치형 변수만 표시
+        numeric_vars = []
+        for var in eligible_vars:
+            s1_type = s1_analysis_types.get(var)
+            if s1_type:
+                if "Numeric" in s1_type:
+                    numeric_vars.append(var)
+            elif pd.api.types.is_numeric_dtype(df[var].dtype):
+                numeric_vars.append(var)
+        eligible_vars = numeric_vars
+
     # 검색어 필터링
     if dpg.does_item_exist(TAG_S10_VAR_SEARCH_INPUT):
         search_term = dpg.get_value(TAG_S10_VAR_SEARCH_INPUT).lower()
         if search_term:
-            available_vars = [v for v in available_vars if search_term in v.lower()]
+            eligible_vars = [v for v in eligible_vars if search_term in v.lower()]
     
-    # 이미 선택된 변수는 제외
-    available_vars = [v for v in available_vars if v not in _selected_vars]
+    # 이미 선택된 변수 제외
+    available_vars = sorted([v for v in eligible_vars if v not in _selected_vars])
     
-    # 사용 가능한 변수 목록 업데이트
+    # UI 목록 업데이트
     if dpg.does_item_exist(TAG_S10_VAR_AVAILABLE_LIST):
         dpg.delete_item(TAG_S10_VAR_AVAILABLE_LIST, children_only=True)
+        dpg.add_table_column(parent=TAG_S10_VAR_AVAILABLE_LIST)
         for var in available_vars:
-            dpg.add_selectable(label=var, parent=TAG_S10_VAR_AVAILABLE_LIST, 
-                             width=-1, user_data=var)
-    
-    # 선택된 변수 목록 업데이트
+            with dpg.table_row(parent=TAG_S10_VAR_AVAILABLE_LIST):
+                dpg.add_selectable(label=var, user_data=var, span_columns=True)
+
     if dpg.does_item_exist(TAG_S10_VAR_SELECTED_LIST):
         dpg.delete_item(TAG_S10_VAR_SELECTED_LIST, children_only=True)
-        for var in _selected_vars:
-            dpg.add_selectable(label=var, parent=TAG_S10_VAR_SELECTED_LIST,
-                             width=-1, user_data=var)
+        dpg.add_table_column(parent=TAG_S10_VAR_SELECTED_LIST)
+        for var in sorted(_selected_vars):
+            with dpg.table_row(parent=TAG_S10_VAR_SELECTED_LIST):
+                dpg.add_selectable(label=var, user_data=var, span_columns=True)
 
 def _move_variables(direction: str):
-    """변수를 좌우로 이동"""
+    """변수를 좌우로 이동 (테이블 구조에 맞게 수정)"""
     global _selected_vars
     
+    source_list_tag = None
+    
     if direction in [">", ">>"]:
-        # 오른쪽으로 이동 (선택)
-        source_list = TAG_S10_VAR_AVAILABLE_LIST
+        source_list_tag = TAG_S10_VAR_AVAILABLE_LIST
         if direction == ">>":
-            # 모든 변수 이동
-            if _selected_df_name in _available_dfs:
-                df = _available_dfs[_selected_df_name]
-                _selected_vars = list(df.columns)
-        else:
-            # 선택된 변수만 이동
-            if dpg.does_item_exist(source_list):
-                for child in dpg.get_item_children(source_list, 1):
-                    if dpg.get_value(child):
-                        var = dpg.get_item_user_data(child)
-                        if var not in _selected_vars:
-                            _selected_vars.append(var)
-    
+            all_available_now = []
+            if dpg.does_item_exist(source_list_tag):
+                rows = dpg.get_item_children(source_list_tag, 1)
+                for row in rows:
+                    selectable = dpg.get_item_children(row, 1)[0]
+                    all_available_now.append(dpg.get_item_user_data(selectable))
+
+            _selected_vars = sorted(list(set(_selected_vars + all_available_now)))
+            _update_variable_lists()
+            return
+            
     elif direction in ["<", "<<"]:
-        # 왼쪽으로 이동 (제거)
+        source_list_tag = TAG_S10_VAR_SELECTED_LIST
         if direction == "<<":
-            # 모든 변수 제거
             _selected_vars.clear()
-        else:
-            # 선택된 변수만 제거
-            source_list = TAG_S10_VAR_SELECTED_LIST
-            if dpg.does_item_exist(source_list):
-                vars_to_remove = []
-                for child in dpg.get_item_children(source_list, 1):
-                    if dpg.get_value(child):
-                        vars_to_remove.append(dpg.get_item_user_data(child))
-                for var in vars_to_remove:
-                    if var in _selected_vars:
-                        _selected_vars.remove(var)
-    
+            _update_variable_lists()
+            return
+
+    if not source_list_tag or not dpg.does_item_exist(source_list_tag):
+        return
+
+    vars_to_move = []
+    table_rows = dpg.get_item_children(source_list_tag, 1)
+
+    for row in table_rows:
+        selectable_item = dpg.get_item_children(row, 1)[0]
+        if dpg.get_value(selectable_item):
+            var = dpg.get_item_user_data(selectable_item)
+            if var: vars_to_move.append(var)
+
+    if direction == ">":
+        _selected_vars = sorted(list(set(_selected_vars + vars_to_move)))
+    elif direction == "<":
+        _selected_vars = [v for v in _selected_vars if v not in vars_to_move]
+
     _update_variable_lists()
 
 def _create_dynamic_options(method: str):
@@ -245,18 +288,62 @@ def _create_dynamic_options(method: str):
                         default_value=True, tag="dbscan_standardize",
                         parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
     
+    elif method == "Factor Analysis":
+        dpg.add_text("Factor Analysis Options", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        dpg.add_separator(parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        
+        with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
+            dpg.add_text("Number of Factors:")
+            dpg.add_input_int(default_value=2, min_value=1, max_value=10,
+                            tag="fa_n_factors", width=100)
+        
+        with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
+            dpg.add_text("Max Iterations:")
+            dpg.add_input_int(default_value=1000, min_value=100, max_value=5000,
+                            tag="fa_max_iter", width=100)
+        
+        with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
+            dpg.add_text("Tolerance:")
+            dpg.add_input_float(default_value=0.01, min_value=0.001, max_value=0.1,
+                              tag="fa_tol", width=100, format="%.3f")
+        
+        dpg.add_checkbox(label="Standardize variables before analysis",
+                        default_value=True, tag="fa_standardize",
+                        parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+        
+        dpg.add_checkbox(label="Generate Scree Plot",
+                        default_value=True, tag="fa_scree",
+                        parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+    
     # 공통 옵션들
     dpg.add_separator(parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
     dpg.add_text("Output Options:", parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
     
-    dpg.add_checkbox(label="Add cluster labels to original DataFrame",
-                    default_value=True, tag=TAG_S10_ADD_TO_DF_CHECK,
-                    parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+    if method in ["K-Means", "Hierarchical", "DBSCAN"]:
+        dpg.add_checkbox(label="Add cluster labels to original DataFrame",
+                        default_value=True, tag=TAG_S10_ADD_TO_DF_CHECK,
+                        parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
+    elif method == "Factor Analysis":
+        dpg.add_checkbox(label="Add factor scores to original DataFrame",
+                        default_value=True, tag=TAG_S10_ADD_TO_DF_CHECK,
+                        parent=TAG_S10_DYNAMIC_OPTIONS_AREA)
     
     with dpg.group(horizontal=True, parent=TAG_S10_DYNAMIC_OPTIONS_AREA):
         dpg.add_text("New DataFrame name (if creating):")
         dpg.add_input_text(default_value="", tag=TAG_S10_NEW_DF_NAME_INPUT,
                          width=200, hint="Leave empty to auto-generate")
+
+def _run_analysis():
+    """분석 실행 (메서드에 따라 분기)"""
+    method = dpg.get_value(TAG_S10_METHOD_SELECTOR)
+    
+    if method in ["K-Means", "Hierarchical", "DBSCAN"]:
+        _run_clustering_analysis()
+    elif method == "Factor Analysis":
+        _run_factor_analysis()
+    else:
+        _util_funcs['_show_simple_modal_message']("Error", 
+            f"Method '{method}' is not implemented yet.")
 
 def _run_clustering_analysis():
     """군집분석 실행"""
@@ -321,6 +408,132 @@ def _run_clustering_analysis():
     
     finally:
         _util_funcs['hide_dpg_progress_modal'](TAG_S10_PROGRESS_MODAL)
+
+def _run_factor_analysis():
+    """요인분석 실행"""
+    global _viz_tab_counter
+    
+    if not _selected_df_name or len(_selected_vars) < 3:
+        _util_funcs['_show_simple_modal_message']("Error", 
+            "Please select a DataFrame and at least 3 variables for factor analysis.")
+        return
+    
+    df = _available_dfs[_selected_df_name]
+    
+    # Progress modal
+    _util_funcs['show_dpg_progress_modal']("Running Analysis", 
+        "Performing Factor Analysis...", 
+        modal_tag=TAG_S10_PROGRESS_MODAL, 
+        text_tag=TAG_S10_PROGRESS_TEXT)
+    
+    try:
+        # 데이터 준비
+        X = df[_selected_vars].dropna()
+        
+        if len(X) < 20:
+            raise ValueError("Not enough data points for factor analysis (need at least 20)")
+        
+        # 표준화
+        if dpg.get_value("fa_standardize"):
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+        else:
+            X_scaled = X.values
+        
+        # Factor Analysis 실행
+        results = _run_fa(X, X_scaled)
+        
+        # 결과를 새 탭에 표시
+        _viz_tab_counter += 1
+        tab_name = f"FA_{_viz_tab_counter}"
+        results['method'] = "Factor Analysis"
+        results['df_name'] = _selected_df_name
+        results['variables'] = _selected_vars.copy()
+        
+        _create_results_tab(tab_name, results)
+        
+        # DataFrame에 결과 추가
+        if dpg.get_value(TAG_S10_ADD_TO_DF_CHECK) and 'factor_scores' in results:
+            _add_factor_results_to_dataframe(results)
+        
+    except Exception as e:
+        _util_funcs['_show_simple_modal_message']("Analysis Error", 
+            f"Error during Factor Analysis:\n{str(e)}")
+        traceback.print_exc()
+    
+    finally:
+        _util_funcs['hide_dpg_progress_modal'](TAG_S10_PROGRESS_MODAL)
+
+def _run_fa(X: pd.DataFrame, X_scaled: np.ndarray) -> Dict[str, Any]:
+    """Factor Analysis 실행"""
+    n_factors = dpg.get_value("fa_n_factors")
+    max_iter = dpg.get_value("fa_max_iter")
+    tol = dpg.get_value("fa_tol")
+    
+    # Factor Analysis 모델
+    fa = FactorAnalysis(n_components=n_factors, max_iter=max_iter, tol=tol, random_state=42)
+    factor_scores = fa.fit_transform(X_scaled)
+    
+    # 요인 적재값 (Factor Loadings)
+    loadings = fa.components_.T
+    
+    # 공통성 (Communalities) 계산
+    communalities = np.sum(loadings**2, axis=1)
+    
+    # 설명된 분산 계산
+    explained_variance = np.var(factor_scores, axis=0)
+    explained_variance_ratio = explained_variance / np.sum(explained_variance)
+    
+    results = {
+        'factor_scores': factor_scores,
+        'loadings': loadings,
+        'communalities': communalities,
+        'explained_variance': explained_variance,
+        'explained_variance_ratio': explained_variance_ratio,
+        'n_factors': n_factors,
+        'X': X,
+        'X_scaled': X_scaled
+    }
+    
+    # Scree plot을 위한 eigenvalue 계산
+    if dpg.get_value("fa_scree"):
+        # PCA를 이용해 eigenvalue 계산
+        from sklearn.decomposition import PCA
+        pca_temp = PCA()
+        pca_temp.fit(X_scaled)
+        eigenvalues = pca_temp.explained_variance_
+        results['eigenvalues'] = eigenvalues
+    
+    return results
+
+def _add_factor_results_to_dataframe(results: Dict[str, Any]):
+    """요인분석 결과를 DataFrame에 추가"""
+    df_name = results['df_name']
+    if df_name not in _available_dfs:
+        return
+
+    df = _available_dfs[df_name]
+    X = results['X']
+    factor_scores = results['factor_scores']
+
+    # 요인 점수를 원본 DataFrame에 추가
+    for i in range(results['n_factors']):
+        factor_col_name = f"factor_{i+1}"
+        df.loc[X.index, factor_col_name] = factor_scores[:, i]
+
+    # 새 DataFrame 생성 여부 확인
+    new_df_name = dpg.get_value(TAG_S10_NEW_DF_NAME_INPUT).strip()
+    if new_df_name:
+        new_df = df.copy()
+        if _module_main_callbacks and 'step8_derivation_complete' in _module_main_callbacks:
+            _module_main_callbacks['step8_derivation_complete'](new_df_name, new_df)
+            _util_funcs['_show_simple_modal_message']("Success", 
+                f"New DataFrame '{new_df_name}' created with factor scores.")
+    else:
+        _util_funcs['_show_simple_modal_message']("Success", 
+            f"Factor scores added to '{df_name}'.")
+
+    _update_df_list()
 
 def _run_kmeans(X: pd.DataFrame, X_scaled: np.ndarray) -> Dict[str, Any]:
     """K-Means 군집분석 실행"""
@@ -435,10 +648,17 @@ def _create_results_tab(tab_name: str, results: Dict[str, Any]):
             dpg.add_text(f"Method: {results['method']}", color=(255, 255, 0))
             dpg.add_text(f"DataFrame: {results['df_name']}")
             dpg.add_text(f"Variables: {', '.join(results['variables'])}")
-            dpg.add_text(f"Number of clusters: {results['n_clusters']}")
+            
+            if 'n_clusters' in results:
+                dpg.add_text(f"Number of clusters: {results['n_clusters']}")
+            if 'n_factors' in results:
+                dpg.add_text(f"Number of factors: {results['n_factors']}")
             
             if 'silhouette_avg' in results:
                 dpg.add_text(f"Silhouette Score: {results['silhouette_avg']:.3f}")
+            if 'explained_variance_ratio' in results:
+                total_var = np.sum(results['explained_variance_ratio']) * 100
+                dpg.add_text(f"Total Explained Variance: {total_var:.1f}%")
             
             if 'n_noise' in results:
                 dpg.add_text(f"Noise points: {results['n_noise']}")
@@ -452,6 +672,8 @@ def _create_results_tab(tab_name: str, results: Dict[str, Any]):
                 _create_hierarchical_visualizations(f"viz_{tab_name}", results)
             elif results['method'] == "DBSCAN":
                 _create_dbscan_visualizations(f"viz_{tab_name}", results)
+            elif results['method'] == "Factor Analysis":
+                _create_factor_visualizations(f"viz_{tab_name}", results)
             
             # Export 버튼
             dpg.add_separator()
@@ -460,6 +682,112 @@ def _create_results_tab(tab_name: str, results: Dict[str, Any]):
                              callback=lambda: _export_results(results, 'excel'))
                 dpg.add_button(label="Export to HTML", 
                              callback=lambda: _export_results(results, 'html'))
+
+def _create_factor_visualizations(parent_tag: str, results: Dict[str, Any]):
+    """요인분석 결과 시각화"""
+    plot_func = _util_funcs.get('plot_to_dpg_texture', utils.plot_to_dpg_texture)
+    
+    # 1. Scree Plot
+    if 'eigenvalues' in results:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        factors_range = range(1, len(results['eigenvalues']) + 1)
+        ax.plot(factors_range, results['eigenvalues'], 'bo-', linewidth=2, markersize=8)
+        ax.axhline(y=1, color='red', linestyle='--', alpha=0.7, label='Kaiser Criterion (>1)')
+        ax.set_xlabel('Factor Number')
+        ax.set_ylabel('Eigenvalue')
+        ax.set_title('Scree Plot')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        
+        tex_tag, w, h, img_bytes = plot_func(fig)
+        if tex_tag:
+            _texture_tags.append(tex_tag)
+            dpg.add_image(tex_tag, parent=parent_tag, width=w, height=h)
+        plt.close(fig)
+        dpg.add_separator(parent=parent_tag)
+    
+    # 2. Factor Loadings Heatmap
+    fig, ax = plt.subplots(figsize=(10, 6))
+    loadings_df = pd.DataFrame(
+        results['loadings'], 
+        index=results['variables'],
+        columns=[f'Factor {i+1}' for i in range(results['n_factors'])]
+    )
+    
+    sns.heatmap(loadings_df, annot=True, cmap='RdBu_r', center=0, 
+                fmt='.3f', ax=ax, cbar_kws={'label': 'Loading'})
+    ax.set_title('Factor Loadings Matrix')
+    ax.set_xlabel('Factors')
+    ax.set_ylabel('Variables')
+    
+    tex_tag, w, h, img_bytes = plot_func(fig)
+    if tex_tag:
+        _texture_tags.append(tex_tag)
+        dpg.add_image(tex_tag, parent=parent_tag, width=w, height=h)
+    plt.close(fig)
+    dpg.add_separator(parent=parent_tag)
+    
+    # 3. Explained Variance Plot
+    fig, ax = plt.subplots(figsize=(8, 5))
+    factor_names = [f'Factor {i+1}' for i in range(results['n_factors'])]
+    bars = ax.bar(factor_names, results['explained_variance_ratio'] * 100)
+    ax.set_ylabel('Explained Variance (%)')
+    ax.set_title('Variance Explained by Each Factor')
+    ax.set_ylim(0, max(results['explained_variance_ratio'] * 100) * 1.1)
+    
+    # 막대 위에 퍼센트 표시
+    for bar, ratio in zip(bars, results['explained_variance_ratio']):
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., height,
+                f'{ratio*100:.1f}%', ha='center', va='bottom')
+    
+    tex_tag, w, h, img_bytes = plot_func(fig)
+    if tex_tag:
+        _texture_tags.append(tex_tag)
+        dpg.add_image(tex_tag, parent=parent_tag, width=w, height=h)
+    plt.close(fig)
+    dpg.add_separator(parent=parent_tag)
+    
+    # 4. Communalities Plot
+    fig, ax = plt.subplots(figsize=(10, 6))
+    y_pos = np.arange(len(results['variables']))
+    bars = ax.barh(y_pos, results['communalities'])
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(results['variables'])
+    ax.set_xlabel('Communality')
+    ax.set_title('Communalities (Proportion of Variance Explained)')
+    ax.set_xlim(0, 1)
+    
+    # 막대 끝에 값 표시
+    for i, (bar, comm) in enumerate(zip(bars, results['communalities'])):
+        width = bar.get_width()
+        ax.text(width + 0.01, bar.get_y() + bar.get_height()/2.,
+                f'{comm:.3f}', ha='left', va='center')
+    
+    tex_tag, w, h, img_bytes = plot_func(fig)
+    if tex_tag:
+        _texture_tags.append(tex_tag)
+        dpg.add_image(tex_tag, parent=parent_tag, width=w, height=h)
+    plt.close(fig)
+    dpg.add_separator(parent=parent_tag)
+    
+    # 5. Factor Scores Scatter Plot (if 2 factors)
+    if results['n_factors'] >= 2:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        scatter = ax.scatter(results['factor_scores'][:, 0], results['factor_scores'][:, 1], 
+                           alpha=0.6, s=50)
+        ax.set_xlabel('Factor 1')
+        ax.set_ylabel('Factor 2')
+        ax.set_title('Factor Scores Plot (Factor 1 vs Factor 2)')
+        ax.grid(True, alpha=0.3)
+        ax.axhline(y=0, color='k', linestyle='-', alpha=0.3)
+        ax.axvline(x=0, color='k', linestyle='-', alpha=0.3)
+        
+        tex_tag, w, h, img_bytes = plot_func(fig)
+        if tex_tag:
+            _texture_tags.append(tex_tag)
+            dpg.add_image(tex_tag, parent=parent_tag, width=w, height=h)
+        plt.close(fig)
 
 def _create_kmeans_visualizations(parent_tag: str, results: Dict[str, Any]):
     """K-Means 결과 시각화"""
@@ -749,31 +1077,56 @@ def _save_excel_file(filepath: str, results: Dict[str, Any]):
     try:
         with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
             # 요약 정보
-            summary_data = {
-                'Metric': ['Method', 'DataFrame', 'Variables', 'Number of Clusters'],
-                'Value': [results['method'], results['df_name'], 
-                        ', '.join(results['variables']), results['n_clusters']]
-            }
-            
-            if 'silhouette_avg' in results:
-                summary_data['Metric'].append('Silhouette Score')
-                summary_data['Value'].append(f"{results['silhouette_avg']:.3f}")
-            
-            if 'n_noise' in results:
-                summary_data['Metric'].append('Noise Points')
-                summary_data['Value'].append(results['n_noise'])
-            
-            summary_df = pd.DataFrame(summary_data)
-            summary_df.to_excel(writer, sheet_name='Summary', index=False)
-            
-            # 클러스터 할당
-            cluster_df = results['X'].copy()
-            cluster_df['Cluster'] = results['labels']
-            cluster_df.to_excel(writer, sheet_name='Cluster_Assignments')
-            
-            # 클러스터별 통계
-            cluster_stats = cluster_df.groupby('Cluster').agg(['mean', 'std', 'count'])
-            cluster_stats.to_excel(writer, sheet_name='Cluster_Statistics')
+            if results['method'] == "Factor Analysis":
+                summary_data = {
+                    'Metric': ['Method', 'DataFrame', 'Variables', 'Number of Factors', 'Total Explained Variance'],
+                    'Value': [results['method'], results['df_name'], 
+                            ', '.join(results['variables']), results['n_factors'],
+                            f"{np.sum(results['explained_variance_ratio'])*100:.1f}%"]
+                }
+                summary_df = pd.DataFrame(summary_data)
+                summary_df.to_excel(writer, sheet_name='Summary', index=False)
+                
+                # 요인 적재값
+                loadings_df = pd.DataFrame(
+                    results['loadings'], 
+                    index=results['variables'],
+                    columns=[f'Factor_{i+1}' for i in range(results['n_factors'])]
+                )
+                loadings_df.to_excel(writer, sheet_name='Factor_Loadings')
+                
+                # 요인 점수
+                factor_scores_df = results['X'].copy()
+                for i in range(results['n_factors']):
+                    factor_scores_df[f'Factor_{i+1}'] = results['factor_scores'][:, i]
+                factor_scores_df.to_excel(writer, sheet_name='Factor_Scores')
+                
+            else:  # Clustering methods
+                summary_data = {
+                    'Metric': ['Method', 'DataFrame', 'Variables', 'Number of Clusters'],
+                    'Value': [results['method'], results['df_name'], 
+                            ', '.join(results['variables']), results['n_clusters']]
+                }
+                
+                if 'silhouette_avg' in results:
+                    summary_data['Metric'].append('Silhouette Score')
+                    summary_data['Value'].append(f"{results['silhouette_avg']:.3f}")
+                
+                if 'n_noise' in results:
+                    summary_data['Metric'].append('Noise Points')
+                    summary_data['Value'].append(results['n_noise'])
+                
+                summary_df = pd.DataFrame(summary_data)
+                summary_df.to_excel(writer, sheet_name='Summary', index=False)
+                
+                # 클러스터 할당
+                cluster_df = results['X'].copy()
+                cluster_df['Cluster'] = results['labels']
+                cluster_df.to_excel(writer, sheet_name='Cluster_Assignments')
+                
+                # 클러스터별 통계
+                cluster_stats = cluster_df.groupby('Cluster').agg(['mean', 'std', 'count'])
+                cluster_stats.to_excel(writer, sheet_name='Cluster_Statistics')
         
         _util_funcs['_show_simple_modal_message']("Success", 
             f"Results exported to:\n{filepath}")
@@ -803,12 +1156,10 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
         
         # 전체 높이 계산
         total_height = 1000 
-        # if dpg.is_dearpygui_running() else 600
         upper_height = int(total_height * 0.65)
         lower_height = int(total_height * 0.35)
-        # print(total_height, upper_height, lower_height)
         
-        # 상부 시각화 영역 (70%)
+        # 상부 시각화 영역 (65%)
         with dpg.child_window(height=upper_height, border=True, tag=TAG_S10_UPPER_VIZ_WINDOW):
             dpg.add_text("Analysis Results", color=(255, 255, 0))
             dpg.add_separator()
@@ -822,7 +1173,7 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
                     dpg.add_text("4. Configure options and click 'Run Analysis'")
                     dpg.add_text("5. Results will appear in new tabs")
         
-        # 하부 컨트롤 패널 (30%)
+        # 하부 컨트롤 패널 (35%)
         with dpg.child_window(height=lower_height, border=True, tag=TAG_S10_LOWER_CONTROL_PANEL):
             with dpg.group(horizontal=True):
                 # 좌측 선택 영역 (20%)
@@ -837,23 +1188,44 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
                     
                     # 분석 방법론 트리
                     for category, methods in ANALYSIS_METHODS.items():
-                        with dpg.tree_node(label=category):
-                            for method in methods:
-                                if category == "군집분석 (Clustering)":
-                                    dpg.add_selectable(label=method, 
-                                                    callback=lambda s, a, u: [
-                                                        dpg.set_value(TAG_S10_METHOD_SELECTOR, u),
-                                                        _on_method_selected(s, u, None)
-                                                    ],
-                                                    user_data=method)
-                                else:
-                                    dpg.add_text(f"{method} (Not implemented)", 
+                        with dpg.tree_node(label=category, default_open=True): # default_open=True 추가하여 기본적으로 펼쳐지도록 함
+                            if category == "군집분석 (Clustering)":
+                                dpg.add_radio_button(
+                                    items=methods,
+                                    default_value="K-Means",
+                                    # [수정] _on_method_selected 콜백을 사용하도록 변경
+                                    callback=lambda s, a, u: [
+                                        dpg.set_value(TAG_S10_METHOD_SELECTOR, a),
+                                        _on_method_selected(s, a, u)
+                                    ]
+                                )
+                            elif category == "차원축소 (Dimension Reduction)":
+                                implemented_methods = ["Factor Analysis"]
+                                
+                                for method in methods:
+                                    if method in implemented_methods:
+                                        # [수정] 'if dpg.add_selectable' 대신 callback을 사용
+                                        dpg.add_selectable(
+                                            label=method,
+                                            user_data=method,
+                                            callback=lambda s, a, u: [
+                                                dpg.set_value(TAG_S10_METHOD_SELECTOR, u),
+                                                _on_method_selected(s, u, None)
+                                            ]
+                                        )
+                                    else:
+                                        dpg.add_text(f"{method} (Not implemented)", 
                                                 color=(150, 150, 150))
+                            else:
+                                for method in methods:
+                                    dpg.add_text(f"{method} (Not implemented)", 
+                                            color=(150, 150, 150))
                     
                     # Hidden combo to store selected method
                     dpg.add_combo(tag=TAG_S10_METHOD_SELECTOR, show=False, 
-                                default_value="K-Means")
-                
+                                default_value="K-Means", callback=_on_method_selected) # callback 추가
+
+                # --- 이하 코드는 동일 ---
                 # 우측 동적 영역 (80%)
                 with dpg.child_window(border=True):
                     with dpg.group(horizontal=True):
@@ -866,9 +1238,9 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
                                             width=-1)
                             
                             dpg.add_text("Available Variables:")
-                            with dpg.child_window(height=150, border=True, 
-                                                tag=TAG_S10_VAR_AVAILABLE_LIST):
-                                pass
+                            with dpg.table(header_row=False, tag=TAG_S10_VAR_AVAILABLE_LIST, 
+                                     height=150,borders_outerH=True, borders_outerV=True,scrollY=True, policy=dpg.mvTable_SizingStretchProp):
+                                dpg.add_table_column()
                         
                         # 이동 버튼
                         with dpg.group():
@@ -885,20 +1257,21 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
                         # 선택된 변수
                         with dpg.group(width=200):
                             dpg.add_text("Selected Variables:")
-                            with dpg.child_window(height=190, border=True, 
-                                                tag=TAG_S10_VAR_SELECTED_LIST):
-                                pass
+                            with dpg.table(header_row=False, tag=TAG_S10_VAR_SELECTED_LIST,
+                                         height=190,borders_outerH=True, borders_outerV=True, scrollY=True, policy=dpg.mvTable_SizingStretchProp):
+                                dpg.add_table_column()
                         
                         dpg.add_spacer(width=20)
                         
                         # 동적 옵션 영역
                         with dpg.group(tag=TAG_S10_DYNAMIC_OPTIONS_AREA):
-                            dpg.add_text("Select an analysis method to see options")
+                            # 이 부분은 _on_method_selected에 의해 동적으로 채워짐
+                            pass
                     
                     # 실행 버튼
                     dpg.add_separator()
                     dpg.add_button(label="Run Analysis", tag=TAG_S10_RUN_BUTTON,
-                                callback=_run_clustering_analysis,
+                                callback=_run_analysis,
                                 width=-1, height=30)
 
     main_callbacks['register_module_updater'](step_name, update_ui)

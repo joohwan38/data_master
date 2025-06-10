@@ -10,6 +10,8 @@ data/
 .DS_Store
 test*.*
 temp*.*
+*.xlsx
+*.csv
 
 # Virtual environments
 .venv
