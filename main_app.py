@@ -15,6 +15,7 @@ import step_06_standardization
 import step_07_feature_engineering
 import step_08_derivation
 import step_09_data_viewer
+import step_10_advanced_analysis # << 추가
 import traceback
 import hashlib
 import json
@@ -67,8 +68,9 @@ ANALYSIS_STEPS = [
     "5. Outlier Treatment",
     "6. Standardization", 
     "7. Feature Engineering",
-    "8. Derive DataFrames", # << ADDED
-    "9. DataFrame Viewer", # << NEW >>
+    "8. Derive DataFrames",
+    "9. DataFrame Viewer",
+    "10. Advanced Analysis", # << 추가
     ]
 
 _MODAL_ID_SIMPLE_MESSAGE = "main_simple_modal_message_id"
@@ -345,7 +347,7 @@ def trigger_specific_module_update(module_name_key: str):
             # Step 1은 original_df와 df_after_step1을 모두 필요로 하는 특별한 케이스
             updater(app_state.df_after_step1, app_state.original_df, util_functions_for_modules, app_state.loaded_file_path)
 
-        elif module_name_key in [ANALYSIS_STEPS[7], ANALYSIS_STEPS[8]]: # Step 8, 9
+        elif module_name_key in [ANALYSIS_STEPS[7], ANALYSIS_STEPS[8], ANALYSIS_STEPS[9]]: # << 수정: Step 10 추가
             # 이 단계들의 update_ui는 인자를 받지 않음
             updater()
 
@@ -630,6 +632,8 @@ def reset_application_state(clear_df_completely=True):
             'step_06_standardization_settings': {},
             'step_07_feature_engineering_settings': {},
             'step_09_data_viewer_settings': {},
+            # Step 10 설정도 초기화 (필요 시)
+            'step_10_advanced_analysis_settings': {},
         }
         # 중앙 상태 저장소를 정리된 설정으로 즉시 덮어씁니다.
         app_state.active_settings = clean_settings
@@ -658,6 +662,10 @@ def reset_application_state(clear_df_completely=True):
     
     # 4. 모든 모듈의 UI를 업데이트하여 리셋된 상태를 반영
     trigger_all_module_updates()
+
+    # << 추가: Step 10의 상태도 초기화 >>
+    if hasattr(step_10_advanced_analysis, 'reset_state'):
+        step_10_advanced_analysis.reset_state()
 
     # 5. 첫 번째 스텝 뷰로 강제 전환
     if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0:
@@ -1020,6 +1028,9 @@ util_functions_for_modules = {
     'calculate_feature_target_relevance': utils.calculate_feature_target_relevance,
     'plot_to_dpg_texture': utils.plot_to_dpg_texture, # 시각화 유틸리티 함수 추가
     'create_table_with_large_data_preview': utils.create_table_with_large_data_preview,
+    # << 추가: Step 10을 위한 유틸리티 함수 >>
+    'show_dpg_progress_modal': utils.show_dpg_progress_modal,
+    'hide_dpg_progress_modal': utils.hide_dpg_progress_modal,
 }
 
 main_app_callbacks = {
@@ -1145,6 +1156,10 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
                 elif step_name_create == ANALYSIS_STEPS[8]: # << NEW >>: Step 9 UI 생성
                     if hasattr(step_09_data_viewer, 'create_ui'):
                         step_09_data_viewer.create_ui(step_name_create, "content_area", main_app_callbacks)
+                
+                elif step_name_create == ANALYSIS_STEPS[9]: # << 추가: Step 10 UI 생성
+                    if hasattr(step_10_advanced_analysis, 'create_ui'):
+                        step_10_advanced_analysis.create_ui(step_name_create, "content_area", main_app_callbacks)
 
             if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0 and not app_state.active_step_name:
                 first_step = ANALYSIS_STEPS[0]
@@ -1158,7 +1173,7 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
             dpg.add_separator()
             dpg.add_text("AI 분석 결과가 여기에 표시됩니다.\n", tag="ai_analysis_log_panel_text", wrap=ai_log_panel_width)
             
-dpg.create_viewport(title='Data Analysis Platform', width=1800, height=1000)
+dpg.create_viewport(title='Data Analysis Platform', width=1800, height=1100)
 dpg.set_exit_callback(save_state_on_exit)
 dpg.setup_dearpygui()
 

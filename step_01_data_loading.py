@@ -427,3 +427,6 @@ def reset_step1_state():
 # Added for clarity if main_app.py needs to reset more from outside (e.g. new file)
 def reset_step1_state_for_new_file():
     reset_step1_state() # For now, same as general reset
+
+
+    
