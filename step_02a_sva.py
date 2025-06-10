@@ -11,8 +11,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import io
 import base64
-import tkinter as tk
-from tkinter import filedialog
+import datetime
+from openpyxl.drawing.image import Image
+
 
 
 warnings.filterwarnings('ignore', category=RuntimeWarning)
@@ -436,51 +437,70 @@ def _sva_group_by_target_cb(sender, app_data, user_data):
         dpg.set_value(TAG_SVA_GROUPED_NUMERIC_PLOT_TYPE_RADIO, "Box Plot")
         dpg.set_value(TAG_SVA_GROUPED_CAT_PLOT_TYPE_RADIO, "100% Stacked (Proportions)")
 
+# DPG 파일 다이얼로그에서 'OK'를 눌렀을 때 실행될 콜백 함수
+def _sva_export_callback(sender, app_data):
+    """Handles the file path selection from the DPG file dialog."""
+    file_path = app_data.get('file_path_name')
+    if file_path:
+        if file_path.endswith('.xlsx'):
+            _export_sva_to_excel(file_path)
+        else:
+            # 기본적으로 .html로 저장되도록 처리
+            _export_sva_to_html(file_path)
+
+# 'Export Results...' 버튼을 눌렀을 때 파일 다이얼로그를 보여주는 함수
 def _show_sva_export_dialog():
+    """Shows the DPG file dialog for saving SVA results."""
     if not _sva_results_cache:
         utils.show_dpg_alert_modal("No Results", "No SVA results available to export. Please run analysis first.",
                                    modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT)
         return
+    
+    # 1. 오늘 날짜를 기반으로 기본 파일명 생성
+    current_date_str = datetime.datetime.now().strftime("%Y%m%d")
+    default_filename = f"{current_date_str}_EDA_Report"
 
-    try:
-        root = tk.Tk()
-        root.withdraw() 
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".html",
-            filetypes=[("HTML Report", "*.html"), ("Excel Data", "*.xlsx")],
-            title="Save SVA Results"
-        )
-        root.destroy()
+    # 2. 파일 다이얼로그에 콜백과 기본 파일명 설정
+    dpg.configure_item(
+        "sva_export_file_dialog_id", 
+        callback=_sva_export_callback, 
+        default_filename=default_filename
+    )
 
-        if file_path:
-            if file_path.endswith('.xlsx'):
-                _export_sva_to_excel(file_path)
-            else:
-                _export_sva_to_html(file_path)
-    except Exception as e:
-        print(f"File dialog error: {e}")
-        traceback.print_exc()
-        utils.show_dpg_alert_modal("Export Error", f"An error occurred while trying to save the file:\n{e}",
-                                   modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT)
+    dpg.show_item("sva_export_file_dialog_id")
 
 def _export_sva_to_excel(file_path: str):
     try:
         with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
             for var_name, data in _sva_results_cache.items():
+                # 시트 이름으로 사용하기 위해 변수 이름 정리
                 sanitized_name = "".join(c for c in var_name if c.isalnum() or c in (' ', '_')).rstrip()[:30]
-                
-                if data['basic_stats_df'] is not None and not data['basic_stats_df'].empty:
-                    data['basic_stats_df'].to_excel(writer, sheet_name=sanitized_name, startrow=0, index=False)
-                
-                start_row_adv = len(data['basic_stats_df']) + 3 if data['basic_stats_df'] is not None else 2
-                
-                if data['normality_df'] is not None and not data['normality_df'].empty:
-                    data['normality_df'].to_excel(writer, sheet_name=sanitized_name, startrow=start_row_adv, index=False)
 
-                start_row_rel = start_row_adv + (len(data['normality_df']) + 3 if data['normality_df'] is not None else 2)
-                
+                # 1. 기본 통계 데이터프레임 저장
+                start_row_next = 0
+                if data['basic_stats_df'] is not None and not data['basic_stats_df'].empty:
+                    data['basic_stats_df'].to_excel(writer, sheet_name=sanitized_name, startrow=start_row_next, index=False)
+                    start_row_next += len(data['basic_stats_df']) + 2 # 다음 표를 위해 시작 행 위치 업데이트
+
+                # 2. 정규성 검정 데이터프레임 저장
+                if data['normality_df'] is not None and not data['normality_df'].empty:
+                    data['normality_df'].to_excel(writer, sheet_name=sanitized_name, startrow=start_row_next, index=False)
+                    start_row_next += len(data['normality_df']) + 2
+
+                # 3. 연관 변수 데이터프레임 저장
                 if data['related_vars_df'] is not None and not data['related_vars_df'].empty:
-                    data['related_vars_df'].to_excel(writer, sheet_name=sanitized_name, startrow=start_row_rel, index=False)
+                    data['related_vars_df'].to_excel(writer, sheet_name=sanitized_name, startrow=start_row_next, index=False)
+
+                # --- 해결 방안 코드 시작 ---
+                # 4. 플롯 이미지가 있으면 시트에 추가
+                if data['plot_bytes']:
+                    # 현재 작업중인 워크시트 객체 가져오기
+                    worksheet = writer.sheets[sanitized_name]
+                    # 바이트 데이터를 메모리 내 이미지로 변환
+                    img = Image(io.BytesIO(data['plot_bytes']))
+                    # 이미지를 D2 셀 위치에 추가
+                    worksheet.add_image(img, 'D2')
+                # --- 해결 방안 코드 종료 ---
 
         utils.show_dpg_alert_modal("Export Successful", f"SVA results exported to:\n{file_path}",
                                    modal_tag=TAG_SVA_MODULE_ALERT_MODAL, text_tag=TAG_SVA_MODULE_ALERT_TEXT)

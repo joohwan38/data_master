@@ -1044,6 +1044,10 @@ with dpg.file_dialog(directory_selector=False, show=False, callback=file_load_ca
     dpg.add_file_extension(".parquet")
     dpg.add_file_extension(".csv")
     dpg.add_file_extension(".*")
+with dpg.file_dialog(directory_selector=False, show=False, id="sva_export_file_dialog_id", width=700, height=400, modal=True):
+    dpg.add_file_extension(".html", color=(0, 255, 0, 255))
+    dpg.add_file_extension(".xlsx", color=(0, 255, 0, 255))
+    dpg.add_file_extension(".*")
 
 setup_korean_font()
 
