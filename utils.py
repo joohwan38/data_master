@@ -282,9 +282,21 @@ def calculate_feature_target_relevance(
     scores.sort(key=lambda x: x[1], reverse=True)
     return scores
 
-def _get_numeric_cols(df: pd.DataFrame) -> List[str]: 
-    if df is None: return [] 
-    return df.select_dtypes(include=np.number).columns.tolist() 
+def _get_numeric_cols(df: pd.DataFrame, main_callbacks: Optional[Dict] = None) -> List[str]: # <<< [수정] main_callbacks 인자 추가
+    if df is None: return []
+    numeric_cols = []
+    
+    s1_analysis_types = {}
+    if main_callbacks and 'get_column_analysis_types' in main_callbacks:
+        s1_analysis_types = main_callbacks['get_column_analysis_types']()
+
+    for col in df.select_dtypes(include=np.number).columns:
+        # [핵심] Step 1에서 '분석 제외'로 설정된 타입은 건너뜁니다.
+        if col in s1_analysis_types and s1_analysis_types[col] == "분석에서 제외 (Exclude)":
+            continue
+        numeric_cols.append(col)
+        
+    return numeric_cols
 
 def _get_categorical_cols(df: pd.DataFrame, max_unique_for_cat: int = 35, main_callbacks: Optional[Dict] = None) -> List[str]: 
     if df is None: return [] 
@@ -292,26 +304,18 @@ def _get_categorical_cols(df: pd.DataFrame, max_unique_for_cat: int = 35, main_c
     s1_analysis_types = {} 
     if main_callbacks and 'get_column_analysis_types' in main_callbacks: 
         s1_analysis_types = main_callbacks['get_column_analysis_types']() 
-    for col in df.columns: 
+
+    for col in df.columns:
+        # [핵심] Step 1에서 '분석 제외'로 설정된 타입은 건너뜁니다.
+        if col in s1_analysis_types and s1_analysis_types[col] == "분석에서 제외 (Exclude)":
+            continue
+
         if col in s1_analysis_types: 
-            s1_type = s1_analysis_types[col] 
+            s1_type = s1_analysis_types[col]
+            # [수정] "Text (" 조건을 좀 더 명확하게 하여 ID/Code 타입이 자동 포함되지 않도록 검토할 수 있습니다.
+            # 우선은 기존 로직을 유지하되, 제외 로직이 먼저 실행됩니다.
             if any(cat_keyword in s1_type for cat_keyword in ["Categorical", "Text (", "Potentially Sensitive"]): 
                 categorical_cols.append(col); continue 
-            elif "Numeric (Binary)" in s1_type: 
-                categorical_cols.append(col); continue 
-            elif "Numeric" in s1_type: continue 
-        dtype = df[col].dtype; nunique = df[col].nunique(dropna=False) 
-        if pd.api.types.is_string_dtype(dtype) or pd.api.types.is_object_dtype(dtype): 
-            if nunique <= max_unique_for_cat: categorical_cols.append(col) 
-        elif pd.api.types.is_categorical_dtype(dtype): categorical_cols.append(col) 
-        elif pd.api.types.is_bool_dtype(dtype): categorical_cols.append(col) 
-        elif pd.api.types.is_numeric_dtype(dtype): 
-            if nunique <= 5: 
-                if not (col in s1_analysis_types and "Numeric" in s1_analysis_types[col]): 
-                    categorical_cols.append(col) 
-        if pd.api.types.is_datetime64_any_dtype(dtype) or pd.api.types.is_timedelta64_dtype(dtype): 
-            if nunique <= max_unique_for_cat: categorical_cols.append(col) 
-    return list(dict.fromkeys(categorical_cols)) 
 
 def _guess_target_type(df: pd.DataFrame, column_name: str, step1_type_selections: dict = None) -> str: 
     if not column_name or df is None or column_name not in df.columns: return "Continuous" 

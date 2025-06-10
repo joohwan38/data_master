@@ -526,8 +526,13 @@ def target_variable_selected_callback(sender, app_data, user_data):
 
     if app_state.active_step_name:
         trigger_specific_module_update(app_state.active_step_name)
-    # else: # Or update all if no specific step is active
-    #    trigger_all_module_updates()
+    
+    sva_ui_updater = main_app_callbacks.get('register_sva_ui_updater')
+    if sva_ui_updater and callable(sva_ui_updater):
+        try:
+            sva_ui_updater()
+        except Exception as e:
+            print(f"Error explicitly calling SVA UI updater: {e}")
 
 
 def switch_step_view(sender, app_data, user_data_step_name: str):
@@ -589,74 +594,74 @@ def file_load_callback(sender, app_data):
 
 
 def reset_application_state(clear_df_completely=True):
-    """애플리케이션의 주요 상태 변수들을 초기화합니다."""
+    """
+    애플리케이션의 주요 상태 변수들을 초기화합니다. (최종 수정 버전)
+    중앙 상태 저장소(app_state.active_settings)를 직접 제어하여 확실한 초기화를 보장합니다.
+    """
     if clear_df_completely:
+        # 파일이 완전히 닫힐 때의 전체 리셋 로직 (기존과 동일)
         app_state.original_df = None
         app_state.loaded_file_path = None
         app_state.original_base_name = None
         app_state.active_settings = {}
-        if dpg.does_item_exist(MAIN_FILE_PATH_DISPLAY_TAG): dpg.set_value(MAIN_FILE_PATH_DISPLAY_TAG, "No data loaded.")
-    
+        if dpg.does_item_exist(MAIN_FILE_PATH_DISPLAY_TAG):
+            dpg.set_value(MAIN_FILE_PATH_DISPLAY_TAG, "No data loaded.")
+    else:
+        # "Reset All" 버튼을 눌렀을 때의 '부분 리셋' 로직
+        
+        # 1. [핵심] Step 1 설정을 제외한 모든 설정을 메모리에서 제거합니다.
+        step1_settings = app_state.active_settings.get('step_01_settings', {})
+        
+        clean_settings = {
+            # 유지해야 할 최소한의 정보
+            'selected_target_variable': app_state.selected_target_variable,
+            'selected_target_variable_type': app_state.selected_target_variable_type,
+            'active_step_name': ANALYSIS_STEPS[0], # 첫 단계로 활성 스텝 지정
+            
+            # Step 1 설정은 보존
+            'step_01_settings': step1_settings,
+            
+            # 나머지 모든 후속 단계 설정은 빈 딕셔너리로 초기화
+            'step_02a_sva_settings': {},
+            'step_02b_mva_settings': {},
+            'step_03_preprocessing_settings': {},
+            'step_04_missing_values_settings': {},
+            'step_05_outlier_treatment_settings': {},
+            'step_06_standardization_settings': {},
+            'step_07_feature_engineering_settings': {},
+            'step_09_data_viewer_settings': {},
+        }
+        # 중앙 상태 저장소를 정리된 설정으로 즉시 덮어씁니다.
+        app_state.active_settings = clean_settings
+
+    # 2. 모든 파생/후속 단계 DataFrame 초기화
     app_state.current_df = None
-    app_state.df_after_step1 = None
     app_state.df_after_step3 = None
     app_state.df_after_step4 = None
     app_state.df_after_step5 = None
     app_state.df_after_step6 = None
-    app_state.df_after_step7 = None # << ADDED: Reset Step 7 df
-    app_state.derived_dfs.clear() # << ADDED
+    app_state.df_after_step7 = None
+    app_state.derived_dfs.clear()
 
-
-    app_state.selected_target_variable = None
-    app_state.selected_target_variable_type = "Continuous"
-    if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG): dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
-    if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
-    if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG):
-        dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
-        dpg.set_value(TARGET_VARIABLE_TYPE_RADIO_TAG, "Continuous")
-
-    if hasattr(step_01_data_loading, 'reset_step1_state'): step_01_data_loading.reset_step1_state()
-    if hasattr(step_02a_sva, 'reset_sva_ui_defaults'): step_02a_sva.reset_sva_ui_defaults()
-    if hasattr(step_02b_mva, 'reset_mva_ui_defaults'): step_02b_mva.reset_mva_ui_defaults()
-    if hasattr(step_03_preprocessing, 'reset_preprocessing_state'): step_03_preprocessing.reset_preprocessing_state()
-    if hasattr(step_04_missing_values, 'reset_missing_values_state'): step_04_missing_values.reset_missing_values_state()
-    if hasattr(step_05_outlier_treatment, 'reset_outlier_treatment_state'): step_05_outlier_treatment.reset_outlier_treatment_state()
-    if hasattr(step_06_standardization, 'reset_step6_state'): step_06_standardization.reset_step6_state()
-    if hasattr(step_07_feature_engineering, 'reset_state'): step_07_feature_engineering.reset_state()
-    if hasattr(step_08_derivation, 'reset_state'): step_08_derivation.reset_state()
-    if hasattr(step_09_data_viewer, 'reset_state'): step_09_data_viewer.reset_state() # << NEW >>
-
-    if clear_df_completely:
-        app_state.active_step_name = None
-        if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0:
-            first_step_name = ANALYSIS_STEPS[0]
-            if first_step_name in app_state.step_group_tags and dpg.does_item_exist(app_state.step_group_tags[first_step_name]):
-                print(f"Full reset: Switching view to first step: {first_step_name}")
-                switch_step_view(None, None, first_step_name)
-            else: 
-                app_state.active_step_name = first_step_name
-                print(f"Warning: First step group for '{first_step_name}' not fully ready during full reset.")
-        trigger_all_module_updates()
-    elif app_state.original_df is not None:
-        if hasattr(step_01_data_loading, 'process_newly_loaded_data'):
-            step_01_data_loading.process_newly_loaded_data(app_state.original_df, main_app_callbacks)
-        else: 
-            main_app_callbacks['step1_processing_complete'](app_state.original_df.copy())
-        if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0:
-            switch_step_view(None, None, ANALYSIS_STEPS[0])
-        trigger_all_module_updates()
+    # 3. Step 1 처리 완료 콜백을 다시 호출하여 기본 DataFrame을 생성
+    if app_state.original_df is not None:
+        if 'step1_processing_complete' in main_app_callbacks:
+            # 보존된 Step 1 설정을 사용하여 df_after_step1을 다시 생성
+            step_01_data_loading.apply_step1_settings_and_process(
+                app_state.original_df, 
+                app_state.active_settings.get('step_01_settings', {}), 
+                main_app_callbacks
+            )
+    else:
+        if 'step1_processing_complete' in main_app_callbacks:
+            main_app_callbacks['step1_processing_complete'](None)
     
+    # 4. 모든 모듈의 UI를 업데이트하여 리셋된 상태를 반영
+    trigger_all_module_updates()
+
+    # 5. 첫 번째 스텝 뷰로 강제 전환
     if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0:
-        current_active = app_state.active_step_name
-        first_step = ANALYSIS_STEPS[0]
-        if not current_active or \
-           current_active not in app_state.step_group_tags or \
-           not dpg.does_item_exist(app_state.step_group_tags.get(current_active, "")):
-            if first_step in app_state.step_group_tags and dpg.does_item_exist(app_state.step_group_tags[first_step]):
-                if app_state.active_step_name != first_step:
-                    switch_step_view(None, None, first_step)
-            else: 
-                 app_state.active_step_name = first_step
+        switch_step_view(None, None, ANALYSIS_STEPS[0])
 
 
 def export_to_parquet_callback():
@@ -718,6 +723,39 @@ def export_to_parquet_callback():
         _show_simple_modal_message("Export Error", f"Failed to export data to Parquet.\nError: {e}")
         print(f"Error exporting data: {e}"); traceback.print_exc()
 
+def save_current_state():
+    """
+    현재 애플리케이션의 라이브 상태를 즉시 파일에 저장합니다.
+    주로 리셋 직후 호출되어 초기화된 상태를 덮어쓰는 데 사용됩니다.
+    """
+    if app_state.loaded_file_path and os.path.exists(app_state.loaded_file_path):
+        # 각 모듈에서 현재 설정값을 수집
+        current_settings = gather_current_settings()
+        settings_filepath = get_settings_filepath(app_state.loaded_file_path)
+        if settings_filepath:
+            # 수집된 설정값을 파일에 저장
+            save_json_settings(settings_filepath, current_settings)
+            print("Application state has been successfully saved after reset.")
+    else:
+        # 저장할 수 없는 경우 (데이터 파일이 로드되지 않음)
+        print("Could not save state: No data file is currently loaded.")
+
+def reset_and_save_callback(sender, app_data, user_data):
+    """
+    'Reset' 버튼을 위한 새로운 콜백 함수입니다.
+    상태를 초기화하고, 그 결과를 즉시 파일에 저장합니다.
+    """
+    # 1. user_data로 전달된 main_app_callbacks를 이용해 기존 리셋 로직 호출
+    main_app_callbacks = user_data
+    if 'reset_current_df_to_original' in main_app_callbacks:
+        main_app_callbacks['reset_current_df_to_original']()
+
+    # 2. 초기화된 상태를 즉시 저장
+    save_current_state()
+
+    # 3. 사용자에게 리셋 및 저장이 완료되었음을 알림
+    _show_simple_modal_message("State Reset", "The application state has been successfully reset and saved.")
+
 
 def get_settings_filepath(original_data_filepath: str) -> Optional[str]:
     """원본 데이터 파일 경로를 기반으로 설정 파일 경로를 생성합니다."""
@@ -748,52 +786,38 @@ def save_json_settings(settings_filepath: str, settings_dict: dict):
     except Exception as e: print(f"Error saving settings to '{settings_filepath}': {e}"); traceback.print_exc()
 
 def gather_current_settings() -> dict:
-    """현재 애플리케이션의 모든 설정을 수집합니다."""
-    settings = {
-        'selected_target_variable': app_state.selected_target_variable,
-        'selected_target_variable_type': app_state.selected_target_variable_type,
-        'active_step_name': app_state.active_step_name,
-        'step_01_settings': {},
-        'step_02a_sva_settings': {},
-        'step_02b_mva_settings': {},
-        'step_03_preprocessing_settings': {},
-        'step_04_missing_values_settings': {},
-        'step_05_outlier_treatment_settings': {},
-        'step_06_standardization_settings': {},
-        'step_07_feature_engineering_settings': {},
-        'step_09_data_viewer_settings': {},
-    }
+    """
+    현재 애플리케이션의 모든 설정을 수집합니다. (최종 수정 버전)
+    [수정] 이제 중앙 관리되는 app_state.active_settings를 주된 정보 소스로 사용하며,
+    각 모듈의 get... 함수를 다시 호출하지 않습니다.
+    이를 통해 리셋된 상태가 정확히 저장되도록 보장합니다.
+    """
+    # 1. 중앙 관리 상태를 기본으로 사용
+    settings = app_state.active_settings.copy()
+
+    # 2. 사용자가 UI와 직접 상호작용하여 즉시 바뀌는 최상위 상태 값들 갱신
+    settings['selected_target_variable'] = app_state.selected_target_variable
+    settings['selected_target_variable_type'] = app_state.selected_target_variable_type
+    settings['active_step_name'] = app_state.active_step_name
+    
+    # 3. 각 모듈의 UI에서 직접 현재 설정값을 가져와 덮어쓰기
     if hasattr(step_01_data_loading, 'get_step1_settings_for_saving'):
         settings['step_01_settings'] = step_01_data_loading.get_step1_settings_for_saving()
-    
-    if hasattr(step_02a_sva, 'get_sva_settings_for_saving'):
-        settings['step_02a_sva_settings'] = step_02a_sva.get_sva_settings_for_saving()
-    
-    if hasattr(step_02b_mva, 'get_mva_settings_for_saving'):
-        settings['step_02b_mva_settings'] = step_02b_mva.get_mva_settings_for_saving()
-    
-    if STEP_03_SAVE_LOAD_ENABLED:
-        if hasattr(step_03_preprocessing, 'get_preprocessing_settings_for_saving'):
-            settings['step_03_preprocessing_settings'] = step_03_preprocessing.get_preprocessing_settings_for_saving()
-    else:
-        settings['step_03_preprocessing_settings'] = {}
-    
-    if hasattr(step_04_missing_values, 'get_missing_values_settings_for_saving'):
-        settings['step_04_missing_values_settings'] = step_04_missing_values.get_missing_values_settings_for_saving()
-    
-    if hasattr(step_05_outlier_treatment, 'get_outlier_treatment_settings_for_saving'):
-        settings['step_05_outlier_treatment_settings'] = step_05_outlier_treatment.get_outlier_treatment_settings_for_saving()
-    
-    if hasattr(step_06_standardization, 'get_step6_settings_for_saving'): # Step 6 설정 저장
-        settings['step_06_standardization_settings'] = step_06_standardization.get_step6_settings_for_saving()
-    
-    if hasattr(step_07_feature_engineering, 'get_settings_for_saving'): # << ADDED
-        settings['step_07_feature_engineering_settings'] = step_07_feature_engineering.get_settings_for_saving()
-    
-    if hasattr(step_09_data_viewer, 'get_settings_for_saving'):
-        settings['step_09_data_viewer_settings'] = step_09_data_viewer.get_settings_for_saving()
 
-    
+    # --- ▼ [수정] 아래 로직 추가/변경 ▼ ---
+    if hasattr(step_02a_sva, 'get_sva_settings_for_saving'):
+        sva_settings = step_02a_sva.get_sva_settings_for_saving()
+        # settings 딕셔너리에 'step_02a_sva_settings' 키가 없는 경우를 대비하여 update 사용
+        settings.setdefault('step_02a_sva_settings', {}).update(sva_settings)
+
+    if hasattr(step_02b_mva, 'get_mva_settings_for_saving'):
+        mva_settings = step_02b_mva.get_mva_settings_for_saving()
+        settings.setdefault('step_02b_mva_settings', {}).update(mva_settings)
+
+    #
+    # [핵심] 나머지 단계(Step 2, 4, 5, 6 등)의 설정은 settings 변수 안에 있는 값을 그대로 신뢰하고 반환합니다.
+    # 이 값들은 리셋 시점에 이미 빈 딕셔너리로 초기화되었으므로, 더 이상 각 모듈의 get...saving 함수를 호출하지 않습니다.
+    #
     return settings
 
 def apply_settings(settings_dict: dict):
@@ -1055,7 +1079,7 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
     with dpg.group(horizontal=True):
         dpg.add_button(label="Open File", callback=lambda: dpg.show_item("file_dialog_id"), width=130, height=30)
         dpg.add_button(label="Reset All (to Step 1 Types)", user_data=main_app_callbacks, width=210, height=30,
-                       callback=lambda s, a, u: u['reset_current_df_to_original']())
+                       callback=reset_and_save_callback) # <<< [수정] 콜백 함수를 새로 만든 함수로 변경합니다.
         dpg.add_button(label="Export to Parquet", callback=export_to_parquet_callback, width=160, height=30)
         dpg.add_text("No data loaded.", tag=MAIN_FILE_PATH_DISPLAY_TAG, wrap=-1)
     dpg.add_separator()

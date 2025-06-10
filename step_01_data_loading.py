@@ -202,7 +202,7 @@ def _populate_type_editor_table(df_original: Optional[pd.DataFrame], df_processe
     available_types_for_combo = [
         "Original", "Numeric (int)", "Numeric (float)", "Categorical", 
         "Datetime", "Timedelta", "Text (General)", "Text (ID/Code)", 
-        "Text (Long/Free)", "Potentially Sensitive (Review Needed)"
+        "Text (Long/Free)", "분석에서 제외 (Exclude)", "Potentially Sensitive (Review Needed)"
     ]
     
     format_text_func = _util_funcs.get('format_text_for_display', lambda t, m: str(t)[:m]) if _util_funcs else lambda t, m: str(t)[:m]
