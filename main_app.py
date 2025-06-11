@@ -1186,5 +1186,14 @@ initial_load_on_startup()
 
 dpg.show_viewport()
 dpg.set_primary_window("main_window", True)
-dpg.start_dearpygui()
+
+# 명시적인 메인 루프 시작
+while dpg.is_dearpygui_running():
+    # step_11의 비동기 결과 확인 함수를 매 프레임마다 호출
+    if hasattr(step_11_ml_modeling, '_check_for_updates') and callable(step_11_ml_modeling._check_for_updates):
+        step_11_ml_modeling._check_for_updates()
+    
+    # DPG 프레임 렌더링
+    dpg.render_dearpygui_frame()
+
 dpg.destroy_context()
