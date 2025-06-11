@@ -10,6 +10,19 @@ import subprocess
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma3:12b" # 텍스트 분석에 사용할 모델
 
+def clean_ollama_chunk(text: str) -> str:
+    """
+    Ollama에서 온 응답 조각에서 줄바꿈 관련 이스케이프 문자열을 실제 줄바꿈으로 변환합니다.
+    """
+    # Windows에서 ₩n (시각적 원화 + n) -> 줄바꿈
+    text = text.replace("₩n", "\n")
+    # 이중 이스케이프 처리: \\n -> \n
+    text = text.replace("\\n", "\n")
+    # 혹시 남은 이상한 백슬래시 n도 강제 처리
+    text = re.sub(r'\\n', '\n', text)
+
+    return text
+
 def analyze_text_with_ollama(prompt_text: str, chart_name: str = "Text Analysis"):
     """Ollama에 텍스트 프롬프트를 보내고 응답을 스트리밍합니다."""
     print(f"[Ollama Analyzer] Received text prompt for '{chart_name}'. Starting analysis (streaming)...")
@@ -18,7 +31,7 @@ def analyze_text_with_ollama(prompt_text: str, chart_name: str = "Text Analysis"
         # 텍스트 분석을 위한 페이로드
         payload = {
             "model": OLLAMA_MODEL,
-            "prompt": prompt_text,
+            "prompt": prompt_text+"간결하게 핵심만 요약하시오.",
             "stream": True,
             "format": "json", # JSON 형식으로 응답 요청
              "options": {
@@ -40,6 +53,7 @@ def analyze_text_with_ollama(prompt_text: str, chart_name: str = "Text Analysis"
                 try:
                     json_chunk = json.loads(decoded_line)
                     chunk_text_from_llm = json_chunk.get("response", "")
+                    chunk_text_from_llm = clean_ollama_chunk(chunk_text_from_llm)
 
                     if chunk_text_from_llm:
                         yield chunk_text_from_llm
