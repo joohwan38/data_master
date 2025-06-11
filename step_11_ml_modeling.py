@@ -144,10 +144,8 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
                 # 우측: 옵션 설정
                 _create_right_panel()
 
-    # 중요: module updater 등록 - 이 부분이 누락되어 있었습니다!
-    main_callbacks['register_module_updater'](step_name, update_ui)
-    
-    # 초기 데이터 로드
+    main_callbacks['register_module_updater'](step_name, update_ui)   
+    # 2. UI가 처음 생성될 때 DataFrame 목록을 한번 로드합니다.
     update_ui()
 
 def _create_guide_tab():
@@ -213,18 +211,18 @@ def _create_center_panel():
         
         # Features 선택
         dpg.add_text("Features (Multi-select):")
-        with dpg.child_window(height=150, border=True):
-            dpg.add_checkbox(label="Select All", callback=_toggle_all_features)
-            dpg.add_separator()
-            with dpg.group(tag=TAG_S11_FEATURE_LIST):
-                pass
+        with dpg.child_window(height=150, border=True, tag=TAG_S11_FEATURE_LIST):
+            # 이 함수에서 동적으로 생성되므로 초기 내용은 비워둡니다.
+            pass
         
         dpg.add_separator()
         
         # Target 선택 (supervised learning용)
         dpg.add_text("Target Variable:")
+
         dpg.add_combo(label="", tag=TAG_S11_TARGET_COMBO,
-                     items=[""], default_value="", width=-1)
+                     items=[""], default_value="", width=-1,
+                     callback=_update_variable_lists) 
 
 def _create_right_panel():
     """우측 패널: 옵션 설정"""
@@ -232,6 +230,17 @@ def _create_right_panel():
         dpg.add_text("Training Options", color=(255, 255, 0))
         dpg.add_separator()
         
+        # --- ▼▼▼▼▼ 추가된 부분 ▼▼▼▼▼ ---
+        dpg.add_text("Categorical Feature Encoding:")
+        dpg.add_radio_button(
+            items=["Label Encoding", "One-Hot Encoding"],
+            default_value="Label Encoding",
+            tag="s11_encoding_method",
+            horizontal=True
+        )
+        dpg.add_separator()
+        # --- ▲▲▲▲▲ 추가된 부분 ▲▲▲▲▲ ---
+
         # Train/Test Split
         with dpg.group(horizontal=True):
             dpg.add_text("Test Size (%):")
@@ -291,50 +300,117 @@ def _on_model_type_changed(sender, app_data, user_data):
     
     _on_algorithm_changed(None, None, None)
 
+    _update_variable_lists()
+
+
 def _on_algorithm_changed(sender, app_data, user_data):
     """알고리즘 변경 시"""
     _create_hyperparameter_ui()
 
 def _toggle_all_features(sender, app_data, user_data):
-    """모든 features 선택/해제"""
+    """모든 features 선택/해제 (화면에 보이는 필터링된 변수만 대상)"""
     global _selected_features
     
-    if app_data:  # Select all
-        if _selected_df_name in _available_dfs:
-            df = _available_dfs[_selected_df_name]
-            _selected_features = list(df.columns)
-    else:  # Deselect all
-        _selected_features.clear()
+    if not dpg.does_item_exist(TAG_S11_FEATURE_LIST):
+        return
+
+    feature_checkboxes = dpg.get_item_children(TAG_S11_FEATURE_LIST, 1)
+    
+    # --- ▼▼▼▼▼ 문제 3 해결을 위한 수정 ▼▼▼▼▼ ---
+    if app_data:  # "Select All"이 체크된 경우
+        for checkbox in feature_checkboxes:
+            # "Select All" 자신은 제외하고, 변수 체크박스만 처리
+            if dpg.get_item_label(checkbox) != "Select All":
+                var_name = dpg.get_item_user_data(checkbox)
+                if var_name and var_name not in _selected_features:
+                    _selected_features.append(var_name)
+    else:  # "Select All"이 체크 해제된 경우
+        for checkbox in feature_checkboxes:
+             if dpg.get_item_label(checkbox) != "Select All":
+                var_name = dpg.get_item_user_data(checkbox)
+                if var_name and var_name in _selected_features:
+                    _selected_features.remove(var_name)
     
     _update_feature_checkboxes()
 
 def _update_variable_lists():
-    """변수 목록 업데이트"""
+    """변수 목록 업데이트 (필터링 로직 강화)"""
     if not _selected_df_name or _selected_df_name not in _available_dfs:
+        if dpg.does_item_exist(TAG_S11_FEATURE_LIST):
+            dpg.delete_item(TAG_S11_FEATURE_LIST, children_only=True)
+        if dpg.does_item_exist(TAG_S11_TARGET_COMBO):
+            dpg.configure_item(TAG_S11_TARGET_COMBO, items=[""])
         return
-    
+
     df = _available_dfs[_selected_df_name]
-    columns = list(df.columns)
+    all_columns = list(df.columns)
+
+    model_type = dpg.get_value(TAG_S11_MODEL_TYPE_SELECTOR) if dpg.does_item_exist(TAG_S11_MODEL_TYPE_SELECTOR) else "Classification"
+    target_col = dpg.get_value(TAG_S11_TARGET_COMBO) if dpg.does_item_exist(TAG_S11_TARGET_COMBO) else None
+
+    s1_analysis_types = {}
+    if _module_main_callbacks:
+        s1_analysis_types = _module_main_callbacks.get('get_column_analysis_types', lambda: {})()
+
+    eligible_features = all_columns.copy()
+
+    if target_col and target_col in eligible_features:
+        eligible_features.remove(target_col)
+
+    eligible_features = [
+        var for var in eligible_features
+        if s1_analysis_types.get(var) != "분석에서 제외 (Exclude)"
+    ]
+
+    if model_type == "Regression" or model_type == "Clustering":
+        numeric_features = []
+        for var in eligible_features:
+            s1_type = s1_analysis_types.get(var)
+            if (s1_type and "Numeric" in s1_type) or pd.api.types.is_numeric_dtype(df[var].dtype):
+                numeric_features.append(var)
+        eligible_features = numeric_features
     
-    # Features 체크박스 업데이트
+    # --- ▼▼▼▼▼ 문제 1 해결을 위한 수정 ▼▼▼▼▼ ---
+    elif model_type == "Classification":
+        classification_features = []
+        # 카테고리형 변수로 인정할 최대 고유값 개수 (예: 35개)
+        MAX_UNIQUE_FOR_CAT = 35 
+
+        for var in eligible_features:
+            s1_type = s1_analysis_types.get(var, "")
+
+            # ID, 긴 텍스트, 민감 정보는 항상 제외
+            if "Text (ID/Code)" in s1_type or "Text (Long/Free)" in s1_type or "Potentially Sensitive" in s1_type:
+                continue
+
+            # 숫자형 변수는 포함
+            if pd.api.types.is_numeric_dtype(df[var].dtype):
+                classification_features.append(var)
+            # 카테고리형 또는 object 타입이면서 고유값이 적은 경우에만 포함
+            elif df[var].nunique() < MAX_UNIQUE_FOR_CAT:
+                 classification_features.append(var)
+                 
+        eligible_features = classification_features
+    # --- ▲▲▲▲▲ 수정 완료 ▲▲▲▲▲ ---
+
     if dpg.does_item_exist(TAG_S11_FEATURE_LIST):
         dpg.delete_item(TAG_S11_FEATURE_LIST, children_only=True)
+        # "Select All" 체크박스를 그룹 맨 위에 추가
+        dpg.add_checkbox(label="Select All", callback=_toggle_all_features, parent=TAG_S11_FEATURE_LIST)
+        dpg.add_separator(parent=TAG_S11_FEATURE_LIST)
         
-        for col in columns:
-            dpg.add_checkbox(label=col, 
+        for col in eligible_features:
+            is_checked = col in _selected_features
+            dpg.add_checkbox(label=col,
                            callback=lambda s, a, u: _on_feature_toggle(u, a),
                            user_data=col,
-                           parent=TAG_S11_FEATURE_LIST)
-    
-    # Target 콤보박스 업데이트
+                           parent=TAG_S11_FEATURE_LIST,
+                           default_value=is_checked)
+
     if dpg.does_item_exist(TAG_S11_TARGET_COMBO):
-        dpg.configure_item(TAG_S11_TARGET_COMBO, items=[""] + columns)
-        
-        # 메인 패널의 타겟 변수 가져오기
-        if _module_main_callbacks:
-            target_var = _module_main_callbacks.get('get_selected_target_variable', lambda: None)()
-            if target_var and target_var in columns:
-                dpg.set_value(TAG_S11_TARGET_COMBO, target_var)
+        dpg.configure_item(TAG_S11_TARGET_COMBO, items=[""] + all_columns)
+        if target_col and target_col in all_columns:
+            dpg.set_value(TAG_S11_TARGET_COMBO, target_col)
 
 def _on_feature_toggle(col_name: str, is_checked: bool):
     """Feature 체크박스 토글"""
@@ -443,12 +519,23 @@ def _train_model():
         # Features 추출
         X = df[_selected_features].copy()
         
-        # 수치형이 아닌 컬럼 인코딩
-        encoders = {}
-        for col in X.columns:
-            if X[col].dtype == 'object':
+        encoding_method = dpg.get_value("s11_encoding_method") if dpg.does_item_exist("s11_encoding_method") else "Label Encoding"
+        encoders = {} # LabelEncoder 정보를 저장하기 위한 딕셔너리
+
+        if encoding_method == "One-Hot Encoding":
+            # 원-핫 인코딩 적용
+            print("[Step 11] Applying One-Hot Encoding...")
+            # 인코딩할 범주형 변수 식별 (object 타입)
+            categorical_cols = X.select_dtypes(include=['object', 'category']).columns
+            if not categorical_cols.empty:
+                X = pd.get_dummies(X, columns=categorical_cols, drop_first=True, dtype=float)
+        
+        else: # Label Encoding (기본값)
+            # 레이블 인코딩 적용 (기존 로직)
+            print("[Step 11] Applying Label Encoding...")
+            for col in X.select_dtypes(include=['object', 'category']).columns:
                 le = LabelEncoder()
-                X[col] = le.fit_transform(X[col].fillna('missing'))
+                X[col] = le.fit_transform(X[col].astype(str).fillna('missing'))
                 encoders[col] = le
         
         # Target 추출 (supervised learning)

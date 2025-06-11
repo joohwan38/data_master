@@ -349,7 +349,7 @@ def trigger_specific_module_update(module_name_key: str):
             # Step 1은 original_df와 df_after_step1을 모두 필요로 하는 특별한 케이스
             updater(app_state.df_after_step1, app_state.original_df, util_functions_for_modules, app_state.loaded_file_path)
 
-        elif module_name_key in [ANALYSIS_STEPS[7], ANALYSIS_STEPS[8], ANALYSIS_STEPS[9]]: # << 수정: Step 10 추가
+        elif module_name_key in [ANALYSIS_STEPS[7], ANALYSIS_STEPS[8], ANALYSIS_STEPS[9], ANALYSIS_STEPS[10]]: # << 수정: Step 10 추가
             # 이 단계들의 update_ui는 인자를 받지 않음
             updater()
 
