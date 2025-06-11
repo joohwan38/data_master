@@ -15,7 +15,8 @@ import step_06_standardization
 import step_07_feature_engineering
 import step_08_derivation
 import step_09_data_viewer
-import step_10_advanced_analysis # << 추가
+import step_10_advanced_analysis
+import step_11_ml_modeling
 import traceback
 import hashlib
 import json
@@ -70,7 +71,8 @@ ANALYSIS_STEPS = [
     "7. Feature Engineering",
     "8. Derive DataFrames",
     "9. DataFrame Viewer",
-    "10. Advanced Analysis", # << 추가
+    "10. Advanced Analysis",
+    "11. ML Modeling & AI",
     ]
 
 _MODAL_ID_SIMPLE_MESSAGE = "main_simple_modal_message_id"
@@ -1160,6 +1162,9 @@ with dpg.window(label="Data Analysis Platform", tag="main_window"):
                 elif step_name_create == ANALYSIS_STEPS[9]: # << 추가: Step 10 UI 생성
                     if hasattr(step_10_advanced_analysis, 'create_ui'):
                         step_10_advanced_analysis.create_ui(step_name_create, "content_area", main_app_callbacks)
+                elif step_name_create == ANALYSIS_STEPS[10]:  # Step 11
+                    if hasattr(step_11_ml_modeling, 'create_ui'):
+                        step_11_ml_modeling.create_ui(step_name_create, "content_area", main_app_callbacks)
 
             if ANALYSIS_STEPS and len(ANALYSIS_STEPS) > 0 and not app_state.active_step_name:
                 first_step = ANALYSIS_STEPS[0]
