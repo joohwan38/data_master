@@ -31,18 +31,14 @@ import warnings
 import threading
 import queue
 import time
+import re
 
 # --- 외부 라이브러리 (설치 필요) ---
-try:
-    from lightautoml.automl.presets.tabular_presets import TabularAutoML
-    from lightautoml.tasks import Task
-except ImportError:
-    TabularAutoML = None
-    Task = None
-try:
-    import shap
-except ImportError:
-    shap = None
+from lightautoml.automl.presets.tabular_presets import TabularAutoML
+from lightautoml.addons.tabular_interpretation import SSWARM
+from lightautoml.tasks import Task
+import shap
+# from lightautoml.explain.shap import SSWARM
 
 warnings.filterwarnings('ignore')
 
@@ -116,34 +112,46 @@ class ExperimentResult:
         return d
     
 def _update_automl_target_combo(df_name: str):
-    """(수정) AutoML 탭의 타겟 변수 목록을 업데이트하고, 전역 타겟 변수를 기본값으로 설정"""
-    all_dfs = _module_main_callbacks['get_all_available_dfs']()
+    """(최종 수정) '분석 제외' 컬럼을 UI 목록에서 제거"""
+    all_dfs = _module_main_callbacks.get('get_all_available_dfs', lambda: {})()
     if not df_name or df_name not in all_dfs:
-        # DF가 없으면 타겟 목록과 탐지된 Task 초기화
         if dpg.does_item_exist("s11_automl_target_combo"): dpg.configure_item("s11_automl_target_combo", items=[])
         if dpg.does_item_exist("s11_automl_detected_task"): dpg.set_value("s11_automl_detected_task", "(select source)")
         return
 
     df = all_dfs[df_name]
-    cols = df.columns.tolist()
+    
+    # --- 아래 로직 추가 ---
+    # 1. Step 1의 타입 설정을 가져와 '분석 제외' 목록 생성
+    step1_type_selections = _module_main_callbacks.get('get_column_analysis_types', lambda: {})()
+    cols_to_exclude = {col for col, type_val in step1_type_selections.items() if type_val == "분석에서 제외 (Exclude)"}
+    
+    # 2. 전체 컬럼 목록에서 제외할 컬럼을 뺀 최종 후보 목록 생성
+    candidate_cols = [col for col in df.columns if col not in cols_to_exclude]
+    # --- 여기까지 추가 ---
     
     combo_tag = "s11_automl_target_combo"
     if not dpg.does_item_exist(combo_tag): return
         
-    dpg.configure_item(combo_tag, items=cols)
+    # 후보 목록으로 콤보박스 아이템 설정
+    dpg.configure_item(combo_tag, items=candidate_cols)
     
     final_target = ""
     if _module_main_callbacks and 'get_selected_target_variable' in _module_main_callbacks:
         global_target = _module_main_callbacks['get_selected_target_variable']()
-        if global_target and global_target in cols:
+        # 전역 타겟이 후보 목록에 있을 경우에만 기본값으로 설정
+        if global_target and global_target in candidate_cols:
             final_target = global_target
-        elif cols:
-            final_target = cols[0]
+        elif candidate_cols:
+            final_target = candidate_cols[0]
             
     if final_target:
         dpg.set_value(combo_tag, final_target)
-        # 기본값 설정 후, Task 탐지 함수를 명시적으로 호출
         _detect_and_update_task_type(df_name, final_target)
+    else:
+        # 선택할 수 있는 타겟이 하나도 없는 경우
+        dpg.set_value(combo_tag, "")
+        _detect_and_update_task_type(df_name, "")
 
 def _detect_and_update_task_type(df_name: str, target_name: str):
     """(신설) 선택된 Target 변수를 분석하여 Task 유형을 결정하고 UI를 업데이트"""
@@ -197,40 +205,87 @@ def _start_background_task(target_func, args):
     _update_progress(0.0, "Task started in background...")
 
 
-# --- [1단계] AutoML 핵심 로직 (백그라운드 실행) ---
 def _run_automl_in_thread(df: pd.DataFrame, target: str, task_type: str, time_budget: int):
-    """LightAutoML을 별도 스레드에서 실행"""
+    """(최종 수정) '분석 제외' 컬럼 제거 및 '역할' 명시적 지정을 통해 AutoML 실행"""
     start_time = time.time()
     try:
         if TabularAutoML is None:
             raise ImportError("LightAutoML is not installed. Please run 'pip install lightautoml'.")
 
-        _results_queue.put({"type": "progress", "value": 0.1, "log": f"Starting AutoML for target '{target}'..."})
+        _results_queue.put({"type": "progress", "value": 0.1, "log": "Preparing data for AutoML..."})
+
+        step1_type_selections = _module_main_callbacks.get('get_column_analysis_types', lambda: {})()
+        cols_to_exclude = [col for col, type_val in step1_type_selections.items() if type_val == "분석에서 제외 (Exclude)"]
         
+        if target in cols_to_exclude:
+            cols_to_exclude.remove(target)
+            
+        if cols_to_exclude:
+            df = df.drop(columns=cols_to_exclude, errors='ignore')
+            _results_queue.put({"type": "progress", "value": 0.15, "log": f"Excluded {len(cols_to_exclude)} columns from analysis."})
+
+        # --- 아래 로직 추가 ---
+        # LightAutoML 호환성을 위해 'category' 타입을 'object' 타입으로 변환
+        for col in df.columns:
+            if pd.api.types.is_categorical_dtype(df[col].dtype):
+                df[col] = df[col].astype('object')
+        # --- 여기까지 추가 ---
+
+        original_columns = df.columns.tolist()
+        new_columns = [re.sub(r'[^A-Za-z0-9_]+', '_', col) for col in original_columns]
+        df.columns = new_columns
+        try:
+            target_index = original_columns.index(target)
+            target = new_columns[target_index]
+        except ValueError:
+            _results_queue.put({"type": "error", "log": f"Target column '{target}' not found."})
+            return
+
         task = Task(task_type)
-        roles = {'target': target}
+        categorical_features = []
+        numeric_features = []
+        
+        for col in df.columns:
+            if col == target:
+                continue
+            
+            if df[col].dtype.name in ['object', 'category'] or df[col].nunique() < 25:
+                categorical_features.append(col)
+            else:
+                numeric_features.append(col)
+
+        roles = {
+            'target': target,
+            'category': categorical_features,
+            'numeric': numeric_features,
+        }
+        
+        _results_queue.put({"type": "progress", "value": 0.2, "log": f"Roles defined. Categorical: {len(categorical_features)}, Numeric: {len(numeric_features)}"})
         
         automl = TabularAutoML(task=task, timeout=time_budget, cpu_limit=1,
-                               general_params={"use_algos": [["lgb", "lgb_tuned", "cat", "cat_tuned"]]})
+                               general_params={"use_algos": [["lgb"]]}) 
 
         _results_queue.put({"type": "progress", "value": 0.3, "log": "Fitting AutoML model..."})
-        
-        # LightAutoML은 자체적으로 전처리를 수행함
         oof_predictions = automl.fit_predict(df, roles=roles, verbose=1)
         
+        # (이하 코드 동일)
         training_time = time.time() - start_time
         _results_queue.put({"type": "progress", "value": 0.9, "log": "AutoML fitting complete. Generating report..."})
         
-        # 결과 정리
-        # 실제 예측은 automl.predict(test_data)를 사용해야 함
-        # 여기서는 학습 리포트 중심으로 결과를 구성
+        feature_scores_df = automl.get_feature_scores()
+        if not feature_scores_df.empty:
+            feature_scores_df['Feature'] = feature_scores_df['Feature'].map(lambda x: original_columns[new_columns.index(x)] if x in new_columns else x)
+            feature_scores = feature_scores_df.set_index('Feature')['Importance'].to_dict()
+        else:
+            feature_scores = {}
+
         report = {
-            "model_name": f"AutoML_{target}",
+            "model_name": f"AutoML_{original_columns[new_columns.index(target)]}",
             "algorithm": "LightAutoML",
-            "model_type": "Classification" if task_type == 'binary' else "Regression",
-            "target": target,
+            "model_type": "Classification" if task_type in ['binary', 'multiclass'] else "Regression",
+            "target": original_columns[new_columns.index(target)],
             "training_time": training_time,
-            "feature_scores": automl.get_feature_scores().to_dict()['Importance'],
+            "feature_scores": feature_scores,
             "model_object": automl,
         }
         _results_queue.put({"type": "automl_result", "data": report})
@@ -239,36 +294,81 @@ def _run_automl_in_thread(df: pd.DataFrame, target: str, task_type: str, time_bu
         _results_queue.put({"type": "error", "log": f"AutoML Error: {e}"})
         traceback.print_exc()
 
-
 # --- [1단계] SHAP 분석 로직 (백그라운드 실행) ---
 def _run_shap_in_thread(experiment: ExperimentResult, df: pd.DataFrame):
-    """SHAP 계산을 별도 스레드에서 실행"""
+    """(디버깅 버전) 데이터 처리 단계별로 로그를 추가하여 문제 원인 추적"""
     try:
-        if shap is None:
-            raise ImportError("SHAP is not installed. Please run 'pip install shap'.")
+        if SSWARM is None:
+            raise ImportError("SHAP or LightAutoML's SSWARM is not installed.")
 
-        _results_queue.put({"type": "progress", "value": 0.1, "log": f"Starting SHAP analysis for '{experiment.model_name}'..."})
+        _results_queue.put({"type": "progress", "value": 0.05, "log": "--- Starting SHAP Analysis (Debug Mode) ---"})
         
         model = experiment.model_object
         features = experiment.features
-        X = df[features]
         
-        # 데이터 전처리 (Label Encoding 등)
-        for col in X.select_dtypes(include=['object', 'category']).columns:
+        # --- 디버깅 1: 최초 데이터 상태 ---
+        try:
+            X = df[features].copy()
+            _results_queue.put({"type": "progress", "log": f"[DEBUG 1] Initial X shape: {X.shape}, Columns: {X.columns.tolist()}"})
+        except Exception as e:
+            _results_queue.put({"type": "error", "log": f"[DEBUG 1 FAILED] Could not select features. Error: {e}"})
+            return
+
+        # 컬럼 이름 정리
+        original_feature_names = X.columns.tolist()
+        new_columns = [re.sub(r'[^A-Za-z0-9_]+', '_', col) for col in original_feature_names]
+        X.columns = new_columns
+        # --- 디버깅 2: 컬럼 이름 정리 후 ---
+        _results_queue.put({"type": "progress", "log": f"[DEBUG 2] After name sanitization, X shape: {X.shape}"})
+
+        # 타입 변환
+        for col in X.columns:
+            if pd.api.types.is_categorical_dtype(X[col].dtype):
+                X[col] = X[col].astype('object')
+        # --- 디버깅 3: 타입 변환 후 ---
+        _results_queue.put({"type": "progress", "log": f"[DEBUG 3] After type conversion, X shape: {X.shape}"})
+
+        # 라벨 인코딩
+        for col in X.select_dtypes(include=['object']).columns:
             le = LabelEncoder()
-            X[col] = le.fit_transform(X[col].astype(str))
+            X[col] = pd.Series(le.fit_transform(X[col].astype(str)), index=X.index)
+        # --- 디버깅 4: 라벨 인코딩 후 ---
+        _results_queue.put({"type": "progress", "log": f"[DEBUG 4] After LabelEncoding, X shape: {X.shape}, Dtypes: {X.dtypes.to_dict()}"})
 
-        _results_queue.put({"type": "progress", "value": 0.3, "log": "Creating SHAP explainer..."})
-        explainer = shap.Explainer(model.predict, X)
-        
+        # --- 디버깅 5: 최종 데이터 확인 ---
+        _results_queue.put({"type": "progress", "value": 0.3, "log": f"[DEBUG 5] Final data check before SHAP. Shape: {X.shape}"})
+
+        # SSWARM 알고리즘을 위한 피처 개수 방어 코드 (여전히 유효)
+        if X.shape[1] < 4:
+            message = f"SHAP analysis skipped: The final feature count is less than 4 ({X.shape[1]}). Check debug logs for data loss."
+            _results_queue.put({"type": "error", "log": message})
+            return
+
+        explainer = SSWARM(model)
         _results_queue.put({"type": "progress", "value": 0.6, "log": "Calculating SHAP values..."})
-        shap_values = explainer(X)
-
+        shap_values = explainer.shap_values(X)
         _results_queue.put({"type": "progress", "value": 0.9, "log": "Generating SHAP summary plot..."})
         
-        # SHAP 요약 플롯 생성
         fig, ax = plt.subplots()
-        shap.summary_plot(shap_values, X, show=False)
+        shap_values_to_plot = shap_values[1] if isinstance(shap_values, list) and len(shap_values) == 2 else shap_values
+
+        # --- 아래 로직 추가/수정 ---
+
+        # 1. SSWARM이 실제로 사용한 피처 목록 가져오기 (sanitized된 이름)
+        used_features_sanitized = explainer.used_feats
+        
+        # 2. 플롯에 사용할 데이터도 실제 사용된 피처만으로 구성
+        X_for_plot = X[used_features_sanitized]
+
+        # 3. 플롯의 축에 표시할 원본 피처 이름 목록 생성
+        # sanitized 이름 -> 원본 이름 매핑 생성
+        name_map = dict(zip(new_columns, original_feature_names))
+        feature_names_for_plot = [name_map.get(sanitized_name, sanitized_name) for sanitized_name in used_features_sanitized]
+        
+        # 4. summary_plot에 정확히 일치하는 데이터와 이름을 전달
+        shap.summary_plot(shap_values_to_plot, X_for_plot, feature_names=feature_names_for_plot, show=False)
+        
+        # --- 여기까지 추가/수정 ---
         plt.tight_layout()
         
         plot_func = _util_funcs.get('plot_to_dpg_texture')
@@ -383,16 +483,18 @@ def _start_automl_run_callback():
     _start_background_task(_run_automl_in_thread, args=(df.copy(), target, task_type, time_budget))
 
 def _start_shap_analysis_callback(sender, app_data, user_data: ExperimentResult):
-    """SHAP 분석 시작 버튼 콜백"""
+    """(수정) SHAP 분석 시작 버튼 콜백"""
     exp = user_data
-    df = _available_dfs.get(exp.dataframe_name)
+    
+    # 실행 시점에 main_app에서 직접 모든 DF 목록을 가져옴
+    all_dfs = _module_main_callbacks.get('get_all_available_dfs', lambda: {})()
+    df = all_dfs.get(exp.dataframe_name)
+    
     if df is None:
         _log_message(f"Error: DataFrame '{exp.dataframe_name}' for SHAP analysis not found.", "ERROR")
         return
     
-    # SHAP 분석을 백그라운드 스레드에서 시작
     _start_background_task(_run_shap_in_thread, args=(exp, df.copy()))
-
 
 def _on_df_selected_automl(sender, df_name, user_data):
     """AutoML 탭에서 데이터프레임 선택 시 콜백"""
