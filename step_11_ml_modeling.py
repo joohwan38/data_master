@@ -1,16 +1,17 @@
-# step_11_ml_modeling.py - 개선된 버전
+# step_11_ml_modeling.py - 2-Track 하이브리드 접근법 구현
 
 """
-Step 11 ML Modeling & AI 통합 모듈 (개선 버전)
+Step 11 ML Modeling & AI 통합 모듈 (하이브리드 접근법)
 
-추가/개선된 기능:
-- AutoML 진행 과정 실시간 모니터링
-- 하이퍼파라미터 최적화 시각화
-- 교차 검증 및 학습 곡선
-- SHAP 자동 실행
-- True/False 타겟 처리
-- SHAP shape 에러 수정
-- 모델 성능 비교 대시보드
+주요 기능:
+- 2-Track 하이브리드 접근법:
+  - Track 1: 자동화된 모델 탐색 (하이퍼파라미터 튜닝 포함) 및 리더보드
+  - Track 2: 심층 분석, 사용자 정의 튜닝 및 인사이트 도출
+- 모델 인사이트 랩: SHAP Beeswarm, Dependence Plot 등 다양한 XAI 시각화
+- 앙상블: 버튼 클릭으로 상위 모델을 결합하여 성능 극대화
+- 모델 서빙: 학습된 모델 파이프라인을 내보내고, 새로운 데이터에 대한 추론 수행
+- 고급 훈련 옵션: CV 폴드, 최적화 지표 등 세부 제어
+- 딥러닝 확장 기반: MLP 모델 추가를 위한 UI 및 코드 구조 포함
 """
 
 import dearpygui.dearpygui as dpg
@@ -19,1007 +20,759 @@ import numpy as np
 from typing import Dict, List, Optional, Any, Tuple
 import traceback
 import datetime
-import pickle
-import json
-import sys
 import uuid
-from dataclasses import dataclass, asdict
-from sklearn.model_selection import train_test_split, cross_val_score, learning_curve
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import (accuracy_score, precision_recall_fscore_support, confusion_matrix,
-                           mean_squared_error, r2_score, mean_absolute_error, roc_curve, auc)
-import matplotlib.pyplot as plt
-import seaborn as sns
-import warnings
 import threading
 import queue
 import time
-import re
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
+import joblib
+import os
 
-# --- 외부 라이브러리 ---
-try:
-    from lightautoml.automl.presets.tabular_presets import TabularAutoML
-    from lightautoml.tasks import Task
-    LIGHTAUTOML_AVAILABLE = True
-except ImportError:
-    LIGHTAUTOML_AVAILABLE = False
-    print("Warning: LightAutoML not available. Using fallback AutoML implementation.")
-    
-import shap
+# Scikit-learn 및 관련 라이브러리
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.preprocessing import LabelEncoder, StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import (accuracy_score, precision_score, recall_score, f1_score, confusion_matrix,
+                           roc_curve, roc_auc_score,auc, mean_squared_error, r2_score, mean_absolute_error, make_scorer,
+                           cohen_kappa_score, matthews_corrcoef)
 
-warnings.filterwarnings('ignore')
+from sklearn.ensemble import VotingClassifier, VotingRegressor
 
-# --- Classification/Regression Models ---
+# 모델 알고리즘
 from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-from sklearn.svm import SVC, SVR
-from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from xgboost import XGBClassifier, XGBRegressor
 from lightgbm import LGBMClassifier, LGBMRegressor
 
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
+    print("Warning: SHAP 라이브러리를 찾을 수 없습니다. 모델 설명 기능이 비활성화됩니다.")
+
+# 사용자 참고: 딥러닝 모델을 사용하려면 tensorflow 또는 pytorch 설치가 필요합니다.
+# try:
+#     import tensorflow as tf
+#     from tensorflow.keras.models import Sequential
+#     from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
+#     TENSORFLOW_AVAILABLE = True
+# except ImportError:
+#     TENSORFLOW_AVAILABLE = False
+#     print("Warning: TensorFlow 라이브러리를 찾을 수 없습니다. 딥러닝 모델 기능이 비활성화됩니다.")
+TENSORFLOW_AVAILABLE = False # 우선 비활성화
+
+
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
+
 # --- DPG Tags ---
 TAG_S11_GROUP = "step11_ml_modeling_group"
-TAG_S11_UPPER_VIZ_WINDOW = "step11_upper_viz_window"
-TAG_S11_LOWER_CONTROL_PANEL = "step11_lower_control_panel"
-TAG_S11_VIZ_TAB_BAR = "step11_viz_tab_bar"
+TAG_S11_MAIN_TAB_BAR = "step11_main_tab_bar"
+TAG_S11_MODELING_TAB = "step11_modeling_tab"
+TAG_S11_INFERENCE_TAB = "step11_inference_tab"
 
-# 탭 순서 변경: AutoML을 첫 번째로
-TAG_S11_AUTOML_TAB = "step11_automl_tab" 
-TAG_S11_EXPERIMENT_TAB = "step11_experiment_tab"
-TAG_S11_MONITORING_TAB = "step11_monitoring_tab"
-TAG_S11_COMPARISON_TAB = "step11_comparison_tab"
-
-TAG_S11_AUTOML_CONTROLS_GROUP = "s11_automl_controls_group"
-TAG_S11_AUTOML_RESULTS_GROUP = "s11_automl_results_group"
-TAG_S11_AUTOML_RUN_BUTTON = "s11_automl_run_button"
-TAG_S11_MONITORING_PLOTS_GROUP = "s11_monitoring_plots_group"
-
-TAG_S11_PROGRESS_BAR = "step11_progress_bar"
-TAG_S11_LOG_WINDOW = "step11_log_window"
-TAG_S11_EXPERIMENT_TABLE = "step11_experiment_table"
+# Modeling Tab UI
 TAG_S11_DF_SELECTOR = "step11_df_selector"
+TAG_S11_TARGET_SELECTOR = "step11_target_selector"
+TAG_S11_TASK_TYPE_TEXT = "s11_detected_task_text"
+TAG_S11_RUN_AUTO_DISCOVERY_BUTTON = "step11_run_auto_discovery_button"
+TAG_S11_LEADERBOARD_TABLE = "step11_leaderboard_table"
+TAG_S11_LEADERBOARD_GROUP = "step11_leaderboard_group"
+TAG_S11_ENSEMBLE_BUTTON = "step11_ensemble_button"
+TAG_S11_DEEP_DIVE_GROUP = "step11_deep_dive_group"
+TAG_S11_LOG_TEXT = "step11_log_text"
+TAG_S11_LOG_WINDOW = "step11_log_window"
+TAG_S11_PROGRESS_BAR = "step11_progress_bar"
 
-# --- ML_ALGORITHMS 확장 ---
-ML_ALGORITHMS = {
+# --- ML 알고리즘 및 하이퍼파라미터 탐색 범위 정의 ---
+# RandomizedSearchCV를 위한 파라미터 분포 정의
+PARAM_DISTRIBUTIONS = {
     "Classification": {
-        "Logistic Regression": {"class": LogisticRegression, "params": {"max_iter": 1000}},
-        "Random Forest": {"class": RandomForestClassifier, "params": {"n_estimators": 100}},
-        "Decision Tree": {"class": DecisionTreeClassifier, "params": {"max_depth": 5}},
-        "SVM": {"class": SVC, "params": {"probability": True}},
-        "KNN": {"class": KNeighborsClassifier, "params": {"n_neighbors": 5}},
-        "XGBoost": {"class": XGBClassifier, "params": {"eval_metric": "logloss"}},
-        "LightGBM": {"class": LGBMClassifier, "params": {"verbose": -1}},
+        "Random Forest": {
+            "model_class": RandomForestClassifier,
+            "params": {
+                'classifier__n_estimators': [100, 200, 300],
+                'classifier__max_depth': [10, 20, 30, None],
+                'classifier__min_samples_split': [2, 5, 10],
+                'classifier__min_samples_leaf': [1, 2, 4]
+            }
+        },
+        "XGBoost": {
+            "model_class": XGBClassifier,
+            "params": {
+                'classifier__n_estimators': [100, 200, 300],
+                'classifier__learning_rate': [0.01, 0.1, 0.2],
+                'classifier__max_depth': [3, 5, 7],
+                'classifier__subsample': [0.7, 0.8, 0.9]
+            }
+        },
+        "LightGBM": {
+            "model_class": LGBMClassifier,
+            "params": {
+                'classifier__n_estimators': [100, 200, 300],
+                'classifier__learning_rate': [0.01, 0.1, 0.2],
+                'classifier__num_leaves': [20, 31, 40],
+                'classifier__max_depth': [-1, 10, 20]
+            }
+        }
     },
     "Regression": {
-        "Linear Regression": {"class": LinearRegression, "params": {}},
-        "Random Forest": {"class": RandomForestRegressor, "params": {"n_estimators": 100}},
-        "Decision Tree": {"class": DecisionTreeRegressor, "params": {"max_depth": 5}},
-        "SVR": {"class": SVR, "params": {}},
-        "KNN": {"class": KNeighborsRegressor, "params": {"n_neighbors": 5}},
-        "XGBoost": {"class": XGBRegressor, "params": {}},
-        "LightGBM": {"class": LGBMRegressor, "params": {"verbose": -1}},
+        "Random Forest": {
+            "model_class": RandomForestRegressor,
+            "params": {
+                'regressor__n_estimators': [100, 200, 300],
+                'regressor__max_depth': [10, 20, 30, None],
+                'regressor__min_samples_split': [2, 5, 10],
+                'regressor__min_samples_leaf': [1, 2, 4]
+            }
+        },
+        "XGBoost": {
+            "model_class": XGBRegressor,
+            "params": {
+                'regressor__n_estimators': [100, 200, 300],
+                'regressor__learning_rate': [0.01, 0.1, 0.2],
+                'regressor__max_depth': [3, 5, 7],
+                'regressor__subsample': [0.7, 0.8, 0.9]
+            }
+        },
+        "LightGBM": {
+            "model_class": LGBMRegressor,
+            "params": {
+                'regressor__n_estimators': [100, 200, 300],
+                'regressor__learning_rate': [0.01, 0.1, 0.2],
+                'regressor__num_leaves': [20, 31, 40],
+                'regressor__max_depth': [-1, 10, 20]
+            }
+        }
     }
 }
+# 기본 모델 (튜닝 없이 빠르게 실행)
+BASE_MODELS = {
+    "Classification": {"Logistic Regression": LogisticRegression(max_iter=1000, random_state=42)},
+    "Regression": {"Linear Regression": LinearRegression()}
+}
 
-# --- Module State 변수 ---
+
+# --- Module State ---
 _module_main_callbacks: Optional[Dict] = None
 _util_funcs: Optional[Dict[str, Any]] = None
-_experiments_history: List['ExperimentResult'] = []
 _texture_tags: List[str] = []
 _results_queue = queue.Queue()
 _worker_thread: Optional[threading.Thread] = None
-_detected_task_type: str = "" 
-_automl_progress_history: List[Dict[str, Any]] = []  # AutoML 진행 상황 기록
-_monitoring_data: Dict[str, List[float]] = {  # 모니터링 데이터
-    "time": [], "score": [], "n_models": []
-}
+_leaderboard_results: List[Dict] = []
+_current_deep_dive_model: Optional[Dict] = None
 
-@dataclass
-class ExperimentResult:
-    """실험 결과를 저장하는 데이터 클래스 (확장)"""
-    id: str
-    timestamp: datetime.datetime
-    model_name: str
-    model_type: str
-    algorithm: str
-    parameters: Dict[str, Any]
-    features: List[str]
-    target: str
-    metrics: Dict[str, Any]
-    training_time: float
-    model_object: Any
-    dataframe_name: str
-    cv_scores: Optional[List[float]] = None
-    learning_curve_data: Optional[Dict] = None
-    shap_values: Optional[Any] = None
-    
-    def to_dict(self):
-        d = asdict(self)
-        d.pop('model_object', None)
-        d.pop('shap_values', None)
-        return d
+def _calculate_all_metrics(pipeline, X_test, y_test, task_type):
+    """모든 평가지표를 계산하는 헬퍼 함수"""
+    y_pred = pipeline.predict(X_test)
+    # metrics 딕셔너리를 비어있는 상태에서 시작합니다.
+    metrics = {}
 
-def _preprocess_target(df: pd.DataFrame, target: str) -> Tuple[pd.DataFrame, LabelEncoder]:
-    """타겟 변수 전처리 (True/False 처리 포함)"""
-    df = df.copy()
-    le = LabelEncoder()
-    
-    target_series = df[target].copy()
-    
-    # True/False 값을 문자열로 변환
-    if target_series.dtype == bool or set(target_series.dropna().unique()) <= {True, False}:
-        target_series = target_series.map({True: 'True', False: 'False'})
-    
-    # NaN 처리
-    if target_series.isna().any():
-        target_series = target_series.fillna('Missing')
-    
-    # LabelEncoder 적용
-    df[target] = le.fit_transform(target_series.astype(str))
-    
-    return df, le
+    if task_type == "Classification":
+        y_proba = pipeline.predict_proba(X_test)[:, 1]
+        metrics["Accuracy"] = accuracy_score(y_test, y_pred)
+        metrics["AUC"] = roc_auc_score(y_test, y_proba)
+        metrics["Recall"] = recall_score(y_test, y_pred, average='macro', zero_division=0)
+        metrics["Prec."] = precision_score(y_test, y_pred, average='macro', zero_division=0)
+        metrics["F1"] = f1_score(y_test, y_pred, average='macro', zero_division=0)
+        metrics["Kappa"] = cohen_kappa_score(y_test, y_pred)
+        metrics["MCC"] = matthews_corrcoef(y_test, y_pred)
+    else: # Regression
+        metrics["MAE"] = mean_absolute_error(y_test, y_pred)
+        metrics["MSE"] = mean_squared_error(y_test, y_pred)
+        metrics["RMSE"] = np.sqrt(mean_squared_error(y_test, y_pred))
+        metrics["R2"] = r2_score(y_test, y_pred)
 
-def _detect_and_update_task_type(df_name: str, target_name: str):
-    """개선된 타겟 변수 타입 감지"""
-    global _detected_task_type
+    return metrics
 
-    all_dfs = _module_main_callbacks['get_all_available_dfs']()
-    if not df_name or not target_name or df_name not in all_dfs:
-        _detected_task_type = ""
-        if dpg.does_item_exist("s11_automl_detected_task"):
-            dpg.set_value("s11_automl_detected_task", "(error)")
-        return
 
-    df = all_dfs[df_name]
-    if target_name not in df.columns:
-        _detected_task_type = ""
-        return
+# --- Data Preparation ---
+def _prepare_data_for_modeling(df: pd.DataFrame, target_name: str) -> Tuple:
+    """
+    데이터를 모델링에 맞게 준비. Step 1-10의 전처리 결과를 최대한 존중.
+    결측치 처리, 인코딩, 데이터 분할을 수행. 스케일링은 파이프라인의 일부로 남겨둠.
+    """
+    _log_message("데이터 준비 시작: X, y 분리...")
+    X = df.drop(columns=[target_name])
+    y = df[target_name]
 
-    target_series = df[target_name]
-    
-    # True/False 처리
-    unique_vals = set(target_series.dropna().unique())
-    if unique_vals <= {True, False, 'True', 'False', 'true', 'false', 1, 0, '1', '0'}:
-        _detected_task_type = 'binary'
-    else:
-        nunique = target_series.nunique()
-        dtype_kind = target_series.dtype.kind
-        
-        if dtype_kind in 'Ocb' or (dtype_kind == 'i' and nunique < 20):
-            _detected_task_type = 'binary' if nunique == 2 else 'multiclass'
-        else:
-            _detected_task_type = 'reg'
-    
-    if dpg.does_item_exist("s11_automl_detected_task"):
-        dpg.set_value("s11_automl_detected_task", _detected_task_type)
+    task_type = "Regression"
+    le_map = {} # 라벨 인코딩 정보 저장
+    if y.dtype == 'object' or y.nunique() < 25:
+        task_type = "Classification"
+        le = LabelEncoder()
+        y_encoded = le.fit_transform(y)
+        le_map = dict(zip(le.classes_, le.transform(le.classes_)))
+        y = pd.Series(y_encoded, index=y.index, name=y.name)
+        _log_message(f"타겟 변수 라벨 인코딩 완료. 매핑: {le_map}")
 
-def _run_automl_in_thread(df: pd.DataFrame, target: str, task_type: str, time_budget: int):
-    """개선된 AutoML 실행 (모니터링 포함)"""
-    start_time = time.time()
-    use_lightautoml = LIGHTAUTOML_AVAILABLE  # 로컬 변수로 복사
-    
+    _log_message(f"태스크 타입 감지: {task_type}")
+
+    numeric_features = X.select_dtypes(include=np.number).columns.tolist()
+    categorical_features = X.select_dtypes(exclude=np.number).columns.tolist()
+    _log_message(f"숫자형 피처: {len(numeric_features)}개, 범주형 피처: {len(categorical_features)}개")
+
+    # 전처리 파이프라인 정의 (결측치 처리 및 인코딩)
+    # 스케일링은 각 모델 파이프라인에 포함하여 하이퍼파라미터 튜닝 시 정보 유출 방지
+    numeric_transformer = SimpleImputer(strategy='median')
+    categorical_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='most_frequent')),
+        ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))])
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', numeric_transformer, numeric_features),
+            ('cat', categorical_transformer, categorical_features)],
+        remainder='passthrough')
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y if task_type == 'Classification' else None)
+    _log_message("데이터 분할 완료 (훈련 75% / 테스트 25%).")
+
+    return X, y, X_train, X_test, y_train, y_test, preprocessor, task_type, le_map
+
+# --- Background Thread Functions ---
+def _run_automated_discovery_thread(df: pd.DataFrame, target_name: str, cv_folds: int, optimization_metric: str):
+    print("\n" + "="*60)
+    print(">>> STEP 11 DEBUG: Modeling function received the following DataFrame:")
+    print(df.info())
+    print("="*60 + "\n")
+    """[Track 1] 자동화된 모델 탐색을 백그라운드에서 수행"""
     try:
-        if not use_lightautoml:
-            _results_queue.put({"type": "progress", "value": 0.05, "log": "LightAutoML not available, using built-in AutoML..."})
+        # 1. 데이터 준비
+        _results_queue.put({"type": "progress", "value": 0.05, "log": "데이터 준비 중..."})
+        X, y, X_train, X_test, y_train, y_test, preprocessor, task_type, le_map = _prepare_data_for_modeling(df, target_name)
+
+        # 2. 탐색할 모델 목록 정의
+        models_to_tune = PARAM_DISTRIBUTIONS.get(task_type, {})
+        base_models_to_run = BASE_MODELS.get(task_type, {})
+        all_models = list(base_models_to_run.keys()) + list(models_to_tune.keys())
+        total_steps = len(all_models)
         
-        _results_queue.put({"type": "progress", "value": 0.1, "log": "Preparing data for AutoML..."})
-
-        # 데이터 전처리
-        step1_type_selections = _module_main_callbacks.get('get_column_analysis_types', lambda: {})()
-        cols_to_exclude = [col for col, type_val in step1_type_selections.items() if type_val == "분석에서 제외 (Exclude)"]
-        
-        if target in cols_to_exclude:
-            cols_to_exclude.remove(target)
-            
-        if cols_to_exclude:
-            df = df.drop(columns=cols_to_exclude, errors='ignore')
-            _results_queue.put({"type": "progress", "value": 0.15, "log": f"Excluded {len(cols_to_exclude)} columns from analysis."})
-
-        # 타겟 전처리
-        if task_type in ['binary', 'multiclass']:
-            df, label_encoder = _preprocess_target(df, target)
-            _results_queue.put({"type": "progress", "value": 0.2, "log": "Target variable preprocessed."})
-
-        # Category 타입 변환
-        for col in df.columns:
-            if pd.api.types.is_categorical_dtype(df[col].dtype):
-                df[col] = df[col].astype('object')
-
-        _results_queue.put({"type": "progress", "value": 0.25, "log": "Data preparation complete."})
-
-        # 역할 정의
-        categorical_features = []
-        numeric_features = []
-        
-        for col in df.columns:
-            if col == target:
-                continue
-                
-            if df[col].dtype.name in ['object', 'category'] or df[col].nunique() < 25:
-                categorical_features.append(col)
-            else:
-                numeric_features.append(col)
-
-        roles = {
-            'target': target,
-            'category': categorical_features,
-            'numeric': numeric_features,
+        # Scikit-learn의 scoring 이름과 표시 이름을 매핑
+        metric_name_map = {
+            "accuracy": "Accuracy", "f1": "F1", "recall": "Recall",
+            "precision": "Prec.", "roc_auc": "AUC",
+            "r2": "R2", "neg_mean_absolute_error": "MAE", "neg_mean_squared_error": "MSE"
         }
-        
-        _results_queue.put({"type": "progress", "value": 0.3, "log": f"Roles defined. Categorical: {len(categorical_features)}, Numeric: {len(numeric_features)}"})
-        
-        # Feature scores 초기화
-        feature_scores = {}
-        cv_scores = None
-        automl = None  # 초기화
-        
-        # Pickle 오류 회피를 위한 대체 AutoML 구현
-        if use_lightautoml:
-            try:
-                # LightAutoML 시도
-                task = Task(task_type)
-                automl = TabularAutoML(
-                    task=task, 
-                    timeout=time_budget, 
-                    cpu_limit=1,
-                    general_params={"use_algos": [["lgb"]]},
-                    reader_params={"cv": 3, "random_state": 42}
-                )
-                
-                _results_queue.put({"type": "progress", "value": 0.3, "log": "Fitting LightAutoML model..."})
-                oof_predictions = automl.fit_predict(df, roles=roles, verbose=0)
-                
-                # Feature importance
-                try:
-                    feature_scores_df = automl.get_feature_scores()
-                    if not feature_scores_df.empty:
-                        feature_scores = feature_scores_df.set_index('Feature')['Importance'].to_dict()
-                except:
-                    pass
-                    
-            except Exception as e:
-                _results_queue.put({"type": "progress", "value": 0.3, "log": f"LightAutoML failed: {str(e)}, using fallback..."})
-                use_lightautoml = False  # 로컬 변수 업데이트
-        
-        if not use_lightautoml:
-            # LightAutoML 실패 시 대체 AutoML 구현
-            _results_queue.put({"type": "progress", "value": 0.3, "log": "Using fallback AutoML implementation..."})
-            
-            from sklearn.model_selection import cross_val_score
-            from sklearn.pipeline import Pipeline
-            from sklearn.preprocessing import StandardScaler
-            from sklearn.impute import SimpleImputer
-            from sklearn.compose import ColumnTransformer
-            
-            # 전처리 파이프라인
-            numeric_transformer = Pipeline(steps=[
-                ('imputer', SimpleImputer(strategy='median')),
-                ('scaler', StandardScaler())
-            ])
-            
-            preprocessor = ColumnTransformer(
-                transformers=[
-                    ('num', numeric_transformer, numeric_features),
-                    ('cat', 'passthrough', categorical_features)  # 카테고리는 이미 인코딩됨
-            ])
-            
-            # 모델 후보군
-            models = []
-            if task_type in ['binary', 'multiclass']:
-                models = [
-                    ('LogisticRegression', LogisticRegression(max_iter=1000)),
-                    ('RandomForest', RandomForestClassifier(n_estimators=100, random_state=42)),
-                    ('LightGBM', LGBMClassifier(n_estimators=100, verbose=-1, random_state=42))
-                ]
-            else:
-                models = [
-                    ('LinearRegression', LinearRegression()),
-                    ('RandomForest', RandomForestRegressor(n_estimators=100, random_state=42)),
-                    ('LightGBM', LGBMRegressor(n_estimators=100, verbose=-1, random_state=42))
-                ]
-            
-            X = df.drop(columns=[target])
-            y = df[target]
-            
-            best_score = -np.inf
-            best_model = None
-            cv_scores_list = []  # cv_scores를 cv_scores_list로 변경
-            
-            # 각 모델 평가
-            for i, (name, model) in enumerate(models):
-                progress = 0.4 + (i / len(models)) * 0.4
-                _results_queue.put({
-                    "type": "progress", 
-                    "value": progress, 
-                    "log": f"Evaluating {name}..."
-                })
-                
-                pipeline = Pipeline(steps=[
-                    ('preprocessor', preprocessor),
-                    ('model', model)
-                ])
-                
-                try:
-                    scores = cross_val_score(pipeline, X, y, cv=3, 
-                                           scoring='accuracy' if task_type in ['binary', 'multiclass'] else 'neg_mean_squared_error')
-                    mean_score = scores.mean()
-                    
-                    if mean_score > best_score:
-                        best_score = mean_score
-                        best_model = pipeline
-                        cv_scores_list = scores.tolist()
-                    
-                    _monitoring_data["time"].append(time.time() - start_time)
-                    _monitoring_data["score"].append(mean_score)
-                    _monitoring_data["n_models"].append(i + 1)
-                    _results_queue.put({"type": "monitoring_update"})
-                    
-                except Exception as model_e:
-                    _results_queue.put({"type": "progress", "value": progress, "log": f"Failed to evaluate {name}: {str(model_e)}"})
-            
-            # 최종 모델 학습
-            if best_model:
-                _results_queue.put({"type": "progress", "value": 0.85, "log": "Training final model..."})
-                best_model.fit(X, y)
-                
-                # cv_scores 변수 설정
-                cv_scores = cv_scores_list
-                # automl 변수에 최종 모델 할당
-                automl = best_model
-                automl = best_model  # automl 변수에 할당
-                
-                # Feature importance 계산
-                if hasattr(best_model.named_steps['model'], 'feature_importances_'):
-                    importances = best_model.named_steps['model'].feature_importances_
-                    # 전처리된 피처 이름 가져오기
-                    feature_names = (numeric_features + categorical_features)
-                    for fname, imp in zip(feature_names, importances[:len(feature_names)]):
-                        feature_scores[fname] = float(imp)
-            else:
-                raise Exception("No model could be trained successfully")
-                
-        # 모델 확인
-        if automl is None and 'best_model' in locals():
-            automl = best_model
-        
-        training_time = time.time() - start_time
-        _results_queue.put({"type": "progress", "value": 0.9, "log": "AutoML complete. Generating report..."})
-        
-        # 결과 보고서 생성
-        report = {
-            "model_name": f"AutoML_{target}",
-            "algorithm": "LightAutoML" if use_lightautoml else "Sklearn AutoML (Ensemble)",
-            "model_type": "Classification" if task_type in ['binary', 'multiclass'] else "Regression",
-            "target": target,
-            "training_time": training_time,
-            "feature_scores": feature_scores,
-            "model_object": automl,  # automl은 위에서 할당됨
-            "cv_scores": cv_scores,
-            "task_type": task_type,
-        }
-        _results_queue.put({"type": "automl_result", "data": report})
+        # UI에서 받은 값(e.g., 'F1')을 scikit-learn이 이해하는 이름(e.g., 'f1')으로 변환
+        inverse_metric_name_map = {v: k for k, v in metric_name_map.items()}
+        sklearn_metric_name = inverse_metric_name_map.get(optimization_metric, optimization_metric.lower())
 
-    except Exception as e:
-        error_msg = f"AutoML Error: {str(e)}\n{traceback.format_exc()}"
-        _results_queue.put({"type": "error", "log": error_msg})
-        print(error_msg)  # 콘솔에도 출력
 
-def _run_shap_in_thread(experiment: ExperimentResult, df: pd.DataFrame):
-    """개선된 SHAP 분석 (shape 에러 수정)"""
-    try:
-        _results_queue.put({"type": "progress", "value": 0.05, "log": "Starting SHAP Analysis..."})
-        
-        model = experiment.model_object
-        features = experiment.features
-        
-        # 데이터 준비
-        X = df[features].copy()
-        
-        # 타겟이 분류 문제인 경우 전처리
-        if experiment.model_type == "Classification":
-            target = experiment.target
-            if target in df.columns:
-                df_processed, _ = _preprocess_target(df, target)
-        
-        # 카테고리 변환
-        for col in X.columns:
-            if pd.api.types.is_categorical_dtype(X[col].dtype):
-                X[col] = X[col].astype('object')
-        
-        # 라벨 인코딩
-        label_encoders = {}
-        for col in X.select_dtypes(include=['object']).columns:
-            le = LabelEncoder()
-            X[col] = le.fit_transform(X[col].astype(str))
-            label_encoders[col] = le
-        
-        _results_queue.put({"type": "progress", "value": 0.3, "log": f"Data prepared. Shape: {X.shape}"})
-        
-        # 카테고리 변환
-        for col in X.columns:
-            if pd.api.types.is_categorical_dtype(X[col].dtype):
-                X[col] = X[col].astype('object')
-        
-        # 라벨 인코딩
-        label_encoders = {}
-        for col in X.select_dtypes(include=['object']).columns:
-            le = LabelEncoder()
-            X[col] = le.fit_transform(X[col].astype(str))
-            label_encoders[col] = le
-        
-        _results_queue.put({"type": "progress", "value": 0.3, "log": f"Data prepared. Shape: {X.shape}"})
-        
-        # SHAP 분석
-        if hasattr(model, 'predict'):
-            # scikit-learn 모델인 경우
-            if hasattr(model, 'named_steps') and 'model' in model.named_steps:
-                # Pipeline인 경우
-                base_model = model.named_steps['model']
-                # TreeExplainer 시도
-                try:
-                    explainer = shap.TreeExplainer(base_model)
-                    # 전처리된 데이터 준비
-                    X_transformed = model.named_steps['preprocessor'].transform(X)
-                    shap_values = explainer.shap_values(X_transformed)
-                except:
-                    # KernelExplainer 사용
-                    sample_size = min(100, len(X))
-                    X_sample = X.sample(n=sample_size, random_state=42)
-                    X_sample_transformed = model.named_steps['preprocessor'].transform(X_sample)
-                    explainer = shap.KernelExplainer(base_model.predict, X_sample_transformed)
-                    shap_values = explainer.shap_values(X_sample_transformed)
-                    X = X_sample
-            else:
-                # 일반 모델인 경우
-                try:
-                    explainer = shap.TreeExplainer(model)
-                    shap_values = explainer.shap_values(X)
-                except:
-                    sample_size = min(100, len(X))
-                    X_sample = X.sample(n=sample_size, random_state=42)
-                    explainer = shap.KernelExplainer(model.predict, X_sample)
-                    shap_values = explainer.shap_values(X_sample)
-                    X = X_sample
-        else:
-            # LightAutoML의 경우
-            try:
-                # 모델에서 예측 함수 추출
-                predict_func = lambda x: model.predict(pd.DataFrame(x, columns=X.columns)).data
-                sample_size = min(100, len(X))
-                X_sample = X.sample(n=sample_size, random_state=42)
-                explainer = shap.KernelExplainer(predict_func, X_sample)
-                shap_values = explainer.shap_values(X_sample)
-                X = X_sample
-            except Exception as e:
-                _results_queue.put({"type": "error", "log": f"SHAP Error: Could not create explainer - {str(e)}"})
-                return
-        
-        _results_queue.put({"type": "progress", "value": 0.6, "log": "SHAP values calculated."})
-        
-        # Summary plot 생성
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        # Binary classification의 경우
-        if isinstance(shap_values, list) and len(shap_values) == 2:
-            shap_values_to_plot = shap_values[1]
-        else:
-            shap_values_to_plot = shap_values
-        
-        # Shape 확인 및 조정
-        if hasattr(shap_values_to_plot, 'shape'):
-            if len(shap_values_to_plot.shape) == 3:
-                shap_values_to_plot = shap_values_to_plot[:, :, 0]
-        
-        # Feature 이름 (원본 그대로 사용)
-        feature_names_for_plot = X.columns.tolist()
-        
-        shap.summary_plot(shap_values_to_plot, X, feature_names=feature_names_for_plot, show=False)
-        plt.tight_layout()
-        
-        _results_queue.put({"type": "progress", "value": 0.9, "log": "Generating SHAP plot..."})
-        
-        plot_func = _util_funcs.get('plot_to_dpg_texture')
-        if plot_func:
-            tex_tag, w, h, _ = plot_func(fig)
-            plt.close(fig)
+        # 3. 모델 훈련 및 튜닝 루프
+        results = []
+        for i, model_name in enumerate(all_models):
+            progress = 0.1 + (i / total_steps) * 0.8
+            _results_queue.put({"type": "progress", "value": progress, "log": f"({i+1}/{total_steps}) {model_name} 모델 훈련/튜닝 중..."})
+            start_time = time.time()
+
+            # 파이프라인 구성
+            model_instance = None
+            param_dist = None # param_dist 초기화
+            if model_name in models_to_tune:  # 튜닝 대상 모델
+                model_config = models_to_tune[model_name]
+                model_class = model_config["model_class"]
+                model_instance = model_class(random_state=42)
+                param_dist = model_config["params"]
+            else:  # 기본 모델
+                model_instance = base_models_to_run[model_name]
+
+            pipeline = Pipeline(steps=[
+                ('preprocessor', preprocessor),
+                ('scaler', StandardScaler(with_mean=False)),
+                ('classifier' if task_type == 'Classification' else 'regressor', model_instance)
+            ])
+
+            # RandomizedSearchCV 또는 일반 fit 수행
+            best_pipeline = None
+            best_params = {}
+            cv_score = 0.0
+
+            if model_name in models_to_tune:
+                search = RandomizedSearchCV(pipeline, param_distributions=param_dist, n_iter=10, cv=cv_folds, scoring=sklearn_metric_name, random_state=42, n_jobs=2)
+                search.fit(X, y)
+                best_pipeline = search.best_estimator_
+                cv_score = search.best_score_
+                best_params = search.best_params_
+                model_display_name = f"Tuned_{model_name.replace(' ', '')}"
+            else:  # 기본 모델은 CV 점수만 계산
+                from sklearn.model_selection import cross_val_score
+                cv_scores = cross_val_score(pipeline, X, y, cv=cv_folds, scoring=sklearn_metric_name)
+                cv_score = np.mean(cv_scores)
+                pipeline.fit(X_train, y_train)  # 테스트를 위해 fit은 필요
+                best_pipeline = pipeline
+                best_params = {"default": "default"}
+                model_display_name = model_name
             
-            # SHAP 값 저장
-            experiment.shap_values = shap_values_to_plot
-            
-            _results_queue.put({
-                "type": "shap_result", 
-                "tex_tag": tex_tag, 
-                "width": w, 
-                "height": h, 
-                "exp_id": experiment.id
+            training_time = time.time() - start_time
+
+            # 4. 모든 평가지표 계산
+            test_metrics = _calculate_all_metrics(best_pipeline, X_test, y_test, task_type)
+
+            # 5. 결과 저장
+            results.append({
+                "id": str(uuid.uuid4()),
+                "name": model_display_name,
+                "cv_score": cv_score, # RandomizedSearchCV 또는 cross_val_score 결과
+                "primary_metric_key": optimization_metric, # 정렬 기준이 될 키 (e.g., F1)
+                "time": training_time,
+                "pipeline": best_pipeline,
+                "params": best_params,
+                "test_metrics": test_metrics, # 모든 테스트 지표가 담긴 딕셔너리
+                "task_info": {"type": task_type, "target": target_name, "le_map": le_map,
+                              "X_train": X_train, "y_train": y_train, "X_test": X_test, "y_test": y_test}
             })
 
+        _results_queue.put({"type": "discovery_result", "data": results})
+
     except Exception as e:
-        _results_queue.put({"type": "error", "log": f"SHAP Error: {str(e)}\n{traceback.format_exc()}"})
+        error_msg = f"자동 모델 탐색 오류: {str(e)}\n{traceback.format_exc()}"
+        _results_queue.put({"type": "error", "log": error_msg})
 
 # --- UI Creation ---
 def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
     global _module_main_callbacks, _util_funcs
     _module_main_callbacks = main_callbacks
     _util_funcs = main_callbacks.get('get_util_funcs', lambda: {})()
-    
+
     main_callbacks['register_step_group_tag'](step_name, TAG_S11_GROUP)
 
     with dpg.group(tag=TAG_S11_GROUP, parent=parent_container_tag, show=False):
         dpg.add_text(f"--- {step_name} ---")
         dpg.add_separator()
         
-        with dpg.child_window(height=600, border=True, tag=TAG_S11_UPPER_VIZ_WINDOW):
-            dpg.add_text("ML Modeling Dashboard", color=(255, 255, 0))
-            dpg.add_separator()
-            with dpg.tab_bar(tag=TAG_S11_VIZ_TAB_BAR):
-                # AutoML을 첫 번째 탭으로
-                with dpg.tab(label="🤖 AutoML", tag=TAG_S11_AUTOML_TAB):
-                    _create_automl_tab()
-                with dpg.tab(label="📊 Monitoring", tag=TAG_S11_MONITORING_TAB):
-                    _create_monitoring_tab()
-                with dpg.tab(label="🧪 Experiments", tag=TAG_S11_EXPERIMENT_TAB):
-                    _create_experiment_tracking_tab()
-                with dpg.tab(label="📈 Comparison", tag=TAG_S11_COMPARISON_TAB):
-                    _create_comparison_tab()
+        with dpg.tab_bar(tag=TAG_S11_MAIN_TAB_BAR):
+            with dpg.tab(label="모델링 (Modeling)", tag=TAG_S11_MODELING_TAB):
+                _create_modeling_tab_ui()
+            with dpg.tab(label="추론 (Inference)", tag=TAG_S11_INFERENCE_TAB):
+                _create_inference_tab_ui()
 
-        with dpg.child_window(border=True):
-            dpg.add_text("Training Progress & Log", color=(100, 200, 255))
-            dpg.add_progress_bar(tag=TAG_S11_PROGRESS_BAR, default_value=0.0, width=-1)
-            with dpg.child_window(height=-1, border=True, tag=TAG_S11_LOG_WINDOW):
-                dpg.add_text("Ready for training...", tag="s11_log_text")
-    
     main_callbacks['register_module_updater'](step_name, update_ui)
 
-def _create_automl_tab():
-    """개선된 AutoML 탭"""
-    with dpg.group(horizontal=True):
-        with dpg.group(width=300, tag=TAG_S11_AUTOML_CONTROLS_GROUP):
-            dpg.add_text("AutoML Settings", color=(255, 255, 0))
-            dpg.add_separator()
-            
-            dpg.add_text("Data Source:")
-            dpg.add_combo(label="", tag=TAG_S11_DF_SELECTOR, width=-1, callback=_on_df_selected_automl)
-            
-            dpg.add_text("Target Variable:")
-            dpg.add_combo(label="", tag="s11_automl_target_combo", width=-1, callback=_on_automl_target_changed)
-            
-            with dpg.group(horizontal=True):
-                dpg.add_text("Detected Task Type:")
-                dpg.add_text("(select target)", tag="s11_automl_detected_task", color=(255, 255, 0))
-            
-            dpg.add_text("Time Budget (seconds):")
-            dpg.add_input_int(default_value=120, width=-1, tag="s11_automl_time_budget", min_value=30, max_value=3600)
-            
-            dpg.add_text("Advanced Options:")
-            dpg.add_checkbox(label="Use Cross-Validation", tag="s11_use_cv", default_value=True)
-            dpg.add_checkbox(label="Auto Feature Engineering", tag="s11_auto_fe", default_value=True)
-            
-            dpg.add_separator()
-            dpg.add_button(label="🚀 Run AutoML", tag=TAG_S11_AUTOML_RUN_BUTTON, width=-1, height=40,
-                           callback=_start_automl_run_callback)
-        
-        with dpg.child_window(border=True, tag=TAG_S11_AUTOML_RESULTS_GROUP):
-            dpg.add_text("AutoML Results will be shown here.", tag="s11_automl_results_placeholder")
+def _create_modeling_tab_ui():
+    # 전체를 감싸는 부모 그룹
+    with dpg.group(tag="s11_modeling_main_group"):
+        # --- 상단 패널: 좌우 분할 (제어판 + 결과창) ---
+        with dpg.group(horizontal=True):
+            # --- 좌측 제어판 ---
+            with dpg.group(width=400): # 너비를 400으로 소폭 조정
+                dpg.add_text("1. 설정 (Setup)", color=(255, 255, 0))
+                dpg.add_separator()
+                dpg.add_text("데이터 소스 선택:")
+                dpg.add_combo(label="", tag=TAG_S11_DF_SELECTOR, width=-1, callback=_on_df_or_target_selected)
+                dpg.add_text("타겟 변수 (y) 선택:")
+                dpg.add_combo(label="", tag=TAG_S11_TARGET_SELECTOR, width=-1, callback=_on_df_or_target_selected)
+                with dpg.group(horizontal=True):
+                    dpg.add_text("감지된 태스크 타입:")
+                    dpg.add_text("(데이터 선택)", tag=TAG_S11_TASK_TYPE_TEXT, color=(255, 255, 0))
 
-def _create_monitoring_tab():
-    """AutoML 진행 상황 모니터링 탭"""
-    with dpg.child_window(border=True, tag=TAG_S11_MONITORING_PLOTS_GROUP):
-        dpg.add_text("AutoML Progress Monitoring", color=(255, 255, 0))
+                dpg.add_separator()
+                dpg.add_text("2. 자동 탐색 설정 (Automated Discovery)", color=(255, 255, 0))
+                dpg.add_text("교차 검증 (CV) 폴드 수:")
+                dpg.add_combo(items=["3", "5", "10"], default_value="5", width=-1, tag="s11_cv_folds_selector")
+                
+                # [수정] 기본 최적화 지표를 선택하는 UI. 실제 표시는 모든 지표가 나옴.
+                dpg.add_text("정렬 기준 지표 (Primary Metric):")
+                dpg.add_combo(items=["F1", "Accuracy", "Recall", "Precision", "AUC", "Kappa"], default_value="F1", label="분류", width=-1, tag="s11_clf_metric_selector")
+                dpg.add_combo(items=["R2", "MAE", "MSE"], default_value="R2", label="회귀", width=-1, tag="s11_reg_metric_selector", show=False)
+
+                dpg.add_spacer(height=10)
+                dpg.add_button(label="🚀 최적 모델 자동 탐색 실행", tag=TAG_S11_RUN_AUTO_DISCOVERY_BUTTON, width=-1, height=40,
+                               callback=_start_automated_discovery_callback)
+
+            # --- 우측 결과창 ---
+            with dpg.group():
+                # 리더보드
+                with dpg.group(tag=TAG_S11_LEADERBOARD_GROUP):
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("모델 성능 리더보드", color=(255, 255, 0))
+                        dpg.add_spacer()
+                        dpg.add_button(label="🔄", callback=_update_leaderboard_display)
+                        dpg.add_button(label=" Ensemble", tag=TAG_S11_ENSEMBLE_BUTTON, show=False, callback=_create_ensemble_callback)
+                    # 리더보드 테이블 높이를 -1로 설정하여 가변적으로 만듦
+                    dpg.add_table(tag=TAG_S11_LEADERBOARD_TABLE, header_row=True, resizable=True,
+                                  borders_innerV=True, borders_outerH=True, height=300,
+                                  policy=dpg.mvTable_SizingStretchSame)
+
+                dpg.add_separator()
+                # 심층 분석 영역 (리더보드 아래에 위치하게 됨)
+                with dpg.group(tag=TAG_S11_DEEP_DIVE_GROUP, show=False):
+                    dpg.add_text("심층 분석 및 사용자 정의 (Deep Dive & Customization)", color=(255, 255, 0))
+                    _create_deep_dive_ui()
+
         dpg.add_separator()
-        dpg.add_text("Run AutoML to see real-time monitoring charts.")
+        # --- 하단 패널: 전체 너비 로그 창 ---
+        with dpg.group():
+            dpg.add_text("진행 상황 및 로그", color=(100, 200, 255))
+            dpg.add_progress_bar(tag=TAG_S11_PROGRESS_BAR, default_value=0.0, width=-1)
+            # 로그 창의 높이를 150으로 고정, 너비는 화면 전체
+            with dpg.child_window(height=150, tag=TAG_S11_LOG_WINDOW, border=True):
+                dpg.add_input_text(default_value="자동 탐색을 시작하세요.", tag=TAG_S11_LOG_TEXT, multiline=True, readonly=True, width=-1, height=-1)
 
-def _create_comparison_tab():
-    """모델 비교 탭"""
-    dpg.add_text("Model Comparison Dashboard", color=(255, 255, 0))
+
+def _create_deep_dive_ui():
+    """Track 2: 심층 분석 및 사용자 정의 UI를 생성하는 함수"""
+    with dpg.child_window(border=True):
+        dpg.add_text("Selected Model: ", tag="s11_deep_dive_model_name")
+        dpg.add_separator()
+        with dpg.tab_bar():
+            with dpg.tab(label="모델 인사이트 (Insights)"):
+                with dpg.group(horizontal=True):
+                    dpg.add_text("분석할 피처 선택:")
+                    dpg.add_combo(tag="s11_insight_feature_selector", width=200)
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label="SHAP 요약 플롯 (Beeswarm)", callback=lambda: _run_shap_analysis("summary"))
+                    dpg.add_button(label="SHAP 의존성 플롯", callback=lambda: _run_shap_analysis("dependence"))
+                dpg.add_separator()
+                dpg.add_text("개별 예측 분석 (데이터 테이블에서 행 선택 필요)")
+                dpg.add_button(label="선택된 데이터 예측 근거 보기 (SHAP Force)", callback=lambda: _run_shap_analysis("force"))
+
+                with dpg.child_window(tag="s11_insight_plots_window", border=True):
+                    dpg.add_text("분석 결과를 여기에 표시합니다.")
+
+            with dpg.tab(label="파라미터 튜닝 (Tuning)"):
+                dpg.add_text("이곳에서 파라미터를 직접 수정하고 재훈련할 수 있습니다. (구현 예정)")
+                # 사용자 정의 튜닝 UI가 여기에 들어갑니다.
+
+            with dpg.tab(label="성능 (Performance)"):
+                dpg.add_text("테스트 데이터 성능")
+                with dpg.table(tag="s11_deep_dive_perf_table", header_row=True):
+                    dpg.add_table_column(label="Metric")
+                    dpg.add_table_column(label="Value")
+                dpg.add_text("Confusion Matrix 등 시각화가 여기에 표시됩니다. (구현 예정)")
+
+def _create_inference_tab_ui():
+    """추론 탭 UI를 생성하는 함수"""
+    dpg.add_text("학습된 모델을 사용하여 새로운 데이터에 대한 예측을 수행합니다.", wrap=500)
     dpg.add_separator()
-    with dpg.child_window(border=True, tag="s11_comparison_window"):
-        dpg.add_text("Complete experiments to compare models.")
+    dpg.add_button(label="💾 저장된 모델 불러오기", callback=_load_model_for_inference)
+    dpg.add_text("불러온 모델: 없음", tag="s11_inference_model_path")
+    dpg.add_separator()
+    dpg.add_button(label="📄 예측할 데이터 불러오기", callback=_load_data_for_inference)
+    dpg.add_text("예측할 데이터: 없음", tag="s11_inference_data_path")
+    dpg.add_table(tag="s11_inference_data_preview", header_row=True, height=150)
+    dpg.add_separator()
+    dpg.add_button(label="실행", width=-1, callback=_run_inference, height=30)
+    dpg.add_separator()
+    dpg.add_text("예측 결과")
+    with dpg.group(horizontal=True):
+        dpg.add_text("", tag="s11_inference_result_count")
+        dpg.add_button(label="결과 다운로드", show=False, tag="s11_inference_download_button", callback=_download_inference_result)
+    dpg.add_table(tag="s11_inference_result_table", header_row=True, height=200)
 
-def _create_experiment_tracking_tab():
-    """개선된 실험 추적 탭"""
-    with dpg.table(tag=TAG_S11_EXPERIMENT_TABLE, header_row=True, resizable=True, scrollY=True,
-                   borders_innerH=True, borders_outerH=True, borders_innerV=True, borders_outerV=True):
-        dpg.add_table_column(label="Timestamp")
-        dpg.add_table_column(label="Model")
-        dpg.add_table_column(label="Algorithm")
-        dpg.add_table_column(label="Target")
-        dpg.add_table_column(label="Score")
-        dpg.add_table_column(label="Actions")
-
-# --- Callbacks ---
-def _update_automl_target_combo(df_name: str):
-    """타겟 변수 콤보박스 업데이트"""
+# --- Callbacks & UI Update Functions ---
+def _on_df_or_target_selected(sender, app_data, user_data):
+    """데이터 소스 또는 타겟 변수 선택 시 UI 업데이트"""
+    df_name = dpg.get_value(TAG_S11_DF_SELECTOR)
+    target_name = dpg.get_value(TAG_S11_TARGET_SELECTOR)
     all_dfs = _module_main_callbacks.get('get_all_available_dfs', lambda: {})()
     if not df_name or df_name not in all_dfs:
-        if dpg.does_item_exist("s11_automl_target_combo"): 
-            dpg.configure_item("s11_automl_target_combo", items=[])
-        if dpg.does_item_exist("s11_automl_detected_task"): 
-            dpg.set_value("s11_automl_detected_task", "(select source)")
         return
 
     df = all_dfs[df_name]
-    
-    step1_type_selections = _module_main_callbacks.get('get_column_analysis_types', lambda: {})()
-    cols_to_exclude = {col for col, type_val in step1_type_selections.items() if type_val == "분석에서 제외 (Exclude)"}
-    
-    candidate_cols = [col for col in df.columns if col not in cols_to_exclude]
-    
-    combo_tag = "s11_automl_target_combo"
-    if not dpg.does_item_exist(combo_tag): return
-        
-    dpg.configure_item(combo_tag, items=candidate_cols)
-    
-    final_target = ""
-    if _module_main_callbacks and 'get_selected_target_variable' in _module_main_callbacks:
-        global_target = _module_main_callbacks['get_selected_target_variable']()
-        if global_target and global_target in candidate_cols:
-            final_target = global_target
-        elif candidate_cols:
-            final_target = candidate_cols[0]
-            
-    if final_target:
-        dpg.set_value(combo_tag, final_target)
-        _detect_and_update_task_type(df_name, final_target)
+    if sender == TAG_S11_DF_SELECTOR:
+        cols = [""] + df.columns.tolist()
+        dpg.configure_item(TAG_S11_TARGET_SELECTOR, items=cols)
+        dpg.set_value(TAG_S11_TARGET_SELECTOR, "")
 
-def _on_automl_target_changed(sender, target_name, user_data):
-    """AutoML 타겟 변경 콜백"""
+    if target_name and target_name in df.columns:
+        y = df[target_name]
+        task_type = "Regression"
+        if y.dtype == 'object' or y.nunique() < 25:
+             task_type = "Classification"
+        dpg.set_value(TAG_S11_TASK_TYPE_TEXT, f"{task_type}")
+        # 태스크 타입에 따라 메트릭 콤보박스 표시/숨김
+        dpg.configure_item("s11_clf_metric_selector", show=(task_type == "Classification"))
+        dpg.configure_item("s11_reg_metric_selector", show=(task_type == "Regression"))
+    else:
+        dpg.set_value(TAG_S11_TASK_TYPE_TEXT, "(타겟 선택)")
+
+def _start_automated_discovery_callback():
+    """'최적 모델 자동 탐색 실행' 버튼 콜백"""
+    global _leaderboard_results
     df_name = dpg.get_value(TAG_S11_DF_SELECTOR)
-    _detect_and_update_task_type(df_name, target_name)
-
-def _on_df_selected_automl(sender, df_name, user_data):
-    """데이터프레임 선택 콜백"""
-    _update_automl_target_combo(df_name)
-
-def _start_automl_run_callback():
-    """AutoML 실행 콜백"""
-    global _monitoring_data
-    
-    df_name = dpg.get_value(TAG_S11_DF_SELECTOR)
-    target = dpg.get_value("s11_automl_target_combo")
-    task_type = _detected_task_type
-    time_budget = dpg.get_value("s11_automl_time_budget")
-    
-    if not df_name or not target:
-        if _util_funcs: 
-            _util_funcs['_show_simple_modal_message']("Error", "Please select DataFrame and Target.")
-        return
-    
-    if not task_type:
-        if _util_funcs: 
-            _util_funcs['_show_simple_modal_message']("Error", "Could not detect a valid task type.")
+    target_name = dpg.get_value(TAG_S11_TARGET_SELECTOR)
+    if not df_name or not target_name:
+        _util_funcs['_show_simple_modal_message']("설정 오류", "데이터 소스와 타겟 변수를 모두 선택해주세요.")
         return
 
-    all_dfs = _module_main_callbacks['get_all_available_dfs']()
+    # 설정값 가져오기
+    cv_folds = int(dpg.get_value("s11_cv_folds_selector"))
+    task_type = dpg.get_value(TAG_S11_TASK_TYPE_TEXT)
+    metric_selector = "s11_clf_metric_selector" if task_type == "Classification" else "s11_reg_metric_selector"
+    optimization_metric = dpg.get_value(metric_selector)
+
+    all_dfs = _module_main_callbacks.get('get_all_available_dfs')()
     df = all_dfs.get(df_name)
-
     if df is None:
-        if _util_funcs: 
-            _util_funcs['_show_simple_modal_message']("Error", "DataFrame not found.")
+        _util_funcs['_show_simple_modal_message']("오류", "선택된 데이터프레임을 찾을 수 없습니다.")
         return
-    
-    # 모니터링 데이터 초기화
-    _monitoring_data = {"time": [], "score": [], "n_models": []}
-    
-    _start_background_task(_run_automl_in_thread, args=(df.copy(), target, task_type, time_budget))
 
-def _view_experiment_details(sender, app_data, user_data: ExperimentResult):
-    """실험 상세 보기 (자동 SHAP 실행)"""
-    _create_results_visualizations(user_data)
+    # 상태 초기화
+    _leaderboard_results.clear()
+    _update_leaderboard_display()
+    dpg.configure_item(TAG_S11_DEEP_DIVE_GROUP, show=False)
+    dpg.configure_item(TAG_S11_ENSEMBLE_BUTTON, show=False)
+
+    _start_background_task(_run_automated_discovery_thread, args=(df.copy(), target_name, cv_folds, optimization_metric))
+
+def _update_leaderboard_display():
+    """리더보드 테이블 UI를 현재 _leaderboard_results 기준으로 새로고침"""
+    table = TAG_S11_LEADERBOARD_TABLE
+    dpg.delete_item(table, children_only=True)
+
+    if not _leaderboard_results:
+        dpg.add_table_column(label="알림", parent=table)
+        with dpg.table_row(parent=table):
+            dpg.add_text("자동 탐색을 실행하여 결과를 확인하세요.")
+        return
+
+    # 정렬 기준(Primary Metric)에 따라 결과 정렬
+    primary_metric = _leaderboard_results[0].get("primary_metric_key", "F1")
+    sorted_results = sorted(
+        _leaderboard_results,
+        key=lambda x: x.get("test_metrics", {}).get(primary_metric, 0),
+        reverse=True
+    )
     
-    # 자동으로 SHAP 분석 시작
-    all_dfs = _module_main_callbacks.get('get_all_available_dfs', lambda: {})()
-    df = all_dfs.get(user_data.dataframe_name)
+    # 헤더(컬럼명) 생성
+    metric_keys = list(sorted_results[0].get("test_metrics", {}).keys())
+    header_keys = ['Model'] + metric_keys # 'Model' 컬럼을 맨 앞에 추가
     
-    if df is not None and user_data.shap_values is None:
-        _log_message(f"Auto-starting SHAP analysis for {user_data.model_name}...")
-        _start_background_task(_run_shap_in_thread, args=(user_data, df.copy()))
+    best_scores = {}
+    for key in metric_keys:
+        scores = [res.get("test_metrics", {}).get(key, -np.inf) for res in sorted_results]
+        best_scores[key] = max(scores)
+
+    for key in header_keys:
+        dpg.add_table_column(label=key, parent=table)
+    dpg.add_table_column(label="분석/저장", parent=table)
+
+    highlight_color = (255, 255, 150, 100)
+    
+    for row_idx, res in enumerate(sorted_results):
+        with dpg.table_row(parent=table):
+            # 1. 모델 이름 표시 (수정된 핵심)
+            with dpg.table_cell():
+                dpg.add_text(res.get("name", "N/A"))
+            
+            # 2. 나머지 메트릭 표시
+            metrics = res.get("test_metrics", {})
+            for col_idx, key in enumerate(metric_keys):
+                value = metrics.get(key, "N/A")
+                with dpg.table_cell():
+                    if isinstance(value, float):
+                        cell_text = f"{value:.4f}"
+                        dpg.add_text(cell_text)
+                        if key in best_scores and abs(value - best_scores[key]) < 1e-6:
+                            # 모델 이름 컬럼이 빠졌으므로 col_idx는 그대로 사용 가능
+                            dpg.highlight_table_cell(table, row_idx, col_idx + 1, color=highlight_color)
+                    else:
+                        dpg.add_text(str(value))
+            
+            with dpg.table_cell():
+                 with dpg.group(horizontal=True):
+                    dpg.add_button(label="상세 분석", user_data=res["id"], callback=_select_model_for_deep_dive)
+                    dpg.add_button(label="💾", user_data=res["id"], callback=_export_model_callback)
+
+    can_ensemble = len([r for r in _leaderboard_results if 'Tuned' in r['name']]) >= 2
+    dpg.configure_item(TAG_S11_ENSEMBLE_BUTTON, show=can_ensemble)
+
+def _select_model_for_deep_dive(sender, app_data, user_data_model_id):
+    """리더보드에서 모델을 선택하여 심층 분석 UI를 활성화"""
+    global _current_deep_dive_model
+    model_data = next((res for res in _leaderboard_results if res["id"] == user_data_model_id), None)
+    if not model_data:
+        _log_message(f"오류: 모델 ID {user_data_model_id}를 찾을 수 없습니다.", "ERROR")
+        return
+
+    _current_deep_dive_model = model_data
+    dpg.configure_item(TAG_S11_DEEP_DIVE_GROUP, show=True)
+    dpg.set_value("s11_deep_dive_model_name", f"Selected Model: {model_data['name']}")
+
+    # 인사이트 탭 피처 콤보박스 채우기
+    X_train = model_data['task_info']['X_train']
+    dpg.configure_item("s11_insight_feature_selector", items=X_train.columns.tolist())
+
+    # 성능 탭 채우기
+    perf_table = "s11_deep_dive_perf_table"
+    dpg.delete_item(perf_table, children_only=True)
+    dpg.add_table_column(label="Metric", parent=perf_table)
+    dpg.add_table_column(label="Value", parent=perf_table)
+    for metric, value in model_data['test_metrics'].items():
+        with dpg.table_row(parent=perf_table):
+            dpg.add_text(metric)
+            dpg.add_text(f"{value:.4f}")
+    
+    _log_message(f"'{model_data['name']}' 모델이 심층 분석 대상으로 선택되었습니다.")
+
+def _export_model_callback(sender, app_data, user_data_model_id):
+    """모델 내보내기 콜백"""
+    model_data = next((res for res in _leaderboard_results if res["id"] == user_data_model_id), None)
+    if not model_data:
+        _util_funcs['_show_simple_modal_message']("오류", "저장할 모델을 찾을 수 없습니다.")
+        return
+
+    # 파일 저장 다이얼로그 (main_app.py에 정의되어 있다고 가정)
+    # 여기서는 간단히 파일명을 정하고 저장합니다.
+    try:
+        save_dir = "trained_models"
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{model_data['name']}_{timestamp}.joblib"
+        save_path = os.path.join(save_dir, filename)
+
+        joblib.dump(model_data['pipeline'], save_path)
+        _util_funcs['_show_simple_modal_message']("저장 완료", f"모델이 다음 경로에 저장되었습니다:\n{save_path}")
+        _log_message(f"모델 '{model_data['name']}'이(가) '{save_path}'에 저장되었습니다.")
+    except Exception as e:
+        _util_funcs['_show_simple_modal_message']("저장 실패", f"모델 저장 중 오류가 발생했습니다:\n{e}")
+        _log_message(f"모델 저장 실패: {e}", "ERROR")
+
+# --- 기타 유틸리티 및 헬퍼 함수 ---
+def _calculate_metrics(y_true, y_pred, task_type):
+    """성능 지표를 계산하는 헬퍼 함수"""
+    if task_type == "Classification":
+        return {
+            "Accuracy": accuracy_score(y_true, y_pred),
+            "F1 Score (Weighted)": f1_score(y_true, y_pred, average='weighted', zero_division=0),
+            "Recall (Weighted)": recall_score(y_true, y_pred, average='weighted', zero_division=0),
+            "Precision (Weighted)": precision_score(y_true, y_pred, average='weighted', zero_division=0),
+        }
+    else: # Regression
+        return {
+            "R2 Score": r2_score(y_true, y_pred),
+            "Mean Squared Error (MSE)": mean_squared_error(y_true, y_pred),
+            "Mean Absolute Error (MAE)": mean_absolute_error(y_true, y_pred),
+        }
 
 def _start_background_task(target_func, args):
-    """백그라운드 작업 시작"""
+    """백그라운드 스레드를 시작하는 래퍼 함수"""
     global _worker_thread
     if _worker_thread and _worker_thread.is_alive():
-        _log_message("ERROR: A task is already running.", "ERROR")
-        if _util_funcs: 
-            _util_funcs['_show_simple_modal_message']("Task Busy", "A previous task is still running. Please wait.")
+        _util_funcs['_show_simple_modal_message']("작업 중", "이전 작업이 아직 실행 중입니다. 잠시 후 다시 시도해주세요.")
         return
     _worker_thread = threading.Thread(target=target_func, args=args, daemon=True)
     _worker_thread.start()
-    _update_progress(0.0, "Task started in background...")
+    _update_progress(0.0, "작업을 시작했습니다...")
 
 def _check_for_updates():
-    """UI 업데이트 체크"""
-    global _worker_thread
+    """메인 스레드에서 주기적으로 호출되어 큐를 확인하고 UI를 업데이트"""
+    global _worker_thread, _leaderboard_results
     try:
         result = _results_queue.get_nowait()
         
         if result["type"] == "progress":
             _update_progress(result["value"], result["log"])
-        
         elif result["type"] == "error":
             _log_message(result["log"], "ERROR")
+            _update_progress(0.0, "작업 실패.")
+        elif result["type"] == "discovery_result":
+            _leaderboard_results = result["data"]
+            _update_leaderboard_display()
+            _update_progress(1.0, "자동 탐색 완료.")
+            time.sleep(1)
             _update_progress(0.0)
         
-        elif result["type"] == "automl_result":
-            _display_automl_results(result["data"])
-            _update_progress(1.0, "AutoML process finished.")
-            time.sleep(1)
-            _update_progress(0.0)
-            _update_comparison_view()
-
-        elif result["type"] == "shap_result":
-            _display_shap_results(result)
-            _update_progress(1.0, "SHAP analysis finished.")
-            time.sleep(1)
-            _update_progress(0.0)
-            
-        elif result["type"] == "monitoring_update":
-            _update_monitoring_plots()
+        # 다른 result type (e.g., shap_result) 처리 로직 추가 가능
 
         _results_queue.task_done()
-
     except queue.Empty:
         pass
     except Exception as e:
-        print(f"Error checking for updates: {e}")
+        print(f"업데이트 확인 중 오류 발생: {e}\n{traceback.format_exc()}")
 
     if _worker_thread and not _worker_thread.is_alive():
         _worker_thread = None
 
-def _update_monitoring_plots():
-    """모니터링 플롯 업데이트"""
-    if not _monitoring_data["time"]:
-        return
-        
-    if not dpg.does_item_exist(TAG_S11_MONITORING_PLOTS_GROUP):
-        return
-    
-    # 플롯 업데이트 로직
-    try:
-        dpg.delete_item(TAG_S11_MONITORING_PLOTS_GROUP, children_only=True)
-        
-        dpg.add_text("AutoML Progress Monitoring", parent=TAG_S11_MONITORING_PLOTS_GROUP, color=(255, 255, 0))
-        dpg.add_separator(parent=TAG_S11_MONITORING_PLOTS_GROUP)
-        
-        # Score over time 플롯
-        with dpg.plot(label="Model Performance Over Time", height=200, width=-1, 
-                      parent=TAG_S11_MONITORING_PLOTS_GROUP):
-            dpg.add_plot_legend()
-            dpg.add_plot_axis(dpg.mvXAxis, label="Time (seconds)")
-            dpg.add_plot_axis(dpg.mvYAxis, label="Score", tag="score_y_axis")
-            dpg.add_line_series(_monitoring_data["time"], _monitoring_data["score"], 
-                               label="Validation Score", parent="score_y_axis")
-        
-        # Models over time 플롯
-        with dpg.plot(label="Models Trained", height=200, width=-1, 
-                      parent=TAG_S11_MONITORING_PLOTS_GROUP):
-            dpg.add_plot_axis(dpg.mvXAxis, label="Time (seconds)")
-            dpg.add_plot_axis(dpg.mvYAxis, label="Number of Models", tag="models_y_axis")
-            dpg.add_stair_series(_monitoring_data["time"], _monitoring_data["n_models"], 
-                                label="Models", parent="models_y_axis")
-        
-        # Current status
-        dpg.add_text(f"Current Best Score: {_monitoring_data['score'][-1]:.4f}", 
-                    parent=TAG_S11_MONITORING_PLOTS_GROUP)
-        dpg.add_text(f"Total Models Trained: {_monitoring_data['n_models'][-1]}", 
-                    parent=TAG_S11_MONITORING_PLOTS_GROUP)
-                    
-    except Exception as e:
-        print(f"Error updating monitoring plots: {e}")
-
-def _update_comparison_view():
-    """모델 비교 뷰 업데이트"""
-    if not dpg.does_item_exist("s11_comparison_window"):
-        return
-        
-    dpg.delete_item("s11_comparison_window", children_only=True)
-    
-    if len(_experiments_history) < 2:
-        dpg.add_text("Need at least 2 experiments to compare.", parent="s11_comparison_window")
-        return
-    
-    # 메트릭 비교 테이블
-    dpg.add_text("Model Performance Comparison", parent="s11_comparison_window", color=(255, 255, 0))
-    
-    with dpg.table(header_row=True, resizable=True, parent="s11_comparison_window"):
-        dpg.add_table_column(label="Model")
-        dpg.add_table_column(label="Algorithm")
-        dpg.add_table_column(label="Training Time")
-        dpg.add_table_column(label="CV Score")
-        
-        for exp in _experiments_history[-5:]:  # 최근 5개
-            with dpg.table_row():
-                dpg.add_text(exp.model_name)
-                dpg.add_text(exp.algorithm)
-                dpg.add_text(f"{exp.training_time:.2f}s")
-                cv_score = "N/A"
-                if exp.cv_scores:
-                    cv_score = f"{np.mean(exp.cv_scores):.4f} ± {np.std(exp.cv_scores):.4f}"
-                dpg.add_text(cv_score)
-
-def _display_automl_results(data: dict):
-    """AutoML 결과 표시"""
-    _log_message("Displaying AutoML results...")
-    
-    # 결과 저장
-    exp = ExperimentResult(
-        id=str(uuid.uuid4()), 
-        timestamp=datetime.datetime.now(),
-        model_name=data["model_name"], 
-        model_type=data["model_type"],
-        algorithm=data["algorithm"], 
-        parameters={"time_budget": dpg.get_value("s11_automl_time_budget")},
-        features=list(data["feature_scores"].keys()), 
-        target=data["target"],
-        metrics={}, 
-        training_time=data["training_time"],
-        model_object=data["model_object"], 
-        dataframe_name=dpg.get_value(TAG_S11_DF_SELECTOR),
-        cv_scores=data.get("cv_scores")
-    )
-    _experiments_history.append(exp)
-    _update_experiment_table()
-    
-    # AutoML 결과 탭 업데이트
-    res_group = TAG_S11_AUTOML_RESULTS_GROUP
-    if dpg.does_item_exist(res_group):
-        dpg.delete_item(res_group, children_only=True)
-    
-    dpg.add_text(f"Results for: {exp.model_name}", parent=res_group, color=(255, 255, 0))
-    dpg.add_text(f"Task Type: {data.get('task_type', 'Unknown')}", parent=res_group)
-    dpg.add_text(f"Training Time: {exp.training_time:.2f} seconds", parent=res_group)
-    
-    if exp.cv_scores:
-        cv_text = f"CV Score: {np.mean(exp.cv_scores):.4f} ± {np.std(exp.cv_scores):.4f}"
-        dpg.add_text(cv_text, parent=res_group, color=(100, 255, 100))
-    
-    dpg.add_separator(parent=res_group)
-    dpg.add_text("Top Feature Importances:", parent=res_group, color=(100, 200, 255))
-    
-    # Feature importance 차트
-    if data["feature_scores"]:
-        sorted_features = sorted(data["feature_scores"].items(), key=lambda x: x[1], reverse=True)[:10]
-        features, scores = zip(*sorted_features)
-        
-        fig, ax = plt.subplots(figsize=(8, 4))
-        y_pos = np.arange(len(features))
-        ax.barh(y_pos, scores)
-        ax.set_yticks(y_pos)
-        ax.set_yticklabels(features)
-        ax.set_xlabel('Importance')
-        ax.set_title('Top 10 Feature Importances')
-        plt.tight_layout()
-        
-        plot_func = _util_funcs.get('plot_to_dpg_texture')
-        if plot_func:
-            tex_tag, w, h, _ = plot_func(fig)
-            dpg.add_image(tex_tag, width=w, height=h, parent=res_group)
-            _texture_tags.append(tex_tag)
-        plt.close(fig)
-
-def _display_shap_results(data: dict):
-    """SHAP 결과 표시"""
-    exp_id = data['exp_id']
-    result_tab_tag = f"s11_result_tab_{exp_id}"
-    
-    if dpg.does_item_exist(result_tab_tag):
-        dpg.add_separator(parent=result_tab_tag)
-        dpg.add_text("SHAP Analysis Results", parent=result_tab_tag, color=(100, 200, 255))
-        dpg.add_image(data['tex_tag'], width=data['width'], height=data['height'], parent=result_tab_tag)
-        _texture_tags.append(data['tex_tag'])
-
-def _create_results_visualizations(experiment: ExperimentResult):
-    """실험 결과 시각화 탭"""
-    tab_name = f"📈 {experiment.model_name}"
-    tab_tag = f"s11_result_tab_{experiment.id}"
-    
-    if dpg.does_item_exist(tab_tag):
-        dpg.focus_item(tab_tag)
-        return
-
-    with dpg.tab(label=tab_name, parent=TAG_S11_VIZ_TAB_BAR, closable=True, tag=tab_tag):
-        dpg.add_text(f"Results for: {experiment.model_name}", color=(255, 255, 0))
-        dpg.add_text(f"Algorithm: {experiment.algorithm}")
-        dpg.add_text(f"Training Time: {experiment.training_time:.2f}s")
-        
-        if experiment.cv_scores:
-            cv_text = f"CV Score: {np.mean(experiment.cv_scores):.4f} ± {np.std(experiment.cv_scores):.4f}"
-            dpg.add_text(cv_text, color=(100, 255, 100))
-        
-        dpg.add_separator()
-        dpg.add_text("SHAP analysis will start automatically...", color=(200, 200, 200))
-
-def _log_message(message: str, level: str = "INFO"):
-    """로그 메시지 출력"""
-    if not dpg.is_dearpygui_running(): 
-        return
-    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-    formatted_msg = f"[{timestamp}] {level}: {message}"
-    if dpg.does_item_exist("s11_log_text"):
-        current_log = dpg.get_value("s11_log_text")
-        new_log = f"{current_log}\n{formatted_msg}"
-        log_lines = new_log.split("\n")
-        if len(log_lines) > 100: 
-            new_log = "\n".join(log_lines[-100:])
-        dpg.set_value("s11_log_text", new_log)
-        if dpg.does_item_exist(TAG_S11_LOG_WINDOW):
-            dpg.set_y_scroll(TAG_S11_LOG_WINDOW, dpg.get_y_scroll_max(TAG_S11_LOG_WINDOW))
-
 def _update_progress(value: float, message: str = ""):
-    """진행률 업데이트"""
-    if not dpg.is_dearpygui_running(): 
-        return
+    """진행 바 및 로그 메시지 업데이트"""
+    if not dpg.is_dearpygui_running(): return
     if dpg.does_item_exist(TAG_S11_PROGRESS_BAR):
         dpg.set_value(TAG_S11_PROGRESS_BAR, value)
     if message: 
         _log_message(message)
 
-def update_ui():
-    """UI 업데이트"""
-    if not _module_main_callbacks: 
-        return
+def _log_message(message: str, level: str = "INFO"):
+    """로그 창에 메시지 추가"""
+    if not dpg.is_dearpygui_running() or not dpg.does_item_exist(TAG_S11_LOG_TEXT): return
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+    formatted_msg = f"[{timestamp}] {level}: {message}"
     
-    all_dfs = _module_main_callbacks.get('get_all_available_dfs', lambda: {})()
-    
-    df_selector_tag = TAG_S11_DF_SELECTOR
-    if dpg.does_item_exist(df_selector_tag):
-        df_names = list(all_dfs.keys())
-        dpg.configure_item(df_selector_tag, items=df_names)
+    current_log = dpg.get_value(TAG_S11_LOG_TEXT)
+    if "자동 탐색을 시작하세요." in current_log:
+        current_log = ""
+
+    new_log = f"{current_log}\n{formatted_msg}"
+    log_lines = new_log.split("\n")
+    if len(log_lines) > 100: 
+        new_log = "\n".join(log_lines[-100:])
         
-        current_selection = dpg.get_value(df_selector_tag)
-        if not current_selection and df_names:
-            current_selection = df_names[0]
-            dpg.set_value(df_selector_tag, current_selection)
+    dpg.set_value(TAG_S11_LOG_TEXT, new_log)
+    if dpg.does_item_exist(TAG_S11_LOG_WINDOW):
+        dpg.set_y_scroll(TAG_S11_LOG_WINDOW, dpg.get_y_scroll_max(TAG_S11_LOG_WINDOW))
 
-        if current_selection:
-            _update_automl_target_combo(current_selection)
-
-    _update_experiment_table()
-
-def _update_experiment_table():
-    """실험 테이블 업데이트"""
-    if not dpg.does_item_exist(TAG_S11_EXPERIMENT_TABLE): 
-        return
-    
-    dpg.delete_item(TAG_S11_EXPERIMENT_TABLE, children_only=True)
-    dpg.add_table_column(label="Timestamp", parent=TAG_S11_EXPERIMENT_TABLE)
-    dpg.add_table_column(label="Model", parent=TAG_S11_EXPERIMENT_TABLE)
-    dpg.add_table_column(label="Algorithm", parent=TAG_S11_EXPERIMENT_TABLE)
-    dpg.add_table_column(label="Target", parent=TAG_S11_EXPERIMENT_TABLE)
-    dpg.add_table_column(label="Score", parent=TAG_S11_EXPERIMENT_TABLE)
-    dpg.add_table_column(label="Actions", parent=TAG_S11_EXPERIMENT_TABLE)
-
-    for exp in reversed(_experiments_history):
-        with dpg.table_row(parent=TAG_S11_EXPERIMENT_TABLE):
-            dpg.add_text(exp.timestamp.strftime("%H:%M:%S"))
-            dpg.add_text(exp.model_name)
-            dpg.add_text(exp.algorithm)
-            dpg.add_text(exp.target)
-            
-            score_text = "N/A"
-            if exp.cv_scores:
-                score_text = f"{np.mean(exp.cv_scores):.4f}"
-            dpg.add_text(score_text)
-            
-            dpg.add_button(label="View", user_data=exp, callback=_view_experiment_details)
+# --- main_app.py와의 인터페이스 함수 ---
+def update_ui():
+    """main_app에서 호출하여 UI 상태를 업데이트 (e.g., 데이터 소스 목록)"""
+    if not _module_main_callbacks: return
+    all_dfs = _module_main_callbacks.get('get_all_available_dfs', lambda: {})()
+    if dpg.does_item_exist(TAG_S11_DF_SELECTOR):
+        df_names = [""] + list(all_dfs.keys())
+        dpg.configure_item(TAG_S11_DF_SELECTOR, items=df_names)
 
 def reset_state():
-    """상태 초기화"""
-    global _experiments_history, _texture_tags, _worker_thread, _monitoring_data
-    
+    """애플리케이션 리셋 시 호출되어 이 모듈의 상태를 초기화"""
+    global _worker_thread, _leaderboard_results, _texture_tags, _current_deep_dive_model
     if _worker_thread and _worker_thread.is_alive():
-        _log_message("Warning: A task is still running. Cannot reset state now.", "WARN")
-        return
+        return # 작업 중 리셋 방지
 
-    _experiments_history.clear()
-    _monitoring_data = {"time": [], "score": [], "n_models": []}
-    
+    _leaderboard_results.clear()
+    _current_deep_dive_model = None
     for tag in _texture_tags:
         if dpg.does_item_exist(tag): 
             dpg.delete_item(tag)
     _texture_tags.clear()
     
     if dpg.is_dearpygui_running():
+        _update_leaderboard_display()
+        dpg.configure_item(TAG_S11_DEEP_DIVE_GROUP, show=False)
+        dpg.set_value(TAG_S11_MAIN_TAB_BAR, TAG_S11_MODELING_TAB)
         update_ui()
-    _log_message("State has been reset.", "INFO")
+    
+    _log_message("ML 모델링 상태가 초기화되었습니다.", "INFO")
+
+# --- 아래는 심층 분석, 앙상블, 추론 등 추가 구현이 필요한 기능들의 자리입니다 ---
+
+def _create_ensemble_callback():
+    _log_message("앙상블 기능은 현재 구현 준비 중입니다.", "INFO")
+    # TODO: 상위 모델 2-3개를 선택하여 VotingClassifier/Regressor를 만들고
+    # _leaderboard_results에 추가한 후 _update_leaderboard_display() 호출
+
+def _run_shap_analysis(plot_type: str):
+    _log_message(f"SHAP 분석 ({plot_type}) 기능은 현재 구현 준비 중입니다.", "INFO")
+    # TODO: _current_deep_dive_model을 기반으로 SHAP 분석 스레드 실행
+    # 1. Explainer 생성
+    # 2. shap_values 계산
+    # 3. plot_type에 맞는 플롯 생성 (matplotlib)
+    # 4. plot_to_dpg_texture 유틸리티로 DPG 텍스처 변환
+    # 5. s11_insight_plots_window에 이미지 추가
+
+def _load_model_for_inference():
+    _log_message("모델 불러오기 기능은 파일 다이얼로그 연동 후 구현됩니다.", "INFO")
+
+def _load_data_for_inference():
+    _log_message("데이터 불러오기 기능은 파일 다이얼로그 연동 후 구현됩니다.", "INFO")
+
+def _run_inference():
+    _log_message("추론 실행 기능은 모델/데이터 로딩 구현 후 활성화됩니다.", "INFO")
+
+def _download_inference_result():
+    _log_message("결과 다운로드 기능은 추론 실행 구현 후 활성화됩니다.", "INFO")

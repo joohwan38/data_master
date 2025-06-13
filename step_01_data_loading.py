@@ -315,7 +315,7 @@ def create_ui(step_name: str, parent_container_tag: str, main_callbacks: dict):
                     dpg.add_button(label="Apply Type Changes", tag=TAG_DL_APPLY_TYPE_CHANGES_BUTTON,
                                    callback=_apply_type_changes_and_process)
                 with dpg.table(header_row=True, resizable=True, policy=dpg.mvTable_SizingFixedFit,
-                               scrollY=True, height=450, tag=TAG_DL_TYPE_EDITOR_TABLE, scrollX=True,
+                               scrollY=True, height=700, tag=TAG_DL_TYPE_EDITOR_TABLE, scrollX=True,
                                borders_outerH=True, borders_innerV=True, borders_innerH=True, borders_outerV=True):
                     pass 
             
