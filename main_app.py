@@ -200,19 +200,35 @@ def setup_korean_font():
 def update_target_variable_combo():
     """타겟 변수 선택 콤보박스의 아이템을 현재 DataFrame 기준으로 업데이트합니다."""
     if dpg.does_item_exist(TARGET_VARIABLE_COMBO_TAG):
-        df_for_combo = app_state.current_df # Use current_df which reflects the latest step
+        df_for_combo = app_state.current_df
         
-        items = [""] + list(df_for_combo.columns) if df_for_combo is not None and not df_for_combo.empty else [""]
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼ 이 부분이 핵심 수정 내용입니다 ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        items = [""]
+        if df_for_combo is not None and not df_for_combo.empty:
+            # Step 1에서 설정한 타입 정보를 가져옵니다.
+            s1_col_types = main_app_callbacks.get('get_column_analysis_types', lambda: {})()
+            
+            # "분석에서 제외"로 설정되지 않은 컬럼만 필터링합니다.
+            available_cols = [
+                col for col in df_for_combo.columns
+                if s1_col_types.get(col) != "분석에서 제외 (Exclude)"
+            ]
+            items.extend(available_cols)
+        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
         dpg.configure_item(TARGET_VARIABLE_COMBO_TAG, items=items)
         
         current_val = app_state.selected_target_variable
-        if current_val and df_for_combo is not None and current_val in df_for_combo.columns:
+        # 현재 선택된 값이 유효한지 다시 확인
+        if current_val and current_val in items:
             dpg.set_value(TARGET_VARIABLE_COMBO_TAG, current_val)
         else: 
+            # 유효하지 않으면 선택 해제
             dpg.set_value(TARGET_VARIABLE_COMBO_TAG, "")
             app_state.selected_target_variable = None
             if dpg.does_item_exist(TARGET_VARIABLE_TYPE_LABEL_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_LABEL_TAG, show=False)
             if dpg.does_item_exist(TARGET_VARIABLE_TYPE_RADIO_TAG): dpg.configure_item(TARGET_VARIABLE_TYPE_RADIO_TAG, show=False)
+
 
 
 def trigger_all_module_updates():

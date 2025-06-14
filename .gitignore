@@ -5,6 +5,7 @@ build/
 dist/
 wheels/
 data/
+autogluon_models/
 *.egg-info
 *.html
 .DS_Store
